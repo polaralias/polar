@@ -11,10 +11,12 @@ const fsBaseDir = process.env.FS_BASE_DIR
 export const runtimeConfig = {
   port: Number(process.env.RUNTIME_PORT ?? 4000),
   gatewayUrl: process.env.GATEWAY_URL ?? 'http://localhost:4001',
+  deploymentProfile: (process.env.DEPLOYMENT_PROFILE ?? 'local') as 'local' | 'cloud' | 'edge',
   dataDir,
   policyPath: path.join(dataDir, 'policy.json'),
   auditPath: path.join(dataDir, 'audit.ndjson'),
   signingKeyPath: path.join(dataDir, 'signing.key'),
+  secretsPath: path.join(dataDir, 'secrets.json'),
   capabilityTtlSeconds: Number(process.env.CAPABILITY_TTL ?? 120),
   fsBaseDir,
 };

@@ -15,20 +15,35 @@ await app.register(cors, { origin: true });
 
 app.get('/health', async () => ({ ok: true }));
 
+let cachedSigningKey: Uint8Array | null = null;
+let lastKeyMtime: number = 0;
+
 async function readSigningKey(): Promise<Uint8Array> {
-  const key = await fs.readFile(gatewayConfig.signingKeyPath, 'utf-8');
-  return new TextEncoder().encode(key.trim());
+  try {
+    const stats = await fs.stat(gatewayConfig.signingKeyPath);
+    if (cachedSigningKey && stats.mtimeMs === lastKeyMtime) {
+      return cachedSigningKey;
+    }
+    const key = await fs.readFile(gatewayConfig.signingKeyPath, 'utf-8');
+    cachedSigningKey = new TextEncoder().encode(key.trim());
+    lastKeyMtime = stats.mtimeMs;
+    return cachedSigningKey;
+  } catch (error) {
+    // If file doesn't exist yet or fails, return empty or throw.
+    // Existing code would have thrown on readFile.
+    throw error;
+  }
 }
 
 async function sendAudit(event: AuditEvent): Promise<void> {
-  try {
-    await fetch(`${gatewayConfig.runtimeUrl}/internal/audit`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(event),
-    });
-  } catch {
-    // Ignore audit delivery failures for now.
+  const response = await fetch(`${gatewayConfig.runtimeUrl}/internal/audit`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(event),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Audit delivery failed with status ${response.status}`);
   }
 }
 
@@ -148,6 +163,52 @@ app.post('/tools/fs.listDir', async (request, reply) => {
       buildAuditEvent(payload.sub, 'fs.listDir', resolvedPath, 'allow', 'List failed', payload.jti),
     );
     return reply.status(404).send({ error: (error as Error).message });
+  }
+});
+
+app.post('/tools/fs.writeFile', async (request, reply) => {
+  const body = request.body as { token?: string; path?: string; content?: string };
+  if (!body?.token || !body?.path || typeof body?.content !== 'string') {
+    return reply.status(401).send({ error: 'Token, path, and content are required' });
+  }
+
+  const resolvedPath = resolveFsPath(body.path);
+  let payload;
+  try {
+    payload = await verifyCapabilityToken(body.token, await readSigningKey());
+  } catch {
+    await sendAudit(
+      buildAuditEvent('unknown', 'fs.writeFile', resolvedPath, 'deny', 'Invalid token'),
+    );
+    return reply.status(401).send({ error: 'Invalid token' });
+  }
+
+  if (payload.act !== 'fs.writeFile') {
+    await sendAudit(
+      buildAuditEvent(payload.sub, 'fs.writeFile', resolvedPath, 'deny', 'Action mismatch'),
+    );
+    return reply.status(403).send({ error: 'Action not permitted' });
+  }
+
+  const allowed = matchesResourceConstraint(payload.res, { type: 'fs', path: resolvedPath });
+  if (!allowed) {
+    await sendAudit(
+      buildAuditEvent(payload.sub, 'fs.writeFile', resolvedPath, 'deny', 'Path denied', payload.jti),
+    );
+    return reply.status(403).send({ error: 'Path not permitted' });
+  }
+
+  try {
+    await fs.writeFile(resolvedPath, body.content, 'utf-8');
+    await sendAudit(
+      buildAuditEvent(payload.sub, 'fs.writeFile', resolvedPath, 'allow', undefined, payload.jti),
+    );
+    return { ok: true };
+  } catch (error) {
+    await sendAudit(
+      buildAuditEvent(payload.sub, 'fs.writeFile', resolvedPath, 'allow', 'Write failed', payload.jti),
+    );
+    return reply.status(500).send({ error: (error as Error).message });
   }
 });
 

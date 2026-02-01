@@ -1,7 +1,13 @@
 import { NavLink, Route, Routes } from 'react-router-dom';
-import ChatPage from './pages/ChatPage';
-import AuditPage from './pages/AuditPage';
-import PermissionsPage from './pages/PermissionsPage';
+import ChatPage from './pages/ChatPage.js';
+import AuditPage from './pages/AuditPage.js';
+import PermissionsPage from './pages/PermissionsPage.js';
+import SkillsPage from './pages/SkillsPage.js';
+import MemoryPage from './pages/MemoryPage.js';
+import { AgentsPage } from './pages/AgentsPage.js';
+import OverviewPage from './pages/OverviewPage.js';
+import DiagnosticsPage from './pages/DiagnosticsPage.js';
+import ChannelsPage from './pages/ChannelsPage.js';
 
 const navClass = ({ isActive }: { isActive: boolean }) => (isActive ? 'active' : '');
 
@@ -16,21 +22,45 @@ export default function App() {
           </div>
           <nav className="nav">
             <NavLink to="/" end className={navClass}>
+              Overview
+            </NavLink>
+            <NavLink to="/chat" className={navClass}>
               Chat
+            </NavLink>
+            <NavLink to="/agents" className={navClass}>
+              Agents
+            </NavLink>
+            <NavLink to="/skills" className={navClass}>
+              Skills
+            </NavLink>
+            <NavLink to="/memory" className={navClass}>
+              Memory
+            </NavLink>
+            <NavLink to="/permissions" className={navClass}>
+              Permissions
             </NavLink>
             <NavLink to="/audit" className={navClass}>
               Audit
             </NavLink>
-            <NavLink to="/permissions" className={navClass}>
-              Permissions
+            <NavLink to="/channels" className={navClass}>
+              Channels
+            </NavLink>
+            <NavLink to="/diagnostics" className={navClass}>
+              Doctor
             </NavLink>
           </nav>
         </header>
 
         <Routes>
-          <Route path="/" element={<ChatPage />} />
+          <Route path="/" element={<OverviewPage />} />
+          <Route path="/chat" element={<ChatPage />} />
+          <Route path="/memory" element={<MemoryPage />} />
+          <Route path="/skills" element={<SkillsPage />} />
           <Route path="/audit" element={<AuditPage />} />
           <Route path="/permissions" element={<PermissionsPage />} />
+          <Route path="/agents" element={<AgentsPage sessionId="default-session" />} />
+          <Route path="/channels" element={<ChannelsPage />} />
+          <Route path="/diagnostics" element={<DiagnosticsPage />} />
         </Routes>
       </div>
     </div>

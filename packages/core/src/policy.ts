@@ -6,6 +6,8 @@ import {
   Resource,
   ResourceConstraint,
   FsResourceConstraint,
+  MemoryResourceConstraint,
+  MemoryResource,
 } from './schemas.js';
 
 export type PolicyDecision = {
@@ -49,6 +51,20 @@ function matchesFsConstraint(constraint: FsResourceConstraint, resourcePath: str
   return matchesRoot && matchesPaths;
 }
 
+function matchesMemoryConstraint(
+  constraint: MemoryResourceConstraint,
+  resource: MemoryResource,
+): boolean {
+  const matchesType = constraint.memoryType ? constraint.memoryType === resource.memoryType : true;
+  const matchesScope = constraint.scopeIds
+    ? resource.scopeId
+      ? constraint.scopeIds.includes(resource.scopeId)
+      : false
+    : true;
+
+  return matchesType && matchesScope;
+}
+
 export function matchesResourceConstraint(
   constraint: ResourceConstraint,
   resource: Resource,
@@ -57,8 +73,12 @@ export function matchesResourceConstraint(
     return false;
   }
 
-  if (constraint.type === 'fs') {
+  if (constraint.type === 'fs' && resource.type === 'fs') {
     return matchesFsConstraint(constraint, resource.path);
+  }
+
+  if (constraint.type === 'memory' && resource.type === 'memory') {
+    return matchesMemoryConstraint(constraint, resource);
   }
 
   return false;
@@ -85,6 +105,14 @@ function buildCapabilityConstraints(
   grant: Grant,
   request: PolicyRequest,
 ): { resource: ResourceConstraint; fields?: string[] } {
+  const constraints: { resource: ResourceConstraint; fields?: string[] } = {
+    resource: grant.resource,
+  };
+
+  if (grant.fields) {
+    constraints.fields = grant.fields;
+  }
+
   if (request.resource.type === 'fs') {
     const fsConstraint: FsResourceConstraint = {
       type: 'fs',
@@ -95,16 +123,18 @@ function buildCapabilityConstraints(
       fsConstraint.root = normalizePath(grant.resource.root);
     }
 
-    return {
-      resource: fsConstraint,
-      fields: grant.fields,
+    constraints.resource = fsConstraint;
+  } else if (request.resource.type === 'memory') {
+    const memoryConstraint: MemoryResourceConstraint = {
+      type: 'memory',
+      memoryType: request.resource.memoryType,
+      scopeIds: request.resource.scopeId ? [request.resource.scopeId] : undefined,
     };
+
+    constraints.resource = memoryConstraint;
   }
 
-  return {
-    resource: grant.resource,
-    fields: grant.fields,
-  };
+  return constraints;
 }
 
 export function evaluatePolicy(

@@ -5,6 +5,7 @@ const baseDir = process.cwd();
 export const gatewayConfig = {
   port: Number(process.env.GATEWAY_PORT ?? 4001),
   runtimeUrl: process.env.RUNTIME_URL ?? 'http://localhost:4000',
+  deploymentProfile: (process.env.DEPLOYMENT_PROFILE ?? 'local') as 'local' | 'cloud' | 'edge',
   signingKeyPath:
     process.env.SIGNING_KEY_PATH ??
     path.resolve(baseDir, '..', 'runtime', 'data', 'signing.key'),

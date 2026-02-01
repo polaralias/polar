@@ -1,0 +1,10 @@
+{
+  "grants": [],
+  "rules": [
+    {
+      "id": "default-deny",
+      "effect": "deny",
+      "reason": "Default deny-all policy"
+    }
+  ]
+}
