@@ -622,7 +622,6 @@ app.post('/internal/audit', async (request, reply) => {
   }
 
   await appendAudit(parsed.data);
-  await appendAudit(parsed.data);
   return { ok: true };
 });
 

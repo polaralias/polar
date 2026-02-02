@@ -85,6 +85,29 @@ async function sendAudit(event: AuditEvent): Promise<void> {
   }
 }
 
+async function introspectToken(token: string): Promise<{ active: boolean; error?: string }> {
+  try {
+    const response = await fetch(`${gatewayConfig.runtimeUrl}/internal/introspect`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-polar-internal-secret': gatewayConfig.internalSecret,
+      },
+      body: JSON.stringify({ token }),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      return { active: false, error: errorData.error || `Introspection failed with status ${response.status}` };
+    }
+
+    const data = await response.json();
+    return data;
+  } catch (error) {
+    return { active: false, error: `Introspection unreachable: ${(error as Error).message}` };
+  }
+}
+
 function buildAuditEvent(
   subject: string,
   action: string,
@@ -122,6 +145,15 @@ app.post('/tools/fs.readFile', async (request, reply) => {
   let payload;
   try {
     payload = await verifyCapabilityToken(body.token, await readSigningKey());
+
+    // Immediate revocation & Emergency mode check via Runtime Introspection
+    const intro = await introspectToken(body.token);
+    if (!intro.active) {
+      await sendAudit(
+        buildAuditEvent(payload.sub, 'fs.readFile', resolvedPath, 'deny', `Introspection failed: ${intro.error}`, payload.jti),
+      );
+      return reply.status(401).send({ error: `Token revoked or invalid: ${intro.error}` });
+    }
   } catch (error) {
     await sendAudit(
       buildAuditEvent('unknown', 'fs.readFile', resolvedPath, 'deny', 'Invalid token'),
@@ -168,6 +200,15 @@ app.post('/tools/fs.listDir', async (request, reply) => {
   let payload;
   try {
     payload = await verifyCapabilityToken(body.token, await readSigningKey());
+
+    // Immediate revocation & Emergency mode check via Runtime Introspection
+    const intro = await introspectToken(body.token);
+    if (!intro.active) {
+      await sendAudit(
+        buildAuditEvent(payload.sub, 'fs.listDir', resolvedPath, 'deny', `Introspection failed: ${intro.error}`, payload.jti),
+      );
+      return reply.status(401).send({ error: `Token revoked or invalid: ${intro.error}` });
+    }
   } catch {
     await sendAudit(
       buildAuditEvent('unknown', 'fs.listDir', resolvedPath, 'deny', 'Invalid token'),
@@ -214,6 +255,15 @@ app.post('/tools/fs.writeFile', async (request, reply) => {
   let payload;
   try {
     payload = await verifyCapabilityToken(body.token, await readSigningKey());
+
+    // Immediate revocation & Emergency mode check via Runtime Introspection
+    const intro = await introspectToken(body.token);
+    if (!intro.active) {
+      await sendAudit(
+        buildAuditEvent(payload.sub, 'fs.writeFile', resolvedPath, 'deny', `Introspection failed: ${intro.error}`, payload.jti),
+      );
+      return reply.status(401).send({ error: `Token revoked or invalid: ${intro.error}` });
+    }
   } catch {
     await sendAudit(
       buildAuditEvent('unknown', 'fs.writeFile', resolvedPath, 'deny', 'Invalid token'),

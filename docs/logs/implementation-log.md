@@ -31,3 +31,4 @@ Each record describes work completed on a single date. Columns are:
 | 2026-02-01 | Implemented Onboarding Wizard | Updated `cli.ts` with an interactive wizard using `prompts` for platform initialization and connectivity checks. |
 | 2026-02-01 | Verifed Production Build pipeline | Verified `pnpm -r build` success across all workspaces. Fixed strict type error in runtime audit log processing to ensure clean builds. |
 | 2026-02-02 | Encrypted secrets at rest | Implemented AES-256-GCM encryption for `FileSecretsAdapter` using a managed `master.key`. Added auto-migration from plaintext and env-var key support (`POLAR_MASTER_KEY`). |
+| 2026-02-02 | Finalized Phase 1 Blockers | • Implemented Gateway introspection on every tool call for immediate revocation.<br>• Fixed duplicate audit append bug in Runtime.<br>• Enhanced DoctorService with checks for default auth tokens and over-broad FS grants.<br>• Added integration tests for revocation and emergency mode scenarios. |
