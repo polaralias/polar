@@ -33,7 +33,24 @@ async function main() {
     }
 
     try {
-        const manifestPath = path.join(sourceDir, 'manifest.json');
+        let manifestPath = path.join(sourceDir, 'manifest.json');
+        let manifestExists = true;
+        try {
+            await fs.access(manifestPath);
+        } catch {
+            manifestPath = path.join(sourceDir, 'polar.skill.json');
+            try {
+                await fs.access(manifestPath);
+            } catch {
+                manifestExists = false;
+            }
+        }
+
+        if (!manifestExists) {
+            console.error(JSON.stringify({ error: 'Manifest not found', details: 'Neither manifest.json nor polar.skill.json found in source directory' }));
+            process.exit(1);
+        }
+
         const rawManifest = await fs.readFile(manifestPath, 'utf-8');
         const manifestJson = JSON.parse(rawManifest);
 
@@ -50,10 +67,15 @@ async function main() {
 
         const files = await fs.readdir(sourceDir);
         for (const file of files) {
-            await fs.copyFile(
-                path.join(sourceDir, file),
-                path.join(destDir, file)
-            );
+            const sourceFile = path.join(sourceDir, file);
+            let destFile = path.join(destDir, file);
+
+            // If we are copying polar.skill.json, rename it to manifest.json in the destination
+            if (file === 'polar.skill.json' && !files.includes('manifest.json')) {
+                destFile = path.join(destDir, 'manifest.json');
+            }
+
+            await fs.copyFile(sourceFile, destFile);
         }
 
         const hash = await calculateHash(destDir);

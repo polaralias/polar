@@ -10,11 +10,13 @@ export type SigningKey = KeyLike | Uint8Array;
 export async function mintCapabilityToken(
   capability: Capability,
   signingKey: SigningKey,
+  policyVersion?: number,
 ): Promise<string> {
   const payload = {
     act: capability.action,
     res: capability.resource,
     fld: capability.fields,
+    pol_ver: policyVersion,
   };
 
   return new SignJWT(payload)
@@ -40,6 +42,7 @@ export async function verifyCapabilityToken(
     fld: payload.fld,
     exp: payload.exp,
     jti: payload.jti,
+    pol_ver: payload.pol_ver,
   });
 
   if (!parsed.success) {

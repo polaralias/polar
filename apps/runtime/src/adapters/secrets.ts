@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { runtimeConfig } from '../config.js';
+import { getMasterKey, encryptData, decryptData, EncryptedData } from '../crypto.js';
 
 export interface SecretsAdapter {
     getSecret(key: string): Promise<string | undefined>;
@@ -19,7 +20,15 @@ export class FileSecretsAdapter implements SecretsAdapter {
     private async load(): Promise<Record<string, string>> {
         try {
             const raw = await fs.readFile(this.filePath, 'utf-8');
-            return JSON.parse(raw);
+            const data = JSON.parse(raw);
+
+            if (data && typeof data.iv === 'string' && typeof data.content === 'string' && typeof data.authTag === 'string') {
+                const key = await getMasterKey();
+                const decrypted = decryptData(data as EncryptedData, key);
+                return JSON.parse(decrypted);
+            }
+
+            return data;
         } catch (error) {
             if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
                 return {};
@@ -31,7 +40,11 @@ export class FileSecretsAdapter implements SecretsAdapter {
     private async save(secrets: Record<string, string>): Promise<void> {
         await fs.mkdir(path.dirname(this.filePath), { recursive: true });
         const tempPath = `${this.filePath}.tmp`;
-        await fs.writeFile(tempPath, JSON.stringify(secrets, null, 2), 'utf-8');
+
+        const key = await getMasterKey();
+        const encrypted = encryptData(JSON.stringify(secrets), key);
+
+        await fs.writeFile(tempPath, JSON.stringify(encrypted, null, 2), 'utf-8');
         await fs.rename(tempPath, this.filePath);
     }
 

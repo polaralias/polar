@@ -76,6 +76,7 @@ export const CapabilityTokenPayloadSchema = z.object({
   fld: z.array(z.string().min(1)).optional(),
   exp: z.number().int(),
   jti: z.string().min(1),
+  pol_ver: z.number().int().optional(),
 });
 
 export const CapabilityTokenSchema = z.string().min(1);
@@ -101,6 +102,7 @@ export const PolicyRuleSchema = z.object({
 export const PolicyStoreSchema = z.object({
   grants: z.array(GrantSchema),
   rules: z.array(PolicyRuleSchema),
+  policyVersions: z.record(z.string(), z.number().int()).optional(),
 });
 
 export const MemoryItemSchema = z.object({
@@ -167,6 +169,7 @@ export const AuditEventSchema = z.object({
   metadata: z.record(z.unknown()).optional(),
   previousHash: z.string().optional(),
   hash: z.string().optional(),
+  redactedEventId: z.string().optional(),
 });
 
 export const SkillManifestSchema = z.object({
@@ -259,6 +262,7 @@ export const ExternalAgentPrincipalSchema = z.object({
   provider: z.string().min(1),
   sessionId: z.string().min(1),
   userId: z.string().min(1),
+  publicKey: z.string().optional(),
 });
 
 export const AgentManifestSchema = z.object({

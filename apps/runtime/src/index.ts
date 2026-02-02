@@ -9,9 +9,11 @@ import {
   evaluatePolicy,
   PolicyStoreSchema,
   mintCapabilityToken,
+  verifyCapabilityToken,
   MemoryProposalSchema,
   MemoryQuerySchema,
   MemoryResource,
+  ExternalAgentPrincipalSchema,
 } from '@polar/core';
 import { runtimeConfig, resolveFsPath } from './config.js';
 import { appendAudit, queryAudit, type AuditQuery } from './audit.js';
@@ -24,13 +26,91 @@ import { installSkill } from './installerService.js';
 import { loadMemory, proposeMemory, queryMemory, deleteMemory, runMemoryCleanup } from './memoryStore.js';
 import { listAgents, getAgent } from './agentStore.js';
 import { spawnAgent, terminateAgent, proposeCoordination } from './agentService.js';
+import { isTokenRevoked, revokeToken } from './revocationStore.js';
 
 import { readSigningKey } from './crypto.js';
 
-const app = Fastify({ logger: true });
+const app = Fastify({
+  logger: true,
+  bodyLimit: runtimeConfig.maxBodySize,
+});
+
+// Simple in-memory rate limiter
+const rateLimitMap = new Map<string, { count: number; windowStart: number }>();
+
+// Cleanup interval to prevent memory leaks from old IPs
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, record] of rateLimitMap.entries()) {
+    if (now - record.windowStart > runtimeConfig.rateLimitWindowMs) {
+      rateLimitMap.delete(ip);
+    }
+  }
+}, runtimeConfig.rateLimitWindowMs).unref(); // Allow process to exit
+
+app.addHook('onRequest', async (request, reply) => {
+  const ip = request.ip;
+  const now = Date.now();
+
+  let record = rateLimitMap.get(ip);
+  if (!record) {
+    record = { count: 0, windowStart: now };
+    rateLimitMap.set(ip, record);
+  } else if (now - record.windowStart > runtimeConfig.rateLimitWindowMs) {
+    record.count = 0;
+    record.windowStart = now;
+  }
+
+  record.count++;
+
+  if (record.count > runtimeConfig.rateLimitMaxRequests) {
+    return reply.status(429).send({ error: 'Too Many Requests' });
+  }
+});
 
 await app.register(cors, {
-  origin: true,
+  origin: runtimeConfig.corsOrigin,
+});
+
+declare module 'fastify' {
+  interface FastifyRequest {
+    principal?: {
+      id: string;
+      role: 'user' | 'system' | 'internal';
+    };
+  }
+}
+
+app.addHook('onRequest', async (request, reply) => {
+  if (request.url.startsWith('/internal/')) {
+    const secret = request.headers['x-polar-internal-secret'];
+    if (secret !== runtimeConfig.internalSecret) {
+      return reply.status(401).send({ error: 'Unauthorized: Invalid internal secret' });
+    }
+    request.principal = { id: 'system', role: 'internal' };
+    return;
+  }
+
+  // Public/Unprotected routes
+  const publicRoutes = ['/health', '/system/status'];
+  if (publicRoutes.includes(request.url)) {
+    return;
+  }
+
+  // Authenticate other routes (UI/Client API)
+  const authHeader = request.headers['authorization'];
+  if (!authHeader) {
+    if (request.method === 'OPTIONS') return; // Allow CORS preflight
+    return reply.status(401).send({ error: 'Unauthorized: Missing Authorization header' });
+  }
+
+  const token = authHeader.replace('Bearer ', '');
+  if (token !== runtimeConfig.authToken) {
+    return reply.status(401).send({ error: 'Unauthorized: Invalid token' });
+  }
+
+  // Bind principal (default to 'user' for now as per simple auth scheme)
+  request.principal = { id: 'user', role: 'user' };
 });
 
 app.get('/health', async () => ({ ok: true }));
@@ -41,8 +121,9 @@ app.get('/doctor', async () => {
   return { results };
 });
 
-app.post('/sessions', async () => {
-  const session = createSession();
+app.post('/sessions', async (request) => {
+  const subject = request.principal?.id || 'anonymous';
+  const session = createSession(subject);
   return { session };
 });
 
@@ -61,6 +142,11 @@ app.post('/sessions/:id/messages', async (request, reply) => {
   const status = await getSystemStatus();
   if (status.mode === 'emergency') {
     return reply.status(503).send({ error: 'System is in EMERGENCY MODE. Actions are disabled.' });
+  }
+
+  // Verify session ownership
+  if (session.subject !== request.principal?.id && request.principal?.role !== 'internal') {
+    return reply.status(403).send({ error: 'Forbidden: access to session denied' });
   }
 
   const workerRequest = parseMessage(body.message);
@@ -86,11 +172,29 @@ app.post('/sessions/:id/messages', async (request, reply) => {
     if (!template) {
       return reply.status(404).send({ error: 'Worker template not found' });
     }
-    // TODO: Verify template.requiredCapabilities ⊆ granted caps
-    // For now, continue with policy evaluation based on subject = skillId
+    // Verify template.requiredCapabilities ⊆ grantedCapabilities(skillId)
+    // We strictly enforce that the skill has been granted ONLY the capabilities it requests,
+    // and that the template ONLY uses capabilities that have been granted.
+    if (template.requiredCapabilities && template.requiredCapabilities.length > 0) {
+      // Reuse the policy loaded at line 77
+      const skillGrants = policy.grants.filter(g => g.subject === workerRequest.skillId);
+
+      const missingCapabilities = template.requiredCapabilities.filter(reqCap =>
+        !skillGrants.some(grant => grant.action === reqCap)
+      );
+
+      if (missingCapabilities.length > 0) {
+        return reply.status(403).send({
+          error: `Skill template requires ungranted capabilities: ${missingCapabilities.join(', ')}`
+        });
+      }
+    }
   }
 
-  const subject = workerRequest.skillId || body.agentId || session.subject;
+  // Determine subject. Default to authenticated user.
+  // Allow explicit subject override (agent/skill) only because the user is authenticated (Admin/Dev).
+  // In a multi-tenant system, this "impersonation" would require explicit permission.
+  const subject = workerRequest.skillId || body.agentId || request.principal?.id || session.subject;
   const agentId = body.agentId;
 
   const decision = evaluatePolicy(
@@ -119,6 +223,7 @@ app.post('/sessions/:id/messages', async (request, reply) => {
       agentId: body.agentId,
       skillId: workerRequest.skillId,
       workerTemplate: workerRequest.templateId,
+      requestId: crypto.randomUUID(), // Denied before minting, so we generate a fresh correlation ID
     };
 
     await appendAudit(event);
@@ -137,9 +242,11 @@ app.post('/sessions/:id/messages', async (request, reply) => {
   };
 
   const signingKey = await readSigningKey();
+  const policyVersion = await import('./policyStore.js').then(m => m.getSubjectPolicyVersion(subject));
   const token = await mintCapabilityToken(
     capability,
     signingKey,
+    policyVersion,
   );
 
   const content = typeof workerRequest.args?.content === 'string' ? workerRequest.args.content : undefined;
@@ -161,6 +268,7 @@ app.post('/sessions/:id/messages', async (request, reply) => {
     agentId: body.agentId,
     skillId: workerRequest.skillId,
     workerTemplate: workerRequest.templateId,
+    requestId: capability.id,
   });
 
   return {
@@ -229,6 +337,7 @@ app.post('/memory/query', async (request, reply) => {
     decision: 'allow',
     resource: { type: 'memory' },
     sessionId: session.id,
+    requestId: crypto.randomUUID(),
     metadata: { query }
   });
 
@@ -280,6 +389,7 @@ app.post('/memory/propose', async (request, reply) => {
       reason: decision.reason,
       resource: { type: 'memory', memoryType: proposal.type, scopeId: proposal.scopeId },
       sessionId: session.id,
+      requestId: crypto.randomUUID(),
     });
     return reply.status(403).send({ error: decision.reason || 'Not allowed to propose memory' });
   }
@@ -294,6 +404,7 @@ app.post('/memory/propose', async (request, reply) => {
     decision: 'allow',
     resource: { type: 'memory', memoryType: proposal.type, scopeId: proposal.scopeId },
     sessionId: session.id,
+    requestId: crypto.randomUUID(),
     metadata: { memoryId: item.id }
   });
 
@@ -302,9 +413,8 @@ app.post('/memory/propose', async (request, reply) => {
 
 app.delete('/memory/:id', async (request, reply) => {
   const { id } = request.params as { id: string };
-  // Traditionally, delete is a user action. We'll assume 'user' subject for now.
-  // In a real system, we'd get the subject from the auth header.
-  const subject = 'user';
+  // Bind subject from authenticated principal
+  const subject = request.principal?.id || 'anonymous';
 
   const { getSystemStatus } = await import('./systemStore.js');
   const status = await getSystemStatus();
@@ -324,6 +434,7 @@ app.delete('/memory/:id', async (request, reply) => {
     action: 'memory.delete',
     decision: 'allow',
     resource: { type: 'memory' },
+    requestId: crypto.randomUUID(),
     metadata: { memoryId: id }
   });
 
@@ -383,11 +494,12 @@ app.post('/skills/install', async (request, reply) => {
     await appendAudit({
       id: crypto.randomUUID(),
       time: new Date().toISOString(),
-      subject: 'admin',
+      subject: request.principal?.id || 'admin',
       action: 'skill.install',
       decision: 'allow',
       skillId: skill.manifest.id,
       resource: { type: 'fs', path: skill.path },
+      requestId: crypto.randomUUID(),
       metadata: {
         version: skill.manifest.version,
         diff
@@ -432,18 +544,26 @@ app.post('/skills/:id/grant', async (request, reply) => {
     return reply.status(503).send({ error: 'System is in EMERGENCY MODE. Permission grants are disabled.' });
   }
 
-  await grantSkillPermissions(id, skill.manifest.requestedCapabilities);
+  const body = request.body as { capabilities?: string[] };
+  const requestedSubset = body?.capabilities;
+
+  await grantSkillPermissions(id, skill.manifest.requestedCapabilities, requestedSubset);
   await updateSkillStatus(id, 'enabled');
+
+  const reason = requestedSubset
+    ? `User granted subset of permissions: ${requestedSubset.join(', ')}`
+    : 'User granted all requested permissions';
 
   await appendAudit({
     id: crypto.randomUUID(),
     time: new Date().toISOString(),
-    subject: 'user',
+    subject: request.principal?.id || 'user',
     action: 'skill.grant',
     decision: 'allow',
     skillId: id,
     resource: { type: 'fs' },
-    reason: 'User granted requested permissions'
+    requestId: crypto.randomUUID(),
+    reason
   });
 
   return { ok: true };
@@ -457,11 +577,12 @@ app.post('/skills/:id/revoke', async (request, reply) => {
   await appendAudit({
     id: crypto.randomUUID(),
     time: new Date().toISOString(),
-    subject: 'user',
+    subject: request.principal?.id || 'user',
     action: 'skill.revoke',
     decision: 'allow',
     skillId: id,
     resource: { type: 'fs' },
+    requestId: crypto.randomUUID(),
     reason: 'User revoked all permissions'
   });
 
@@ -483,6 +604,17 @@ app.get('/audit', async (request) => {
   return { events };
 });
 
+app.post('/audit/:id/redact', async (request, reply) => {
+  const { id } = request.params as { id: string };
+  const { reason } = request.body as { reason?: string };
+  if (!reason) return reply.status(400).send({ error: 'Reason for redaction is required' });
+
+  const { redactEvent } = await import('./audit.js');
+  await redactEvent(id, reason, request.principal?.id || 'admin');
+
+  return { ok: true };
+});
+
 app.post('/internal/audit', async (request, reply) => {
   const parsed = AuditEventSchema.safeParse(request.body);
   if (!parsed.success) {
@@ -490,7 +622,61 @@ app.post('/internal/audit', async (request, reply) => {
   }
 
   await appendAudit(parsed.data);
+  await appendAudit(parsed.data);
   return { ok: true };
+});
+
+app.post('/internal/revoke', async (request, reply) => {
+  const body = request.body as { jti?: string; reason?: string };
+  if (!body?.jti) return reply.status(400).send({ error: 'JTI required' });
+
+  await revokeToken(body.jti);
+  return { ok: true };
+});
+
+app.post('/internal/introspect', async (request, reply) => {
+  const body = request.body as { token?: string };
+  if (!body?.token) return reply.status(400).send({ error: 'Token required' });
+
+  try {
+    const signingKey = await readSigningKey();
+    const payload = await verifyCapabilityToken(body.token, signingKey);
+
+    // Check policy version
+    const { getSubjectPolicyVersion } = await import('./policyStore.js');
+    const currentVer = await getSubjectPolicyVersion(payload.sub);
+
+    if (payload.pol_ver !== undefined && payload.pol_ver < currentVer) {
+      return reply.status(401).send({ active: false, error: 'Token revoked (policy version mismatch)' });
+    }
+
+    // Check system status (Emergency Mode)
+    const { getSystemStatus } = await import('./systemStore.js');
+    const status = await getSystemStatus();
+    if (status.mode === 'emergency') {
+      return reply.status(401).send({ active: false, error: 'System is in EMERGENCY MODE' });
+    }
+
+    // Check JTI revocation
+    if (await isTokenRevoked(payload.jti)) {
+      return reply.status(401).send({ active: false, error: 'Token revoked (JTI blocked)' });
+    }
+
+    // Check Subject Status (Skill disabled or Agent terminated)
+    const skill = await getSkill(payload.sub);
+    if (skill && skill.status !== 'enabled') {
+      return reply.status(401).send({ active: false, error: `Subject skill is ${skill.status}` });
+    }
+
+    const agent = await getAgent(payload.sub);
+    if (agent && agent.status === 'terminated') {
+      return reply.status(401).send({ active: false, error: 'Subject agent is terminated' });
+    }
+
+    return { active: true, ...payload };
+  } catch (err) {
+    return reply.status(401).send({ active: false, error: (err as Error).message });
+  }
 });
 
 app.get('/sessions/:id/agents', async (request, reply) => {
@@ -506,6 +692,10 @@ app.post('/sessions/:id/agents', async (request, reply) => {
   const { id } = request.params as { id: string };
   const session = getSession(id);
   if (!session) return reply.status(404).send({ error: 'Session not found' });
+
+  if (session.subject !== request.principal?.id && request.principal?.role !== 'internal') {
+    return reply.status(403).send({ error: 'Forbidden: access to session denied' });
+  }
 
   const body = request.body as {
     role: string;
@@ -583,6 +773,10 @@ app.post('/sessions/:id/coordination', async (request, reply) => {
   const session = getSession(id);
   if (!session) return reply.status(404).send({ error: 'Session not found' });
 
+  if (session.subject !== request.principal?.id && request.principal?.role !== 'internal') {
+    return reply.status(403).send({ error: 'Forbidden: access to session denied' });
+  }
+
   const body = request.body as {
     pattern: string;
     initiatorAgentId: string;
@@ -631,13 +825,17 @@ app.post('/a2a/task', async (request, reply) => {
   }
 
   // 2. Map to External Agent Principal
-  const principal = {
-    type: 'external_agent',
-    id: body.agentId,
-    provider: body.provider,
-    sessionId: body.sessionId,
-    userId: 'user', // Default bound user for now
-  };
+  const { getExternalAgent } = await import('./externalAgentStore.js');
+  const principal = await getExternalAgent(body.agentId);
+
+  if (!principal) {
+    return reply.status(403).send({ error: 'External agent not registered' });
+  }
+
+  // Verify key consistency if stored
+  if (principal.publicKey && principal.publicKey !== body.publicKey) {
+    return reply.status(401).send({ error: 'Public key mismatch for registered agent' });
+  }
 
   // 3. Evaluate Policy (Mocked)
   const policy = await loadPolicy();
@@ -696,6 +894,30 @@ app.post('/system/emergency', async (request, reply) => {
   return { ok: true, status };
 });
 
+app.get('/external-agents', async () => {
+  const { loadExternalAgents } = await import('./externalAgentStore.js');
+  const agents = await loadExternalAgents();
+  return { agents };
+});
+
+app.post('/external-agents', async (request, reply) => {
+  const parsed = ExternalAgentPrincipalSchema.safeParse(request.body);
+  if (!parsed.success) {
+    return reply.status(400).send({ error: 'Invalid agent principal' });
+  }
+
+  const { registerExternalAgent } = await import('./externalAgentStore.js');
+  await registerExternalAgent(parsed.data);
+  return { ok: true };
+});
+
+app.delete('/external-agents/:id', async (request, reply) => {
+  const { id } = request.params as { id: string };
+  const { removeExternalAgent } = await import('./externalAgentStore.js');
+  await removeExternalAgent(id);
+  return { ok: true };
+});
+
 // Initial security check
 const { runDiagnostics } = await import('./doctorService.js');
 const diagnostics = await runDiagnostics();
@@ -707,7 +929,7 @@ if (criticalIssues.length > 0) {
   process.exit(1);
 }
 
-app.listen({ port: runtimeConfig.port, host: '0.0.0.0' }).catch((error) => {
+app.listen({ port: runtimeConfig.port, host: runtimeConfig.bindAddress }).catch((error) => {
   app.log.error(error);
   process.exit(1);
 });

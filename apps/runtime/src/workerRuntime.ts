@@ -7,6 +7,7 @@ import { runtimeConfig } from './config.js';
 import { readSigningKey } from './crypto.js';
 import { getSkill } from './skillStore.js';
 import { updateAgentStatus } from './agentStore.js';
+import { appendAudit } from './audit.js';
 
 const activeProcesses = new Map<string, ChildProcess>();
 
@@ -77,7 +78,24 @@ export async function startWorker(agent: Agent): Promise<void> {
     };
 
     const signingKey = await readSigningKey();
+    // We omit policyVersion for the agent process token as it's a system-level token
+    // for the runtime-worker channel, separate from skill-level capability grants.
     const token = await mintCapabilityToken(capability, signingKey);
+
+    await appendAudit({
+        id: crypto.randomUUID(),
+        time: new Date().toISOString(),
+        subject: agent.userId,
+        action: 'worker.spawn',
+        decision: 'allow',
+        resource: { type: 'system', component: 'worker' },
+        agentId: agent.id,
+        requestId: capability.id, // Linking ID
+        metadata: {
+            skillId: agent.skillId,
+            templateId: agent.templateId,
+        }
+    });
 
     // 3. Spawn
     // using fork ensures it runs in a separate process but with IPC channel if needed

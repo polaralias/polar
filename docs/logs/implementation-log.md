@@ -30,3 +30,4 @@ Each record describes work completed on a single date. Columns are:
 | 2026-02-01 | Implemented Immutable Audit | Added SHA-256 crypto-chaining to `audit.ts` with `previousHash` linking and `auditQueue` for concurrency safety, enforcing tamper-evident logging. |
 | 2026-02-01 | Implemented Onboarding Wizard | Updated `cli.ts` with an interactive wizard using `prompts` for platform initialization and connectivity checks. |
 | 2026-02-01 | Verifed Production Build pipeline | Verified `pnpm -r build` success across all workspaces. Fixed strict type error in runtime audit log processing to ensure clean builds. |
+| 2026-02-02 | Encrypted secrets at rest | Implemented AES-256-GCM encryption for `FileSecretsAdapter` using a managed `master.key`. Added auto-migration from plaintext and env-var key support (`POLAR_MASTER_KEY`). |

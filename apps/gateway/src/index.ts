@@ -9,9 +9,44 @@ import {
 } from '@polar/core';
 import { gatewayConfig, resolveFsPath } from './config.js';
 
-const app = Fastify({ logger: true });
+const app = Fastify({
+  logger: true,
+  bodyLimit: gatewayConfig.maxBodySize,
+});
 
-await app.register(cors, { origin: true });
+// Simple in-memory rate limiter
+const rateLimitMap = new Map<string, { count: number; windowStart: number }>();
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, record] of rateLimitMap.entries()) {
+    if (now - record.windowStart > gatewayConfig.rateLimitWindowMs) {
+      rateLimitMap.delete(ip);
+    }
+  }
+}, gatewayConfig.rateLimitWindowMs).unref();
+
+app.addHook('onRequest', async (request, reply) => {
+  const ip = request.ip;
+  const now = Date.now();
+
+  let record = rateLimitMap.get(ip);
+  if (!record) {
+    record = { count: 0, windowStart: now };
+    rateLimitMap.set(ip, record);
+  } else if (now - record.windowStart > gatewayConfig.rateLimitWindowMs) {
+    record.count = 0;
+    record.windowStart = now;
+  }
+
+  record.count++;
+
+  if (record.count > gatewayConfig.rateLimitMaxRequests) {
+    return reply.status(429).send({ error: 'Too Many Requests' });
+  }
+});
+
+await app.register(cors, { origin: gatewayConfig.corsOrigin });
 
 app.get('/health', async () => ({ ok: true }));
 
@@ -38,7 +73,10 @@ async function readSigningKey(): Promise<Uint8Array> {
 async function sendAudit(event: AuditEvent): Promise<void> {
   const response = await fetch(`${gatewayConfig.runtimeUrl}/internal/audit`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'x-polar-internal-secret': gatewayConfig.internalSecret,
+    },
     body: JSON.stringify(event),
   });
 
@@ -212,7 +250,7 @@ app.post('/tools/fs.writeFile', async (request, reply) => {
   }
 });
 
-app.listen({ port: gatewayConfig.port, host: '0.0.0.0' }).catch((error) => {
+app.listen({ port: gatewayConfig.port, host: gatewayConfig.bindAddress }).catch((error) => {
   app.log.error(error);
   process.exit(1);
 });

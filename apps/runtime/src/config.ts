@@ -12,13 +12,23 @@ export const runtimeConfig = {
   port: Number(process.env.RUNTIME_PORT ?? 4000),
   gatewayUrl: process.env.GATEWAY_URL ?? 'http://localhost:4001',
   deploymentProfile: (process.env.DEPLOYMENT_PROFILE ?? 'local') as 'local' | 'cloud' | 'edge',
+  bindAddress: process.env.BIND_ADDRESS ?? ((process.env.DEPLOYMENT_PROFILE ?? 'local') === 'local' && process.env.EXPOSE !== '1' ? '127.0.0.1' : '0.0.0.0'),
+  corsOrigin: (process.env.DEPLOYMENT_PROFILE ?? 'local') === 'local' ? (/^http:\/\/localhost:\d+$/) : true,
   dataDir,
   policyPath: path.join(dataDir, 'policy.json'),
   auditPath: path.join(dataDir, 'audit.ndjson'),
   signingKeyPath: path.join(dataDir, 'signing.key'),
+  masterKeyPath: path.join(dataDir, 'master.key'),
   secretsPath: path.join(dataDir, 'secrets.json'),
+  externalAgentsPath: path.join(dataDir, 'external_agents.json'),
   capabilityTtlSeconds: Number(process.env.CAPABILITY_TTL ?? 120),
+  internalSecret: process.env.POLAR_INTERNAL_SECRET ?? 'polar-dev-secret-123',
+  authToken: process.env.POLAR_AUTH_TOKEN ?? 'polar-dev-token-456',
   fsBaseDir,
+  maxBodySize: Number(process.env.MAX_BODY_SIZE ?? 1024 * 1024), // 1MB
+  maxHeaderSize: Number(process.env.MAX_HEADER_SIZE ?? 16 * 1024), // 16KB
+  rateLimitWindowMs: 60 * 1000, // 1 minute
+  rateLimitMaxRequests: Number(process.env.RATE_LIMIT_MAX ?? 100), // 100 requests per window
 };
 
 export function resolveFsPath(inputPath: string): string {

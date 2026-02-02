@@ -36,7 +36,7 @@ async function init() {
     console.log('✅ Signing key already exists.');
   } catch {
     const key = crypto.randomBytes(32).toString('base64');
-    await fs.writeFile(runtimeConfig.signingKeyPath, key, 'utf-8');
+    await fs.writeFile(runtimeConfig.signingKeyPath, key, { encoding: 'utf-8', mode: 0o600 });
     console.log(`✅ Created new signing key at ${runtimeConfig.signingKeyPath}`);
   }
 
@@ -64,7 +64,7 @@ async function init() {
     await fs.access(runtimeConfig.secretsPath);
     console.log('✅ Secrets store already exists.');
   } catch {
-    await fs.writeFile(runtimeConfig.secretsPath, JSON.stringify({ secrets: {} }, null, 2), 'utf-8');
+    await fs.writeFile(runtimeConfig.secretsPath, JSON.stringify({ secrets: {} }, null, 2), { encoding: 'utf-8', mode: 0o600 });
     console.log(`✅ Created secrets store at ${runtimeConfig.secretsPath}`);
   }
 

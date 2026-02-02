@@ -9,7 +9,9 @@ Polar is a secure, inspectable agent runtime. It separates reasoning (Agents) fr
 1.  **Runtime**: The authoritative kernel of the system. It manages sessions, evaluates policy, mints capability tokens, and writes the audit log. It is the only component that holds long-term credentials.
 2.  **Gateway**: A pure enforcement point. It sits between agents (or their workers) and the resources they need to access. It verifies capability tokens and reports results back to the Runtime for auditing.
 3.  **Agents (Minds)**: Untrusted LLM-based entities that reason and plan. They propose actions but cannot execute them directly.
-4.  **Skills/Workers (Hands)**: Individual capabilities (e.g., "Read File", "Send Email") that execute within a constrained environment, mediated by the Gateway.
+4.  **Skills/Workers (Hands)**: Individual capabilities (e.g., "Read File", "Send Email") that execute within a constrained environment.
+    - *Phase 1 Evolution*: In the initial implementation, the Runtime proxies tool calls to the Gateway on behalf of workers to minimize token exposure and simplify auditing.
+    - *Phase 2 Direction*: In Phase 2, workers will call the Gateway directly using tokens minted by the Runtime. This improves scalability and maintains the security boundary while enabling more complex multi-agent flows.
 
 ---
 

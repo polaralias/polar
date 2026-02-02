@@ -17,6 +17,23 @@ export type AuditQuery = {
 // Queue to serialize writes for blockchain integrity
 let auditQueue = Promise.resolve();
 
+export async function redactEvent(eventId: string, reason: string, subject: string = 'system'): Promise<void> {
+  const event: AuditEvent = {
+    id: crypto.randomUUID(),
+    time: new Date().toISOString(),
+    subject,
+    action: 'redact',
+    decision: 'allow',
+    reason,
+    redactedEventId: eventId,
+    resource: {
+      type: 'system',
+      component: 'audit',
+    },
+  };
+  await appendAudit(event);
+}
+
 export function appendAudit(event: AuditEvent): Promise<void> {
   const next = auditQueue.then(() => processAppend(event));
   auditQueue = next.catch((err) => {
@@ -120,11 +137,26 @@ export async function queryAudit(query: AuditQuery): Promise<AuditEvent[]> {
     // We want the *last* N matching events. To do this efficiently without loading everything,
     // we keep a rolling buffer of matches.
     const buffer: AuditEvent[] = [];
+    const redactedIds = new Set<string>();
 
     for await (const line of rl) {
       if (!line.trim()) continue;
       try {
         const event = AuditEventSchema.parse(JSON.parse(line));
+
+        // Handle redaction tombstones
+        if (event.redactedEventId) {
+          redactedIds.add(event.redactedEventId);
+          // Remove from buffer if present
+          const index = buffer.findIndex((e) => e.id === event.redactedEventId);
+          if (index !== -1) {
+            buffer.splice(index, 1);
+          }
+        }
+
+        if (redactedIds.has(event.id)) {
+          continue;
+        }
 
         // Filter logic
         const time = new Date(event.time).getTime();

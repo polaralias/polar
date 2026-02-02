@@ -21,7 +21,7 @@ A Skill is a package of **worker templates** that provide specific capabilities 
 
 ## Skill Manifest Contract
 
-Every skill must include a `manifest.json` that defines its identity and requirements.
+Every skill must include a `manifest.json` (or the optional alias `polar.skill.json`) that defines its identity and requirements.
 
 ### Schema (Conceptual)
 ```json
@@ -55,6 +55,7 @@ Every skill must include a `manifest.json` that defines its identity and require
 1.  **Immutability**: Once installed, a skill's manifest is considered frozen for that version.
 2.  **Explicit Grants**: Only permissions listed in `requestedCapabilities` can be granted to the skill.
 3.  **Narrow Scoping**: Skills should request the minimum necessary scope (e.g., a specific root directory rather than `/`).
+4.  **Canonical Name**: While `polar.skill.json` is accepted for installation, the runtime stores and refers to it internally as `manifest.json`.
 
 ---
 
