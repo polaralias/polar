@@ -15,6 +15,5 @@
 - Check `docs/logs/implementation-log.md` to understand current state and avoid duplicate work.
 
 ## Post implementation
-- Update `docs/implementation/product-vision.md` to reflect the changes made.
 - Update `docs/logs/implementation-log.md` to reflect the changes made, uusing the existing table format: Date (YYYY-MM-DD), short summary, and bulletized details mentioning key files/paths touched. Keep the log chronological and avoid overwriting previous entries.
 - Create feature documentation under `docs/features/`, tailored for end users and developers.
