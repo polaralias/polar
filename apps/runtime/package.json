@@ -12,7 +12,8 @@
     "skill:install": "tsx src/cli.ts skill:install",
     "skill:list": "tsx src/cli.ts skill:list",
     "lint": "eslint \"src/**/*.{ts,tsx}\"",
-    "format": "prettier --check \"src/**/*.{ts,tsx}\""
+    "format": "prettier --check \"src/**/*.{ts,tsx}\"",
+    "test": "vitest run"
   },
   "dependencies": {
     "@fastify/cors": "^9.0.1",
@@ -25,6 +26,7 @@
   },
   "devDependencies": {
     "@types/prompts": "^2.4.9",
-    "tsx": "^4.19.2"
+    "tsx": "^4.19.2",
+    "vitest": "^2.1.3"
   }
 }

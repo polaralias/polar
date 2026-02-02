@@ -46,6 +46,12 @@
 - [x] Agent force-termination
 - [x] Skill uninstall with file cleanup option
 
+### Regression Testing
+
+- [x] **revocation-by-version** — Proves policy updates revoke old tokens
+- [x] **JTI revoke** — Proves specific token blacklisting works
+- [x] **emergency mode** — Proves system freeze blocks actions
+
 ### Known Limitations (Phase 2)
 
 - [ ] Skill version rollback not yet implemented
