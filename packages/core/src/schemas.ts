@@ -31,27 +31,59 @@ export const SystemResourceSchema = z.object({
   component: z.string().optional(),
 });
 
+export const HttpResourceSchema = z.object({
+  type: z.literal('http'),
+  url: z.string().min(1),
+  method: z.string().optional(),
+});
+
+export const GenericResourceSchema = z.object({
+  type: z.literal('connector'),
+  connectorId: z.string().min(1),
+  resourceId: z.string().min(1),
+});
+
 export const SystemResourceConstraintSchema = z.object({
   type: z.literal('system'),
   components: z.array(z.string().min(1)).optional(),
+});
+
+export const HttpResourceConstraintSchema = z.object({
+  type: z.literal('http'),
+  allowHosts: z.array(z.string().min(1)).optional(),
+  allowMethods: z.array(z.string().min(1)).optional(),
+  allowHeaders: z.array(z.string().min(1)).optional(),
+});
+
+export const GenericResourceConstraintSchema = z.object({
+  type: z.literal('connector'),
+  connectorId: z.string().min(1),
+  constraints: z.record(z.any()),
 });
 
 export const ResourceSchema = z.discriminatedUnion('type', [
   FsResourceSchema,
   MemoryResourceSchema,
   SystemResourceSchema,
+  HttpResourceSchema,
+  GenericResourceSchema,
 ]);
 
 export const ResourceConstraintSchema = z.discriminatedUnion('type', [
   FsResourceConstraintSchema,
   MemoryResourceConstraintSchema,
   SystemResourceConstraintSchema,
+  HttpResourceConstraintSchema,
+  GenericResourceConstraintSchema,
 ]);
 
 export const SessionSchema = z.object({
   id: z.string().min(1),
   createdAt: z.string().datetime(),
   subject: z.string().min(1),
+  projectPath: z.string().optional(),
+  mainAgentId: z.string().optional(),
+  status: z.enum(['active', 'terminated']).optional(),
 });
 
 export const WorkerTemplateSchema = z.object({
@@ -140,6 +172,7 @@ export const MemoryQuerySchema = z.object({
   tags: z.array(z.string()).optional(),
   queryText: z.string().optional(),
   limit: z.number().int().optional(),
+  maxSensitivity: SensitivityLevelSchema.optional(),
 });
 
 export const AgentRoleSchema = z.enum(['main', 'worker', 'coordinator', 'external']);
@@ -156,11 +189,15 @@ export const AuditEventSchema = z.object({
     type: z.string().min(1),
     path: z.string().optional(),
     root: z.string().optional(),
+    url: z.string().optional(),
+    method: z.string().optional(),
     memoryType: MemoryTypeSchema.optional(),
     scopeId: z.string().optional(),
     component: z.string().optional(),
   }),
   sessionId: z.string().optional(),
+  messageId: z.string().optional(),
+  parentEventId: z.string().optional(),
   agentId: z.string().optional(),
   role: AgentRoleSchema.optional(),
   requestId: z.string().optional(),
@@ -186,7 +223,7 @@ export const SkillManifestSchema = z.object({
       output: z.record(z.unknown()).optional(),
       requiredCapabilities: z.array(z.string().min(1)),
     }),
-  ),
+  ).optional(), // Make optional as some skills might just be instructions
   requestedCapabilities: z.array(
     z.object({
       connector: z.string().min(1),
@@ -195,6 +232,11 @@ export const SkillManifestSchema = z.object({
       justification: z.string().min(1),
     }),
   ),
+});
+
+export const SkillContentSchema = z.object({
+  instructions: z.string().min(1),
+  metadata: z.record(z.unknown()).optional(),
 });
 
 export const TrustLevelSchema = z.enum(['trusted', 'locally_trusted', 'untrusted']);
@@ -280,6 +322,8 @@ export type FsResourceConstraint = z.infer<typeof FsResourceConstraintSchema>;
 export type MemoryResource = z.infer<typeof MemoryResourceSchema>;
 export type MemoryResourceConstraint = z.infer<typeof MemoryResourceConstraintSchema>;
 export type Resource = z.infer<typeof ResourceSchema>;
+export type HttpResource = z.infer<typeof HttpResourceSchema>;
+export type GenericResource = z.infer<typeof GenericResourceSchema>;
 export type ResourceConstraint = z.infer<typeof ResourceConstraintSchema>;
 export type Session = z.infer<typeof SessionSchema>;
 export type WorkerTemplate = z.infer<typeof WorkerTemplateSchema>;
@@ -306,4 +350,7 @@ export type CoordinationPattern = z.infer<typeof CoordinationPatternSchema>;
 export type CoordinationEvent = z.infer<typeof CoordinationEventSchema>;
 export type ExternalAgentPrincipal = z.infer<typeof ExternalAgentPrincipalSchema>;
 export type AgentManifest = z.infer<typeof AgentManifestSchema>;
+export type HttpResourceConstraint = z.infer<typeof HttpResourceConstraintSchema>;
+export type GenericResourceConstraint = z.infer<typeof GenericResourceConstraintSchema>;
+export type SkillContent = z.infer<typeof SkillContentSchema>;
 

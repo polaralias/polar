@@ -1,13 +1,38 @@
 import fs from 'node:fs/promises';
 import crypto from 'node:crypto';
 import path from 'node:path';
-import { Skill, SkillSchema, SkillManifest, calculatePermissionDiff, PermissionDiff } from '@polar/core';
+import {
+    Skill,
+    SkillSchema,
+    SkillManifest,
+    calculatePermissionDiff,
+    PermissionDiff,
+    SkillContent,
+    parseSkillMarkdown
+} from '@polar/core';
 import { runtimeConfig } from './config.js';
 import { Mutex } from 'async-mutex';
 
 const mutex = new Mutex();
 
 const SKILLS_FILE = path.join(runtimeConfig.dataDir, 'skills.json');
+
+export async function loadSkillContent(skillId: string): Promise<SkillContent | undefined> {
+    const skill = await getSkill(skillId);
+    if (!skill || !skill.path) return undefined;
+
+    const skillMdPath = path.join(skill.path, 'SKILL.md');
+    try {
+        const content = await fs.readFile(skillMdPath, 'utf-8');
+        return parseSkillMarkdown(content);
+    } catch (err) {
+        // Fallback to manifest description if SKILL.md is missing but we have it registered
+        return {
+            instructions: skill.manifest.description || 'No instructions provided.',
+            metadata: { name: skill.manifest.name }
+        };
+    }
+}
 
 export async function loadSkills(): Promise<Skill[]> {
     try {
@@ -127,4 +152,37 @@ export async function updateSkillStatus(id: string, status: Skill['status']): Pr
             await saveSkills(skills);
         }
     });
+}
+
+export async function uninstallSkill(id: string, deleteFiles: boolean = false): Promise<{ removed: boolean; path?: string }> {
+    return await mutex.runExclusive(async () => {
+        const skills = await loadSkills();
+        const skillIndex = skills.findIndex(s => s.manifest.id === id);
+
+        if (skillIndex < 0) {
+            return { removed: false };
+        }
+
+        const skill = skills[skillIndex]!;
+        const skillPath = skill.path;
+
+        // Remove from skills list
+        skills.splice(skillIndex, 1);
+        await saveSkills(skills);
+
+        // Optionally delete the skill files
+        if (deleteFiles && skillPath) {
+            try {
+                await fs.rm(skillPath, { recursive: true, force: true });
+            } catch (err) {
+                console.warn(`Failed to delete skill files at ${skillPath}:`, err);
+            }
+        }
+
+        return { removed: true, path: skillPath };
+    });
+}
+
+export async function listSkills(): Promise<Skill[]> {
+    return loadSkills();
 }

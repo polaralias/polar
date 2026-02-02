@@ -68,19 +68,23 @@ export async function startWorker(agent: Agent): Promise<void> {
     }
 
     // 2. Mint Token
-    // We give the agent a token to interact with the runtime.
+    // We give the agent a token to interact with the runtime via a dedicated IPC channel.
+    // SECURITY: This token is constrained to the 'runtime.workerChannel' action only,
+    // preventing it from being used for any privileged gateway operations.
+    // We include policy version to ensure revocation works correctly.
+    const { getSubjectPolicyVersion } = await import('./policyStore.js');
+    const policyVersion = await getSubjectPolicyVersion(agent.id);
+
     const capability: Capability = {
         id: crypto.randomUUID(),
         subject: agent.id,
-        action: '*', // Broad permissions for the agent itself
+        action: 'runtime.workerChannel', // Constrained to worker IPC only
         resource: { type: 'system', components: ['runtime'] },
         expiresAt: Math.floor(Date.now() / 1000) + (24 * 60 * 60), // 24 hours
     };
 
     const signingKey = await readSigningKey();
-    // We omit policyVersion for the agent process token as it's a system-level token
-    // for the runtime-worker channel, separate from skill-level capability grants.
-    const token = await mintCapabilityToken(capability, signingKey);
+    const token = await mintCapabilityToken(capability, signingKey, policyVersion);
 
     await appendAudit({
         id: crypto.randomUUID(),

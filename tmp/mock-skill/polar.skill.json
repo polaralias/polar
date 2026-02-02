@@ -1,0 +1,14 @@
+{
+  "id": "mock-skill",
+  "name": "Mock Skill",
+  "version": "1.0.0",
+  "description": "A mock skill for testing Phase 2 Stage 1",
+  "requestedCapabilities": [
+    {
+      "connector": "fs",
+      "action": "read",
+      "resource": { "type": "fs", "root": "/tmp" },
+      "justification": "Testing installation"
+    }
+  ]
+}

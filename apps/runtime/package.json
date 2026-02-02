@@ -9,6 +9,8 @@
     "start": "node dist/index.js",
     "init": "tsx src/cli.ts init",
     "doctor": "tsx src/cli.ts doctor",
+    "skill:install": "tsx src/cli.ts skill:install",
+    "skill:list": "tsx src/cli.ts skill:list",
     "lint": "eslint \"src/**/*.{ts,tsx}\"",
     "format": "prettier --check \"src/**/*.{ts,tsx}\""
   },

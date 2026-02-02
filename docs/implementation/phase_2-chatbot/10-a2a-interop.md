@@ -71,8 +71,22 @@ The security of the platform relies on the **Runtime** enforcing policy at the m
 *   **Attribution**: Worker actions are attributed to the `worker_id` but linked to the parent `session_id`.
 
 ## 4. Safety Constraints
-*   **No Recursion**: Workers cannot spawn other workers (unless explicitly enabled for advanced use cases, but default is depth=1).
+
+Phase 1 provides the foundation for worker safety. Phase 2 builds on these controls.
+
+### Inherited from Phase 1
+*   **Spawn Depth Limit**: `maxAgentSpawnDepth` (default: 5) prevents runaway recursive spawning.
+*   **Session Agent Limit**: `maxAgentsPerSession` (default: 20) prevents resource exhaustion.
+*   **Role-Based Restrictions**: 
+    *   Workers (`role: "worker"`) cannot spawn children or coordinate.
+    *   External agents (`role: "external"`) have the same restrictions.
+    *   Only `main` and `coordinator` roles can spawn workers.
+*   **Spawn Hierarchy Tracking**: Each agent tracks `spawnDepth` and `parentAgentId`.
+
+### Phase 2 Additions
 *   **Read-Only Default**: Unless `write` capabilities are explicitly requested and granted, workers should default to a safe, read-only state.
+*   **Capability Token Binding**: Worker tokens are bound to (Skill ID + Session ID + Spawn Instance).
+*   **Ephemeral Destruction**: Workers are destroyed on task completion; no state persists.
 
 ## Acceptance Criteria
 - [ ] Main Agent has NO direct tools (fs, http, etc.) — only `worker.spawn`.
@@ -80,3 +94,8 @@ The security of the platform relies on the **Runtime** enforcing policy at the m
 - [ ] Runtime mints a Capability Token that limits the Worker's access.
 - [ ] Gateway rejects Worker tool calls if they exceed the Capability Token scopes.
 - [ ] UI renders the spawning event and the worker's subsequent actions in a nested view.
+
+## Deferred from Phase 1 (Maturity)
+- **Advanced Coordination Logic**: Implement official Supervisor and Pipeline executor logic, allowing for complex multi-worker workflows.
+- **Coordination DAG Visualization**: Build a visual graph representation of active and historical agent spawn chains in the UI.
+- **End-to-End Trace Propagation**: Ensure total traceability across nested agent calls by propagating trace IDs and parent event IDs through all IPC and network boundaries.

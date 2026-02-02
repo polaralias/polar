@@ -6,9 +6,28 @@ import {
     CoordinationEvent,
     AuditEvent
 } from '@polar/core';
-import { createAgent, updateAgentStatus } from './agentStore.js';
+import { createAgent, updateAgentStatus, ExtendedAgent } from './agentStore.js';
+import { listAgents } from './agentStore.js';
 import { startWorker, stopWorker } from './workerRuntime.js';
 import { appendAudit } from './audit.js';
+import { runtimeConfig } from './config.js';
+
+// Role capability constraints - workers have fewer privileges than main agents
+const ROLE_CAPABILITY_LIMITS: Record<AgentRole, {
+    canSpawnAgents: boolean;
+    canAccessMemory: boolean;
+    canCoordinate: boolean;
+    maxConcurrentTasks: number;
+}> = {
+    main: { canSpawnAgents: true, canAccessMemory: true, canCoordinate: true, maxConcurrentTasks: 10 },
+    coordinator: { canSpawnAgents: true, canAccessMemory: true, canCoordinate: true, maxConcurrentTasks: 20 },
+    worker: { canSpawnAgents: false, canAccessMemory: false, canCoordinate: false, maxConcurrentTasks: 1 },
+    external: { canSpawnAgents: false, canAccessMemory: false, canCoordinate: false, maxConcurrentTasks: 1 },
+};
+
+export function getRoleCapabilities(role: AgentRole) {
+    return ROLE_CAPABILITY_LIMITS[role];
+}
 
 export async function spawnAgent(params: {
     role: AgentRole;
@@ -17,8 +36,46 @@ export async function spawnAgent(params: {
     skillId?: string | undefined;
     templateId?: string | undefined;
     metadata?: Record<string, unknown> | undefined;
-}): Promise<Agent> {
-    const agent = createAgent(params);
+    parentAgentId?: string | undefined;
+}): Promise<ExtendedAgent> {
+    // Calculate spawn depth from parent
+    let spawnDepth = 0;
+    if (params.parentAgentId) {
+        const parentAgent = listAgents(params.sessionId).find(a => a.id === params.parentAgentId);
+        if (parentAgent && 'spawnDepth' in parentAgent) {
+            spawnDepth = (parentAgent as ExtendedAgent).spawnDepth + 1;
+        }
+    }
+
+    // Enforce spawn depth limit
+    if (spawnDepth > runtimeConfig.maxAgentSpawnDepth) {
+        throw new Error(`Agent spawn depth limit exceeded (max: ${runtimeConfig.maxAgentSpawnDepth})`);
+    }
+
+    // Enforce session agent limit
+    const sessionAgents = listAgents(params.sessionId).filter(
+        a => a.status !== 'terminated' && a.status !== 'completed' && a.status !== 'failed'
+    );
+    if (sessionAgents.length >= runtimeConfig.maxAgentsPerSession) {
+        throw new Error(`Session agent limit exceeded (max: ${runtimeConfig.maxAgentsPerSession})`);
+    }
+
+    // Enforce role-based spawn restrictions
+    if (params.parentAgentId) {
+        const parentAgent = listAgents(params.sessionId).find(a => a.id === params.parentAgentId);
+        if (parentAgent) {
+            const parentCaps = ROLE_CAPABILITY_LIMITS[parentAgent.role];
+            if (!parentCaps.canSpawnAgents) {
+                throw new Error(`Agent role '${parentAgent.role}' is not permitted to spawn child agents`);
+            }
+        }
+    }
+
+    const agent = createAgent({
+        ...params,
+        spawnDepth,
+        parentAgentId: params.parentAgentId,
+    });
 
     await appendAudit({
         id: crypto.randomUUID(),
@@ -31,7 +88,7 @@ export async function spawnAgent(params: {
         agentId: agent.id,
         role: agent.role,
         skillId: params.skillId,
-        metadata: { ...params.metadata }
+        metadata: { ...params.metadata, spawnDepth, parentAgentId: params.parentAgentId }
     });
 
     // Trigger the actual worker process
@@ -73,6 +130,15 @@ export async function proposeCoordination(params: {
     sessionId: string;
     userId: string;
 }): Promise<CoordinationEvent> {
+    // Check if initiator has coordination permission
+    const initiator = listAgents(params.sessionId).find(a => a.id === params.initiatorAgentId);
+    if (initiator) {
+        const initiatorCaps = ROLE_CAPABILITY_LIMITS[initiator.role];
+        if (!initiatorCaps.canCoordinate) {
+            throw new Error(`Agent role '${initiator.role}' is not permitted to coordinate other agents`);
+        }
+    }
+
     // 1. Create Coordination Event
     const event: CoordinationEvent = {
         id: crypto.randomUUID(),
@@ -96,13 +162,14 @@ export async function proposeCoordination(params: {
         metadata: { pattern: params.pattern, targetCount: params.targetSpecs.length }
     });
 
-    // 3. Spawn Target Agents
+    // 3. Spawn Target Agents (with parent tracking for depth limits)
     const targetIds: string[] = [];
     for (const spec of params.targetSpecs) {
         const agent = await spawnAgent({
             ...spec,
             sessionId: params.sessionId,
             userId: params.userId,
+            parentAgentId: params.initiatorAgentId, // Track spawn hierarchy
         });
         targetIds.push(agent.id);
     }

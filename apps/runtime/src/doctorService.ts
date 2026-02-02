@@ -426,5 +426,81 @@ export async function runDiagnostics(): Promise<DoctorResult[]> {
         });
     }
 
+    // 13. Memory TTL Cleanup Verification
+    try {
+        const { getMemoryTTLStats, getLastCleanupAt } = await import('./memoryStore.js');
+        const stats = await getMemoryTTLStats();
+        const lastCleanup = getLastCleanupAt();
+
+        if (lastCleanup) {
+            const cleanupAgeMs = Date.now() - new Date(lastCleanup).getTime();
+            if (cleanupAgeMs > 120000) { // Should run every 60s
+                results.push({
+                    id: 'memory_ttl',
+                    name: 'Memory TTL Cleanup',
+                    status: 'WARNING',
+                    message: `Last cleanup occurred ${Math.round(cleanupAgeMs / 1000)}s ago. Job might be stuck.`,
+                    remediation: 'Restart the runtime to re-initialize background jobs.',
+                });
+            } else {
+                results.push({
+                    id: 'memory_ttl',
+                    name: 'Memory TTL Cleanup',
+                    status: 'OK',
+                    message: `Memory TTL cleanup is active. Last run: ${Math.round(cleanupAgeMs / 1000)}s ago.`,
+                });
+            }
+        } else if (stats.total > 0) {
+            results.push({
+                id: 'memory_ttl',
+                name: 'Memory TTL Cleanup',
+                status: 'WARNING',
+                message: 'Cleanup job has not run since startup.',
+                remediation: 'Wait at least 60 seconds or check for startup errors.',
+            });
+        }
+    } catch (e) {
+        results.push({
+            id: 'memory_ttl',
+            name: 'Memory TTL Cleanup',
+            status: 'WARNING',
+            message: 'Could not check memory TTL status.',
+        });
+    }
+
+    // 14. Stale Agent Check (potential capability leak)
+    try {
+        const agents = listAgents();
+        const now = Date.now();
+        const oneHourAgo = now - 60 * 60 * 1000;
+
+        const staleAgents = agents.filter(a => {
+            if (a.status === 'running' || a.status === 'pending') {
+                const createdAt = new Date(a.createdAt).getTime();
+                return createdAt < oneHourAgo;
+            }
+            return false;
+        });
+
+        if (staleAgents.length > 0) {
+            results.push({
+                id: 'stale_capabilities',
+                name: 'Capability Lifecycle',
+                status: 'WARNING',
+                message: `${staleAgents.length} agents active for >1 hour.`,
+                remediation: 'Review long-running agents. Use "polar sessions list" to find orphaned sessions.',
+            });
+        } else {
+            results.push({
+                id: 'stale_capabilities',
+                name: 'Capability Lifecycle',
+                status: 'OK',
+                message: 'No stale agents detected (all active agents created within the last hour).',
+            });
+        }
+    } catch {
+        // ignore
+    }
+
     return results;
 }

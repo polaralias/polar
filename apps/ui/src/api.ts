@@ -2,6 +2,9 @@ export type Session = {
   id: string;
   createdAt: string;
   subject: string;
+  projectPath?: string;
+  mainAgentId?: string;
+  status?: 'active' | 'terminated';
 };
 
 export type AuditEvent = {
@@ -165,7 +168,12 @@ export const api = {
   },
   getSkills: () => apiFetch<{ skills: Skill[] }>('/skills'),
   getAgents: (sessionId: string) => apiFetch<{ agents: Agent[] }>(`/sessions/${sessionId}/agents`),
-  createSession: () => apiFetch<{ session: Session }>('/sessions', { method: 'POST' }),
+  createSession: (params?: { projectPath?: string }) => apiFetch<{ session: Session; mainAgentId: string }>('/sessions', {
+    method: 'POST',
+    body: JSON.stringify(params)
+  }),
+  getSessionPrompt: (sessionId: string) => apiFetch<{ prompt: string }>(`/sessions/${sessionId}/prompt`),
+  getAgentInstructions: (agentId: string) => apiFetch<{ instructions: string; metadata?: any }>(`/agents/${agentId}/instructions`),
   sendMessage: (sessionId: string, message: string) => apiFetch<{
     ok: boolean;
     action: string;

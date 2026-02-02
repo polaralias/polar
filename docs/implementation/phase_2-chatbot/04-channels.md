@@ -49,3 +49,8 @@ Implement the following channels:
 - [ ] Attachments are quarantined by default.
 - [ ] Rate limits prevent message flooding.
 - [ ] "Pairing Code" flow works end-to-end.
+
+## Deferred from Phase 1 (Maturity)
+- **Pairing Flow Protocol**: Implement a formalized pairing protocol including support for mTLS or OAuth-based identity binding where supported by the channel.
+- **Per-Channel Rate Limits**: Implement granular rate limits and usage quotas per channel and per sender to prevent resource exhaustion.
+- **Sender Identity Verification**: Implement cryptographic verification of sender identities to prevent spoofing on platforms that support signed payloads.

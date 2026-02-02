@@ -16,12 +16,12 @@ import {
   ExternalAgentPrincipalSchema,
 } from '@polar/core';
 import { runtimeConfig, resolveFsPath } from './config.js';
-import { appendAudit, queryAudit, type AuditQuery } from './audit.js';
+import { appendAudit, queryAudit, pruneAuditLog, type AuditQuery } from './audit.js';
 import { loadPolicy, savePolicy, grantSkillPermissions, revokeSkillPermissions } from './policyStore.js';
-import { createSession, getSession } from './sessions.js';
+import { createSession, getSession, terminateSession, listSessions } from './sessions.js';
 import { parseMessage } from './messageParser.js';
 import { callGatewayTool } from './gatewayClient.js';
-import { loadSkills, updateSkillStatus, getSkill } from './skillStore.js';
+import { loadSkills, updateSkillStatus, getSkill, uninstallSkill } from './skillStore.js';
 import { installSkill } from './installerService.js';
 import { loadMemory, proposeMemory, queryMemory, deleteMemory, runMemoryCleanup } from './memoryStore.js';
 import { listAgents, getAgent } from './agentStore.js';
@@ -29,6 +29,8 @@ import { spawnAgent, terminateAgent, proposeCoordination } from './agentService.
 import { isTokenRevoked, revokeToken } from './revocationStore.js';
 
 import { readSigningKey } from './crypto.js';
+import { appendMessage } from './messageStore.js';
+import { runCompaction } from './compactor.js';
 
 const app = Fastify({
   logger: true,
@@ -122,10 +124,40 @@ app.get('/doctor', async () => {
 });
 
 app.post('/sessions', async (request) => {
+  const body = request.body as { projectPath?: string };
   const subject = request.principal?.id || 'anonymous';
-  const session = createSession(subject);
-  return { session };
+  const session = createSession(subject, body.projectPath);
+
+  // Spawn the main planning agent for the session
+  const mainAgent = await spawnAgent({
+    userId: subject,
+    sessionId: session.id,
+    role: 'main',
+  });
+
+  session.mainAgentId = mainAgent.id;
+
+  return { session, mainAgentId: mainAgent.id };
 });
+
+app.get('/sessions/:id/prompt', async (request, reply) => {
+  const { id } = request.params as { id: string };
+  const session = getSession(id);
+  if (!session) return reply.status(404).send({ error: 'Session not found' });
+
+  if (!session.mainAgentId) {
+    return reply.status(400).send({ error: 'Main agent not initialized' });
+  }
+
+  const agent = await getAgent(session.mainAgentId);
+  if (!agent) return reply.status(404).send({ error: 'Main agent not found' });
+
+  const { compileMainAgentPrompt } = await import('./orchestrator.js');
+  const prompt = await compileMainAgentPrompt(agent, session);
+
+  return { prompt };
+});
+
 
 app.post('/sessions/:id/messages', async (request, reply) => {
   const session = getSession((request.params as { id: string }).id);
@@ -149,9 +181,21 @@ app.post('/sessions/:id/messages', async (request, reply) => {
     return reply.status(403).send({ error: 'Forbidden: access to session denied' });
   }
 
+  // Persist message to history
+  const savedMessage = await appendMessage({
+    sessionId: session.id,
+    role: 'user',
+    content: body.message,
+  });
+
+  // Trigger compaction check
+  runCompaction(session.id, session.subject).catch(err =>
+    console.error(`Compaction failed for session ${session.id}:`, err)
+  );
+
   const workerRequest = parseMessage(body.message);
   if (!workerRequest) {
-    return reply.status(400).send({ error: 'Unsupported message format' });
+    return { ok: true, message: savedMessage };
   }
 
   const path = workerRequest.path || (workerRequest.args?.path as string);
@@ -168,7 +212,7 @@ app.post('/sessions/:id/messages', async (request, reply) => {
     if (!skill || skill.status !== 'enabled') {
       return reply.status(403).send({ error: 'Skill not found or disabled' });
     }
-    const template = skill.manifest.workerTemplates.find(t => t.id === workerRequest.templateId);
+    const template = skill.manifest.workerTemplates?.find(t => t.id === workerRequest.templateId);
     if (!template) {
       return reply.status(404).send({ error: 'Worker template not found' });
     }
@@ -285,14 +329,26 @@ app.get('/memory', async () => {
 });
 
 app.post('/memory/query', async (request, reply) => {
-  const body = request.body as { sessionId?: string; query?: unknown };
-  if (!body?.sessionId) {
-    return reply.status(400).send({ error: 'sessionId is required' });
-  }
+  const body = request.body as { sessionId?: string; query?: unknown; subject?: string };
 
-  const session = getSession(body.sessionId);
-  if (!session) {
-    return reply.status(404).send({ error: 'Session not found' });
+  let subject: string;
+  let sessionId: string | undefined = body.sessionId;
+
+  // Support internal gateway call with subject override
+  const isInternal = request.headers['x-polar-internal-secret'] === runtimeConfig.internalSecret;
+
+  if (isInternal && body.subject) {
+    subject = body.subject;
+  } else {
+    if (!body?.sessionId) {
+      return reply.status(400).send({ error: 'sessionId is required' });
+    }
+    const session = getSession(body.sessionId);
+    if (!session) {
+      return reply.status(404).send({ error: 'Session not found' });
+    }
+    subject = session.subject;
+    sessionId = session.id;
   }
 
   const queryParsed = MemoryQuerySchema.safeParse(body.query);
@@ -309,7 +365,7 @@ app.post('/memory/query', async (request, reply) => {
   for (const type of typesToQuery) {
     const decision = evaluatePolicy(
       {
-        subject: session.subject,
+        subject,
         action: 'read',
         resource: { type: 'memory', memoryType: type as any } as MemoryResource,
       },
@@ -326,23 +382,25 @@ app.post('/memory/query', async (request, reply) => {
     }
   }
 
-  const items = await queryMemory(query, session.subject);
+  const items = await queryMemory(query, subject);
 
   // Audit read attempt
   await appendAudit({
     id: crypto.randomUUID(),
     time: new Date().toISOString(),
-    subject: session.subject,
+    subject,
     action: 'memory.read',
     decision: 'allow',
     resource: { type: 'memory' },
-    sessionId: session.id,
+    sessionId,
     requestId: crypto.randomUUID(),
     metadata: { query }
   });
 
   return { items };
 });
+
+const proposalRateLimits = new Map<string, { count: number; windowStart: number }>();
 
 app.post('/memory/propose', async (request, reply) => {
   const body = request.body as { sessionId?: string; proposal?: unknown };
@@ -361,6 +419,19 @@ app.post('/memory/propose', async (request, reply) => {
   }
 
   const proposal = proposalParsed.data;
+  const subject = request.principal?.id || 'unknown';
+
+  // 1. Rate Limiting
+  const now = Date.now();
+  let limit = proposalRateLimits.get(subject);
+  if (!limit || now - limit.windowStart > 60000) {
+    limit = { count: 0, windowStart: now };
+    proposalRateLimits.set(subject, limit);
+  }
+  limit.count++;
+  if (limit.count > 10) { // Max 10 proposals per minute
+    return reply.status(429).send({ error: 'Proposal rate limit exceeded. Max 10/min.' });
+  }
 
   const { getSystemStatus } = await import('./systemStore.js');
   const status = await getSystemStatus();
@@ -441,6 +512,20 @@ app.delete('/memory/:id', async (request, reply) => {
   return { ok: true };
 });
 
+app.get('/agents/:id/instructions', async (request, reply) => {
+  const { id } = request.params as { id: string };
+  const agent = await getAgent(id);
+  if (!agent) return reply.status(404).send({ error: 'Agent not found' });
+
+  if (agent.skillId) {
+    const { loadSkillContent } = await import('./skillStore.js');
+    const content = await loadSkillContent(agent.skillId);
+    return content || { instructions: 'No instructions provided.' };
+  }
+
+  return { instructions: 'No specific instructions provided.' };
+});
+
 // Internal worker spawning is handled via direct logic, not a public endpoint.
 // app.post('/workers/spawn', async () => ({ ok: true }));
 
@@ -474,6 +559,18 @@ app.post('/permissions', async (request, reply) => {
 app.get('/skills', async () => {
   const skills = await loadSkills();
   return { skills };
+});
+
+app.get('/skills/:id/content', async (request, reply) => {
+  const { id } = request.params as { id: string };
+  const { loadSkillContent } = await import('./skillStore.js');
+  const content = await loadSkillContent(id);
+
+  if (!content) {
+    return reply.status(404).send({ error: 'Skill content not found' });
+  }
+
+  return content;
 });
 
 app.post('/skills/install', async (request, reply) => {
@@ -587,6 +684,131 @@ app.post('/skills/:id/revoke', async (request, reply) => {
   });
 
   return { ok: true };
+});
+
+// Skill uninstall endpoint
+app.post('/skills/:id/status', async (request, reply) => {
+  const { id } = request.params as { id: string };
+  const { status } = request.body as { status: any };
+
+  const skill = await getSkill(id);
+  if (!skill) {
+    return reply.status(404).send({ error: 'Skill not found' });
+  }
+
+  // Basic validation (Status must be one of the enum values)
+  const validStatuses = ['enabled', 'disabled', 'pending_consent', 'emergency_disabled'];
+  if (!validStatuses.includes(status)) {
+    return reply.status(400).send({ error: 'Invalid status' });
+  }
+
+  await updateSkillStatus(id, status);
+  return { ok: true };
+});
+
+app.delete('/skills/:id', async (request, reply) => {
+  const { id } = request.params as { id: string };
+  const body = request.body as { deleteFiles?: boolean } | undefined;
+
+  // First revoke permissions
+  await revokeSkillPermissions(id);
+
+  const result = await uninstallSkill(id, body?.deleteFiles ?? false);
+  if (!result.removed) {
+    return reply.status(404).send({ error: 'Skill not found' });
+  }
+
+  await appendAudit({
+    id: crypto.randomUUID(),
+    time: new Date().toISOString(),
+    subject: request.principal?.id || 'user',
+    action: 'skill.uninstall',
+    decision: 'allow',
+    skillId: id,
+    resource: { type: 'fs' },
+    requestId: crypto.randomUUID(),
+    reason: `Skill uninstalled${body?.deleteFiles ? ' with files deleted' : ''}`
+  });
+
+  return { ok: true, path: result.path };
+});
+
+// Session termination endpoint
+app.post('/sessions/:id/terminate', async (request, reply) => {
+  const { id } = request.params as { id: string };
+  const body = request.body as { reason?: string } | undefined;
+  const session = getSession(id);
+
+  if (!session) {
+    return reply.status(404).send({ error: 'Session not found' });
+  }
+
+  // Terminate all agents in the session
+  const sessionAgents = listAgents(id);
+  for (const agent of sessionAgents) {
+    if (agent.status !== 'terminated' && agent.status !== 'completed' && agent.status !== 'failed') {
+      await terminateAgent(agent.id, body?.reason || 'Session terminated');
+    }
+  }
+
+  // Terminate the session itself
+  terminateSession(id);
+
+  await appendAudit({
+    id: crypto.randomUUID(),
+    time: new Date().toISOString(),
+    subject: request.principal?.id || 'user',
+    action: 'session.terminate',
+    decision: 'allow',
+    sessionId: id,
+    resource: { type: 'system', component: 'session' },
+    requestId: crypto.randomUUID(),
+    reason: body?.reason || 'User requested termination',
+    metadata: { terminatedAgents: sessionAgents.length }
+  });
+
+  return { ok: true, terminatedAgents: sessionAgents.length };
+});
+
+// Session list endpoint
+app.get('/sessions', async (request) => {
+  const reqQuery = request.query as { status?: string };
+  const status = reqQuery.status as 'active' | 'terminated' | undefined;
+  const sessions = listSessions(status);
+  return { sessions };
+});
+
+// Audit export endpoint
+app.get('/audit/export', async (request, reply) => {
+  const reqQuery = request.query as any;
+  const query: AuditQuery = {};
+  if (reqQuery.from) query.from = reqQuery.from;
+  if (reqQuery.to) query.to = reqQuery.to;
+  if (reqQuery.subject) query.subject = reqQuery.subject;
+  if (reqQuery.tool) query.tool = reqQuery.tool;
+  if (reqQuery.decision) query.decision = reqQuery.decision;
+  query.limit = Number(reqQuery.limit ?? 10000); // Higher limit for export
+
+  const events = await queryAudit(query);
+  const format = reqQuery.format || 'json';
+
+  if (format === 'ndjson') {
+    reply.header('Content-Type', 'application/x-ndjson');
+    reply.header('Content-Disposition', 'attachment; filename=audit-export.ndjson');
+    return events.map(e => JSON.stringify(e)).join('\n');
+  } else if (format === 'csv') {
+    reply.header('Content-Type', 'text/csv');
+    reply.header('Content-Disposition', 'attachment; filename=audit-export.csv');
+    const headers = ['id', 'time', 'subject', 'action', 'decision', 'reason', 'sessionId', 'agentId', 'skillId'];
+    const rows = events.map(e =>
+      headers.map(h => JSON.stringify((e as any)[h] ?? '')).join(',')
+    );
+    return [headers.join(','), ...rows].join('\n');
+  }
+
+  reply.header('Content-Type', 'application/json');
+  reply.header('Content-Disposition', 'attachment; filename=audit-export.json');
+  return { events, exportedAt: new Date().toISOString(), count: events.length };
 });
 
 app.get('/audit', async (request) => {
@@ -772,7 +994,27 @@ app.post('/sessions/:id/coordination', async (request, reply) => {
   const session = getSession(id);
   if (!session) return reply.status(404).send({ error: 'Session not found' });
 
-  if (session.subject !== request.principal?.id && request.principal?.role !== 'internal') {
+  let subject = request.principal?.id || 'anonymous';
+  let isAuthorized = session.subject === subject || request.principal?.role === 'internal';
+
+  // Support worker-initiated coordination with capability token
+  const authHeader = request.headers['authorization'];
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    const token = authHeader.replace('Bearer ', '');
+    try {
+      const payload = await verifyCapabilityToken(token, await readSigningKey());
+      const activeStatus = await isTokenRevoked(payload.jti).then(revoked => !revoked);
+
+      if (activeStatus && payload.act === 'coordination.propose') {
+        subject = payload.sub;
+        isAuthorized = true;
+      }
+    } catch {
+      // Invalid token, fall back to principal check
+    }
+  }
+
+  if (!isAuthorized) {
     return reply.status(403).send({ error: 'Forbidden: access to session denied' });
   }
 
@@ -801,24 +1043,30 @@ app.post('/a2a/task', async (request, reply) => {
     task: string;
     signature: string;
     publicKey?: string;
+    nonce?: string;
   };
 
-  // 1. Verify Authentication
-  if (!body.signature || !body.publicKey) {
-    return reply.status(401).send({ error: 'Missing signature or publicKey' });
+  // 1. Verify Authentication & Nonce
+  if (!body.signature || !body.publicKey || !body.nonce) {
+    return reply.status(401).send({ error: 'Missing signature, publicKey, or nonce' });
+  }
+
+  const { hasJtiBeenUsed, markJtiAsUsed } = await import('./revocationStore.js');
+  if (await hasJtiBeenUsed(body.nonce)) {
+    return reply.status(401).send({ error: 'Replay detected: Nonce already used' });
   }
 
   try {
     const verifier = crypto.createVerify('SHA256');
-    // We assume the signature signs the task content + sessionId to prevent replay across sessions
-    // Or just the task. Let's assume just 'task' for minimal contract.
-    verifier.update(body.task);
+    // Sign task + nonce + sessionId to bind the request
+    verifier.update(body.task + body.nonce + body.sessionId);
     verifier.end();
 
-    // In a real PKI, we would check if 'body.publicKey' belongs to 'body.agentId'.
-    // For now, we strictly verify that the provided key *did* sign the message.
     const isValid = verifier.verify(body.publicKey, body.signature, 'hex');
     if (!isValid) throw new Error('Invalid signature');
+
+    // Mark nonce as used only after successful verification
+    await markJtiAsUsed(body.nonce);
   } catch (err) {
     return reply.status(401).send({ error: 'Authentication failed: Invalid signature' });
   }
@@ -928,12 +1176,21 @@ if (criticalIssues.length > 0) {
   process.exit(1);
 }
 
+// Initial Session Seed
+if (listSessions().length === 0) {
+  const seed = createSession('default-user');
+  console.log(`\n=== INITIAL SESSION CREATED ===`);
+  console.log(`Session ID: ${seed.id}`);
+  console.log(`Subject: ${seed.subject}`);
+  console.log(`================================\n`);
+}
+
 app.listen({ port: runtimeConfig.port, host: runtimeConfig.bindAddress }).catch((error) => {
   app.log.error(error);
   process.exit(1);
 });
 
-// Run cleanup every minute
+// Run memory cleanup every minute
 setInterval(async () => {
   try {
     const deletedCount = await runMemoryCleanup();
@@ -944,3 +1201,15 @@ setInterval(async () => {
     console.error('Memory cleanup failed:', error);
   }
 }, 60000);
+
+// Run audit retention every hour
+setInterval(async () => {
+  try {
+    const deletedCount = await pruneAuditLog();
+    if (deletedCount > 0) {
+      console.log(`Pruned ${deletedCount} old audit log entries`);
+    }
+  } catch (error) {
+    console.error('Audit pruning failed:', error);
+  }
+}, 3600000);

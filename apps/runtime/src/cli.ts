@@ -113,11 +113,106 @@ async function doctor() {
   }
 }
 
+async function skillList() {
+  const { loadSkills } = await import('./skillStore.js');
+  const skills = await loadSkills();
+
+  if (skills.length === 0) {
+    console.log('No skills installed.');
+    return;
+  }
+
+  console.log('\n📦 Installed Skills:\n');
+  skills.forEach(s => {
+    const statusIcon = s.status === 'enabled' ? '✅' : s.status === 'pending_consent' ? '🟡' : '❌';
+    console.log(`${statusIcon} ${s.manifest.name} (v${s.manifest.version}) [ID: ${s.manifest.id}] - ${s.status}`);
+  });
+  console.log('');
+}
+
+async function skillInstall(sourcePath: string) {
+  if (!sourcePath) {
+    console.error('Usage: polar skill:install <sourceDir>');
+    process.exit(1);
+  }
+
+  const path = await import('node:path');
+  const fullSourcePath = path.resolve(sourcePath);
+
+  // 1. Read manifest to show permissions before installation
+  let manifest;
+  try {
+    const manifestPath = path.join(fullSourcePath, 'polar.skill.json');
+    const raw = await fs.readFile(manifestPath, 'utf-8');
+    manifest = JSON.parse(raw);
+  } catch {
+    try {
+      const manifestPath = path.join(fullSourcePath, 'manifest.json');
+      const raw = await fs.readFile(manifestPath, 'utf-8');
+      manifest = JSON.parse(raw);
+    } catch {
+      console.error('❌ Could not find polar.skill.json or manifest.json in source directory.');
+      process.exit(1);
+    }
+  }
+
+  console.log(`\n📦 Installing Skill: ${manifest.name} (v${manifest.version})`);
+  console.log(`ID: ${manifest.id}\n`);
+
+  if (manifest.requestedCapabilities && manifest.requestedCapabilities.length > 0) {
+    console.log('⚠️  This skill is requesting the following permissions:');
+    manifest.requestedCapabilities.forEach((cap: any, i: number) => {
+      console.log(`  ${i + 1}. [${cap.connector}.${cap.action}] - ${cap.justification}`);
+      console.log(`     Resource: ${JSON.stringify(cap.resource)}`);
+    });
+    console.log('');
+
+    const response = await prompts({
+      type: 'confirm',
+      name: 'grant',
+      message: 'Do you want to grant these permissions and proceed?',
+      initial: true,
+    });
+
+    if (!response.grant) {
+      console.log('❌ Installation cancelled.');
+      process.exit(0);
+    }
+  }
+
+  // 2. Call the installation service
+  try {
+    const { installSkill } = await import('./installerService.js');
+    const { grantSkillPermissions } = await import('./policyStore.js');
+    const { updateSkillStatus } = await import('./skillStore.js');
+
+    const result = await installSkill(fullSourcePath);
+    const skill = result.skill;
+
+    // Auto-grant permissions if confirmed
+    await grantSkillPermissions(skill.manifest.id, skill.manifest.requestedCapabilities);
+    await updateSkillStatus(skill.manifest.id, 'enabled');
+
+    console.log('\n✅ Skill installed and enabled successfully.');
+  } catch (err) {
+    console.error(`\n❌ Installation failed: ${(err as Error).message}`);
+    process.exit(1);
+  }
+}
+
 if (command === 'init') {
   await init();
 } else if (command === 'doctor') {
   await doctor();
+} else if (command === 'skill:install') {
+  await skillInstall(process.argv[3]!);
+} else if (command === 'skill:list') {
+  await skillList();
 } else {
-  console.log('Usage: pnpm init | pnpm doctor');
+  console.log('Usage:');
+  console.log('  pnpm run init           - Initialize platform');
+  console.log('  pnpm run doctor         - Run diagnostics');
+  console.log('  pnpm run skill:install  - [path] Install a skill');
+  console.log('  pnpm run skill:list     - List installed skills');
   process.exit(1);
 }

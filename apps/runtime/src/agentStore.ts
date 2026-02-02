@@ -1,7 +1,9 @@
 import { Agent, AgentRole, AgentStatus } from '@polar/core';
 import crypto from 'node:crypto';
 
-const agents = new Map<string, Agent>();
+export type ExtendedAgent = Agent & { spawnDepth: number; parentAgentId: string | undefined };
+
+const agents = new Map<string, ExtendedAgent>();
 
 export function createAgent(params: {
     role: AgentRole;
@@ -10,8 +12,10 @@ export function createAgent(params: {
     skillId?: string | undefined;
     templateId?: string | undefined;
     metadata?: Record<string, unknown> | undefined;
-}): Agent {
-    const agent: Agent = {
+    parentAgentId?: string | undefined;
+    spawnDepth?: number | undefined;
+}): ExtendedAgent {
+    const agent: ExtendedAgent = {
         id: crypto.randomUUID(),
         role: params.role,
         status: 'pending',
@@ -21,6 +25,8 @@ export function createAgent(params: {
         templateId: params.templateId,
         createdAt: new Date().toISOString(),
         metadata: params.metadata,
+        parentAgentId: params.parentAgentId,
+        spawnDepth: params.spawnDepth ?? 0,
     };
     agents.set(agent.id, agent);
     return agent;

@@ -29,6 +29,10 @@ export const runtimeConfig = {
   maxHeaderSize: Number(process.env.MAX_HEADER_SIZE ?? 16 * 1024), // 16KB
   rateLimitWindowMs: 60 * 1000, // 1 minute
   rateLimitMaxRequests: Number(process.env.RATE_LIMIT_MAX ?? 100), // 100 requests per window
+  maxMemoryContentSize: Number(process.env.MAX_MEMORY_CONTENT_SIZE ?? 64 * 1024), // 64KB default
+  maxAgentSpawnDepth: Number(process.env.MAX_AGENT_SPAWN_DEPTH ?? 5), // Prevent runaway recursion
+  maxAgentsPerSession: Number(process.env.MAX_AGENTS_PER_SESSION ?? 20), // Prevent session overload
+  auditRetentionDays: Number(process.env.AUDIT_RETENTION_DAYS ?? 30), // Default 30 days
 };
 
 export function resolveFsPath(inputPath: string): string {

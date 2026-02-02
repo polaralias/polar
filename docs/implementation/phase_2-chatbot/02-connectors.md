@@ -68,3 +68,7 @@ Create a UI flow for configuring connectors.
 - [ ] Sensitive outputs (secrets) are redacted from logs and agent context.
 - [ ] Users can configure "Require Approval" for specific tools/connectors.
 - [ ] Audit logs record the *sanitized* request and the decision.
+
+## Deferred from Phase 1 (Hardening)
+- **Advanced Egress (DNS/IP)**: Implement deep network enforcement at the DNS and IP levels to prevent DNS rebinding attacks or direct IP exfiltration.
+- **Egress Allowlists**: Refine the manifest-based allowlist system to support granular domain and path-level approvals for all external tool-driven traffic.

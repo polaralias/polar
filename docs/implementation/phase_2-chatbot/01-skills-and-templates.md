@@ -91,3 +91,8 @@ Build the frontend for managing skills.
 - [ ] Gateway enforces constraints (e.g., `http` host allowlist) independent of the worker.
 - [ ] Human approval gates pause execution until UI confirmation.
 - [ ] Tool outputs are redacted in logs.
+
+## Deferred from Phase 1 (Hardening)
+- **Installer Sandbox**: Implement OS-level or WASM isolation for the installer to prevent arbitrary filesystem access during installation.
+- **Worker Resource Limits**: Implement CPU and memory bounds for worker processes to prevent resource exhaustion.
+- **Permission Diff UI**: Build a visual diffing tool in the UI to show exactly what has changed when a skill is updated.

@@ -188,3 +188,41 @@ export async function queryAudit(query: AuditQuery): Promise<AuditEvent[]> {
     throw error;
   }
 }
+
+export async function pruneAuditLog(): Promise<number> {
+  try {
+    const content = await fs.readFile(runtimeConfig.auditPath, 'utf-8');
+    const lines = content.trim().split('\n');
+    if (lines.length === 0 || (lines.length === 1 && lines[0] === '')) return 0;
+
+    const retentionMs = (runtimeConfig.auditRetentionDays || 30) * 24 * 60 * 60 * 1000;
+    const cutoff = Date.now() - retentionMs;
+
+    const validLines: string[] = [];
+    let deletedCount = 0;
+
+    for (const line of lines) {
+      try {
+        if (!line.trim()) continue;
+        const event = JSON.parse(line);
+        const eventTime = new Date(event.time).getTime();
+        if (eventTime >= cutoff) {
+          validLines.push(line);
+        } else {
+          deletedCount++;
+        }
+      } catch {
+        validLines.push(line);
+      }
+    }
+
+    if (deletedCount > 0) {
+      await fs.writeFile(runtimeConfig.auditPath, validLines.join('\n') + '\n', 'utf-8');
+    }
+
+    return deletedCount;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return 0;
+    throw e;
+  }
+}

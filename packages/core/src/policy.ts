@@ -8,6 +8,10 @@ import {
   FsResourceConstraint,
   MemoryResourceConstraint,
   MemoryResource,
+  HttpResourceConstraint,
+  HttpResource,
+  GenericResourceConstraint,
+  GenericResource,
 } from './schemas.js';
 
 export type PolicyDecision = {
@@ -65,6 +69,39 @@ function matchesMemoryConstraint(
   return matchesType && matchesScope;
 }
 
+function matchesHttpConstraint(constraint: HttpResourceConstraint, resource: HttpResource): boolean {
+  if (constraint.allowMethods && resource.method && !constraint.allowMethods.includes(resource.method)) {
+    return false;
+  }
+
+  if (constraint.allowHosts) {
+    try {
+      const url = new URL(resource.url);
+      const host = url.hostname;
+      const matches = constraint.allowHosts.some(pattern => {
+        if (pattern.startsWith('*.')) {
+          const suffix = pattern.slice(2);
+          return host === suffix || host.endsWith('.' + suffix);
+        }
+        return host === pattern;
+      });
+      if (!matches) return false;
+    } catch {
+      return false; // Invalid URL
+    }
+  }
+
+  return true;
+}
+
+function matchesGenericConstraint(constraint: GenericResourceConstraint, resource: GenericResource): boolean {
+  if (constraint.connectorId !== resource.connectorId) return false;
+  if (constraint.constraints.resourceIds && Array.isArray(constraint.constraints.resourceIds)) {
+    return constraint.constraints.resourceIds.includes(resource.resourceId);
+  }
+  return true;
+}
+
 export function matchesResourceConstraint(
   constraint: ResourceConstraint,
   resource: Resource,
@@ -79,6 +116,14 @@ export function matchesResourceConstraint(
 
   if (constraint.type === 'memory' && resource.type === 'memory') {
     return matchesMemoryConstraint(constraint, resource);
+  }
+
+  if (constraint.type === 'http' && resource.type === 'http') {
+    return matchesHttpConstraint(constraint, resource);
+  }
+
+  if (constraint.type === 'connector' && resource.type === 'connector') {
+    return matchesGenericConstraint(constraint, resource);
   }
 
   return false;
@@ -132,6 +177,24 @@ function buildCapabilityConstraints(
     };
 
     constraints.resource = memoryConstraint;
+  } else if (request.resource.type === 'http') {
+    try {
+      const httpConstraint: HttpResourceConstraint = {
+        type: 'http',
+        allowHosts: [new URL(request.resource.url).hostname],
+        allowMethods: request.resource.method ? [request.resource.method] : undefined,
+      };
+      constraints.resource = httpConstraint;
+    } catch {
+      // Fallback
+    }
+  } else if (request.resource.type === 'connector') {
+    const genericConstraint: GenericResourceConstraint = {
+      type: 'connector',
+      connectorId: request.resource.connectorId,
+      constraints: { resourceIds: [request.resource.resourceId] },
+    };
+    constraints.resource = genericConstraint;
   }
 
   return constraints;

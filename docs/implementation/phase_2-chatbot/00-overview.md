@@ -3,6 +3,17 @@
 ## Vision
 We are transitioning from a secure runtime kernel to a fully functional AI assistant. The goal of Phase 2 is to enable the "Chatbot" experience—interactive, skill-driven, and multi-channel—while ensuring strict security through a **Planner-Worker Architecture**.
 
+## Phase 1 Prerequisites
+Phase 2 builds on the secure foundation established in Phase 1. See [PHASE1_ALIGNMENT.md](./PHASE1_ALIGNMENT.md) for detailed cross-reference.
+
+**Key Phase 1 Capabilities Used:**
+- **Agent Spawning**: `spawnAgent` with depth tracking, role constraints, session limits
+- **Capability Tokens**: `mintCapabilityToken` / `verifyCapabilityToken` with policy version binding
+- **Introspection**: Gateway validates every tool call against runtime
+- **Emergency Mode**: `POST /system/emergency` blocks all tool execution
+- **Audit Chaining**: SHA-256 hash-chained append-only logs
+- **Memory System**: Encrypted at rest, size-limited, provenance-tracked
+
 **Key Architectural Shift:**
 The "Main Agent" (the interface the user talks to) is strictly a **Planner and Router**. It **DOES NOT** have direct access to external tools (file system, network, MCP servers). Instead, it must request the **Runtime** to spawn specialized, ephemeral **Workers** for specific tasks.
 
@@ -70,3 +81,8 @@ The implementation is broken down into 10 sequential stages. Do not skip stages.
 3.  **The "Reading Is Dangerous" Principle**: Reads are not safe. Even reading a calendar is a privacy breach. Therefore, *all* I/O (read or write) must undergo the Worker Spawning protocol to ensure policy enforcement.
 4.  **Strict Gateway Boundary**: The Gateway enforces the token constraints for every tool call made by a Worker.
 5.  **No "Do Anything"**: Main Agent never gets generic shell access. Workers only get the specific tools requested (e.g., `calendar.read` vs `calendar.write`).
+
+## Deferred from Phase 1 (Production Hardening)
+- **Deployment Profiles (Cloud/Edge)**: Develop specialized configuration profiles and adapters for managed cloud environments (Secrets Manager, RDS) and edge proxy deployment.
+- **Audit Schema Versioning**: Implement versioning for the audit log schema to ensure long-term data sustainability and compatibility across platform updates.
+- **External Secrets Backends**: Implement support for professional external secrets managers (HashiCorp Vault, AWS Secrets Manager) beyond the local encrypted file adapter.

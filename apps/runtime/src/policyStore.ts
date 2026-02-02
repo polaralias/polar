@@ -16,7 +16,17 @@ export async function loadPolicy(): Promise<PolicyStore> {
     return parsed.data;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-      return { grants: [], rules: [] };
+      // Return a default policy with an explicit Deny-All rule for defense-in-depth
+      return {
+        grants: [],
+        rules: [
+          {
+            id: 'default-deny-all',
+            effect: 'deny',
+            reason: 'Default deny-all fallback (Defense in Depth)'
+          }
+        ]
+      };
     }
     throw error;
   }

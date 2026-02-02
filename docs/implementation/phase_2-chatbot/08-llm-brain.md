@@ -99,3 +99,7 @@ interface SummarizerRequest {
 - [ ] System Prompt explicitly instructs the model to act as a Router/Planner.
 - [ ] Main Agent has NO access to generic execution tools in its prompt context.
 - [ ] API keys are encrypted and redacted.
+
+## Deferred from Phase 1 (Maturity)
+- **Secret Rotation**: Implement a mechanism for hot-reloading keys and secrets without requiring a system restart, utilizing filesystem watchers or signaling.
+- **Namespaced Secrets**: Transition to a namespaced secrets store where credentials are keyed to specific connectors and skill IDs to prevent cross-skill credential leakage.

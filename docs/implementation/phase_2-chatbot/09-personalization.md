@@ -102,3 +102,8 @@ Data collection is ongoing. The agent uses the initial "Ambitions" data to sched
 - [ ] **Proactive Triggers** (e.g., 6-month check-in) are scheduled based on onboarding data.
 - [ ] Large instructions are truncated or warned (Context window management).
 - [ ] Security invariants hold even if Custom Instructions attempt to bypass them.
+
+## Deferred from Phase 1 (Maturity)
+- **Profile-Based Memory Categories**: Implement strictly isolated memory categories (e.g., Family vs. Work) linked to the user's profile to prevent cross-context data leakage.
+- **Memory Lifecycle UI**: Add visual indicators for memory item TTL and active countdowns for session-scoped data.
+- **Advanced Memory Filtering**: Enhance the memory browser with date range selection and complex multi-tag logical queries.
