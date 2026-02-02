@@ -23,6 +23,7 @@ Existing assistants either do too little or act unsafely.
 - Read access is sensitive
 - Everything is inspectable
 - Proactivity without surprise
+- Specialized Sub-agents (Right model for the right task)
 
 ## Assistant experience
 Users say:
