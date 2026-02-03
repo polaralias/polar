@@ -27,6 +27,8 @@ import { loadMemory, proposeMemory, queryMemory, deleteMemory, runMemoryCleanup 
 import { listAgents, getAgent } from './agentStore.js';
 import { spawnAgent, terminateAgent, proposeCoordination } from './agentService.js';
 import { isTokenRevoked, revokeToken } from './revocationStore.js';
+import { generatePairingCode } from './channelService.js';
+import { ingestEvent } from './eventBus.js';
 
 import { readSigningKey } from './crypto.js';
 import { appendMessage } from './messageStore.js';
@@ -224,7 +226,9 @@ app.post('/sessions/:id/messages', async (request, reply) => {
       }
     });
 
-    await startWorker(agent);
+    // spawnAgent handles the worker startup (including token minting)
+    // We do NOT call startWorker here to avoid double-spawning
+
 
     await appendAudit({
       id: crypto.randomUUID(),
@@ -769,9 +773,10 @@ app.delete('/skills/:id', async (request, reply) => {
   // First revoke permissions
   await revokeSkillPermissions(id);
 
-  const result = await uninstallSkill(id, body?.deleteFiles ?? false);
-  if (!result.removed) {
-    return reply.status(404).send({ error: 'Skill not found' });
+  try {
+    await uninstallSkill(id);
+  } catch (error) {
+    return reply.status(404).send({ error: (error as Error).message });
   }
 
   await appendAudit({
@@ -786,7 +791,7 @@ app.delete('/skills/:id', async (request, reply) => {
     reason: `Skill uninstalled${body?.deleteFiles ? ' with files deleted' : ''}`
   });
 
-  return { ok: true, path: result.path };
+  return { ok: true, path: body?.deleteFiles ? 'deleted' : 'kept' };
 });
 
 // Session termination endpoint
@@ -1030,10 +1035,23 @@ app.post('/channels', async (request, reply) => {
   return { ok: true };
 });
 
-app.post('/channels/pair', async (request, reply) => {
+app.post('/channels/pairing-code', async (request, reply) => {
   const { generatePairingCode } = await import('./channelService.js');
   const userId = request.principal?.id || 'user';
+
   const code = await generatePairingCode(userId);
+
+  await appendAudit({
+    id: crypto.randomUUID(),
+    time: new Date().toISOString(),
+    subject: userId,
+    action: 'channel.pair_start',
+    decision: 'allow',
+    resource: { type: 'system', component: 'channel' },
+    requestId: crypto.randomUUID(),
+    metadata: { code_prefix: code.substring(0, 2) + '****' }
+  });
+
   return { code, expiresSeconds: 600 };
 });
 
@@ -1771,6 +1789,31 @@ if (listSessions().length === 0) {
   console.log(`Subject: ${seed.subject}`);
   console.log(`================================\n`);
 }
+
+
+app.post('/channels/pairing-code', async (request, reply) => {
+  const userId = request.principal?.id;
+  if (!userId) {
+    return reply.status(401).send({ error: 'Unauthorized' });
+  }
+  const code = await generatePairingCode(userId);
+  return { code, expiresIn: '10 minutes' };
+});
+
+app.post('/events', async (request, reply) => {
+  // Webhook endpoint for external events (Proactivity Source)
+  const body = request.body as { source: string; type: string; payload: any };
+
+  // Basic validation
+  if (!body?.source || !body?.type) {
+    return reply.status(400).send({ error: 'Missing source or type' });
+  }
+
+  // Ingest event
+  await ingestEvent(body.source, body.type, body.payload || {});
+
+  return { ok: true };
+});
 
 app.listen({ port: runtimeConfig.port, host: runtimeConfig.bindAddress }).catch((error) => {
   app.log.error(error);

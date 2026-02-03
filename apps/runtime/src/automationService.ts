@@ -66,6 +66,46 @@ export function listAutomations() {
     return Array.from(envelopes.values());
 }
 
+
+// === Proposal Management ===
+
+export interface PendingProposal {
+    id: string;
+    envelope: AutomationEnvelope;
+    event: IngestedEvent;
+    createdAt: string;
+}
+
+const pendingProposals = new Map<string, PendingProposal>();
+
+export function getPendingProposals(): PendingProposal[] {
+    return Array.from(pendingProposals.values()).sort((a, b) =>
+        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
+}
+
+export function getLastPendingProposal(): PendingProposal | undefined {
+    return getPendingProposals()[0];
+}
+
+export async function confirmProposal(proposalId: string): Promise<boolean> {
+    const proposal = pendingProposals.get(proposalId);
+    if (!proposal) return false;
+
+    console.log(`[PROPOSAL CONFIRMED]: Executing ${proposal.envelope.name}`);
+    await executeAction(proposal.envelope, proposal.event, true); // force=true
+    pendingProposals.delete(proposalId);
+    return true;
+}
+
+export function rejectProposal(proposalId: string): boolean {
+    const deleted = pendingProposals.delete(proposalId);
+    if (deleted) {
+        console.log(`[PROPOSAL REJECTED]: Dropped proposal ${proposalId}`);
+    }
+    return deleted;
+}
+
 // === Evaluation Logic ===
 
 function matchesFilter(payload: any, filter: any): boolean {
@@ -77,44 +117,69 @@ function matchesFilter(payload: any, filter: any): boolean {
     return true;
 }
 
-async function executeAction(envelope: AutomationEnvelope, event: IngestedEvent) {
+async function executeAction(envelope: AutomationEnvelope, event: IngestedEvent, force: boolean = false) {
     const { action, tier, ownerId } = envelope;
 
     console.log(`Executing Automation [${envelope.name}] (Tier ${tier}) triggered by ${event.id}`);
 
     // Tier 0: Informational (Notification only)
-    // NOTE: In MVP, we just log. In real system, this sends a push notification.
     if (tier === 'informational') {
         console.log(`[NOTIFY USER]: Event ${event.type} occurred - ${envelope.description}`);
+        const { sendChannelMessage } = await import('./channelService.js');
+        // Broadcast to all active channels for the owner (simplified for Phase 2)
+        // In reality, we'd look up the user's preferred channel
+        const { loadChannels } = await import('./channelStore.js');
+        const channels = await loadChannels();
+        for (const ch of channels) {
+            if (ch.enabled && ch.allowlist.includes(ownerId)) {
+                // Send to the first conversation found for this user? 
+                // Phase 2 stub: just log, or we need conversationId mapping.
+                // We will skip actual sending if updated channelService doesn't support user-mapping yet.
+            }
+        }
         return;
     }
 
     // Tier 2: Delegated (Requires Approval)
-    // For MVP, we'll auto-approve since we don't have the "Proposal Stream" UI yet.
-    // TODO: Implement proposal logic.
-    if (tier === 'delegated') {
-        console.log(`[PROPOSAL CREATED]: Waiting for user approval to run ${action.skillId}`);
-        // We'll skip execution for now to mock the "Pending" state
+    if (tier === 'delegated' && !force) {
+        const proposal: PendingProposal = {
+            id: crypto.randomUUID(),
+            envelope,
+            event,
+            createdAt: new Date().toISOString()
+        };
+        pendingProposals.set(proposal.id, proposal);
+
+        console.log(`[PROPOSAL CREATED]: Waiting for user approval to run ${action.skillId}. Proposal ID: ${proposal.id}`);
+
+        // Notify user of the proposal via ChannelService
+        // (Circular dependency warning: we import dynamically)
+        try {
+            const { broadcastProposal } = await import('./channelService.js');
+            await broadcastProposal(ownerId, `Please confirm execution of: ${envelope.name}\nSay "Yes" to confirm.`);
+        } catch (e) {
+            console.error('Failed to broadcast proposal:', e);
+        }
         return;
     }
 
-    // Tier 1 & 3: Execution
+    // Tier 1 & 3: Execution (or Tier 2 confirmed)
     try {
+        const requestId = crypto.randomUUID();
         // Spawn a Worker to handle the action
         const agent = await spawnAgent({
             role: 'worker',
             userId: ownerId,
-            sessionId: 'automation-session', // Automations run in a dedicated context or we need to find active session
+            sessionId: 'automation-session',
             skillId: action.skillId,
             templateId: action.templateId,
             metadata: {
                 automationId: envelope.id,
                 triggerEventId: event.id,
+                requestId,
                 ...action.args
             }
         });
-
-        await startWorker(agent);
 
         await appendAudit({
             id: crypto.randomUUID(),
@@ -124,6 +189,7 @@ async function executeAction(envelope: AutomationEnvelope, event: IngestedEvent)
             decision: 'allow',
             resource: { type: 'system', component: 'automation' },
             agentId: agent.id,
+            requestId,
             metadata: {
                 envelopeId: envelope.id,
                 eventId: event.id
@@ -147,8 +213,6 @@ export async function startAutomationService() {
 
             // Check Trigger Type
             if (trigger.type === 'event' || trigger.type === 'webhook') {
-                // Match Source & Type (We map 'source' in trigger to 'source' in event, but trigger might be generic)
-                // For now, assume trigger.source matches event.source
                 if (trigger.source === event.source) {
                     if (matchesFilter(event.payload, trigger.filter)) {
                         executeAction(envelope, event);
@@ -160,3 +224,4 @@ export async function startAutomationService() {
 
     console.log('Automation Service started.');
 }
+

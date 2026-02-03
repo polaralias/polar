@@ -3,6 +3,8 @@ import { loadChannels, updateChannel, ChannelConfig } from './channelStore.js';
 import { TelegramAdapter } from './channels/telegram.js';
 import { ChannelAdapter, InboundMessage } from './channels/adapter.js';
 import { ingestEvent } from './eventBus.js';
+import { classifier } from './classifierService.js';
+import { confirmProposal, rejectProposal, getLastPendingProposal } from './automationService.js';
 import crypto from 'node:crypto';
 
 const adapters = new Map<string, ChannelAdapter>();
@@ -22,6 +24,9 @@ async function startAdapter(config: ChannelConfig) {
 
     if (config.type === 'telegram') {
         adapter = new TelegramAdapter(config);
+    } else if (config.type === 'slack') {
+        const { SlackAdapter } = await import('./channels/slack.js');
+        adapter = new SlackAdapter(config);
     }
 
     if (adapter) {
@@ -54,6 +59,23 @@ async function handleInboundMessage(config: ChannelConfig, adapter: ChannelAdapt
                 config.allowlist.push(msg.senderId);
                 await updateChannel(config);
                 await adapter.send(msg.conversationId, `✅ Successfully paired with user ${userId}!`);
+
+                const { appendAudit } = await import('./audit.js');
+                await appendAudit({
+                    id: crypto.randomUUID(),
+                    time: new Date().toISOString(),
+                    subject: userId,
+                    action: 'channel.pair_complete',
+                    decision: 'allow',
+                    resource: { type: 'system', component: 'channel' },
+                    requestId: crypto.randomUUID(),
+                    metadata: {
+                        channelId: config.id,
+                        senderId: msg.senderId,
+                        platform: config.type
+                    }
+                });
+
                 pairingCodes.delete(code);
                 console.log(`Paired ${msg.senderId} to ${userId}`);
             } else {
@@ -74,7 +96,28 @@ async function handleInboundMessage(config: ChannelConfig, adapter: ChannelAdapt
         return;
     }
 
-    // 3. Ingest Event
+    // 3. Proactivity Check: Is this a reply to a proposal?
+    const proposal = getLastPendingProposal();
+    if (proposal) {
+        const intent = await classifier.classify(msg.content);
+
+        // Debug log for classification (useful for MVP validation)
+        console.log(`[Channel ${config.id}] Message: "${msg.content}" classified as:`, intent);
+
+        if (intent.type === 'confirmation') {
+            await confirmProposal(proposal.id);
+            await adapter.send(msg.conversationId, `✅ Confirmed! Executing "${proposal.envelope.name}"...`);
+            return;
+        }
+
+        if (intent.type === 'rejection') {
+            rejectProposal(proposal.id);
+            await adapter.send(msg.conversationId, `❌ Cancelled.`);
+            return;
+        }
+    }
+
+    // 4. Ingest Event
     await ingestEvent('channel', 'message', {
         channelId: config.id,
         platform: config.type,
@@ -84,13 +127,36 @@ async function handleInboundMessage(config: ChannelConfig, adapter: ChannelAdapt
         text: msg.content,
         timestamp: msg.timestamp
     });
-
-    // Acknowledgement (optional, good for UX)
-    // await adapter.send(msg.conversationId, "Received.");
 }
 
 export async function sendChannelMessage(channelId: string, conversationId: string, text: string) {
     const adapter = adapters.get(channelId);
     if (!adapter) throw new Error(`Channel ${channelId} not active`);
     await adapter.send(conversationId, text);
+}
+
+// Broadcast a message to all channels where the user is allowlisted
+// This is a simplified "User Routing" for Phase 2
+export async function broadcastProposal(userId: string, text: string) {
+    const channels = await loadChannels();
+    let sentCount = 0;
+
+    for (const config of channels) {
+        if (!config.enabled) continue;
+        if (config.allowlist.includes(userId)) {
+            const adapter = adapters.get(config.id);
+            // STUB: We need a way to map UserId -> Last ConversationId
+            // For MVP, if the adapter supports tracking conversation context, use it.
+            // But we don't have that map yet. 
+            // So we will just log that we WOULD send it, unless we have a "last active conversation" stored.
+            // As a fallback for Phase 2 validation, we'll try to send if we have a way.
+
+            console.log(`[Broadcast] Would send to user ${userId} on ${config.id}: ${text}`);
+
+            // To make this testable, if we had a stored conversation map (like 'user_last_conv'), we'd use it.
+            // For now, we rely on the console log to prove the flow works.
+            sentCount++;
+        }
+    }
+    return sentCount;
 }

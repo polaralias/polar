@@ -119,16 +119,41 @@ export async function startWorker(agent: Agent): Promise<void> {
 
     const signingKey = await readSigningKey();
 
-    // Mint separate tokens for each capability (or a compound token)
-    // For simplicity, we create one token per capability and pass them comma-separated
+    // Mint separate tokens for each capability
     const tokens: string[] = [];
+    const timestamp = Math.floor(Date.now() / 1000);
+
     for (const action of validatedCapabilities) {
+        // Determine TTL based on action type
+        // Read-only: 60 mins, Write/Execute: 15 mins
+        const isRead = action.endsWith('.read') || action === 'runtime.workerChannel';
+        const ttlSeconds = isRead ? 60 * 60 : 15 * 60;
+
+        // Resource constraint:
+        // Must be derived from the skill manifest or template definition.
+        // For now, we default to stricter than '*' but still need manifest integration
+        // in Phase 3. In Phase 2 patch, we at least stop minting '*' for everything.
+        // IPC channel gets 'system' resource.
+        let resource: Capability['resource'];
+
+        if (action === 'runtime.workerChannel') {
+            resource = { type: 'system', components: ['worker'] };
+        } else {
+            // Use the resource from the user's grant if available, otherwise fallback to skill scope
+            const grant = userGrants.find(g => g.action === action);
+            if (grant && grant.resource) {
+                resource = grant.resource;
+            } else {
+                resource = { type: 'skill', components: [agent.skillId || 'unknown'] };
+            }
+        }
+
         const capability: Capability = {
             id: crypto.randomUUID(),
             subject: agent.id,
             action,
-            resource: { type: 'system', components: ['*'] }, // Allow any resource for now
-            expiresAt: Math.floor(Date.now() / 1000) + (24 * 60 * 60), // 24 hours
+            resource,
+            expiresAt: timestamp + ttlSeconds,
         };
         const token = await mintCapabilityToken(capability, signingKey, policyVersion);
         tokens.push(token);
@@ -144,7 +169,7 @@ export async function startWorker(agent: Agent): Promise<void> {
         decision: 'allow',
         resource: { type: 'system', component: 'worker' },
         agentId: agent.id,
-        requestId: crypto.randomUUID(), // Linking ID
+        requestId: (agent.metadata?.requestId as string) || crypto.randomUUID(), // Linking ID
         metadata: {
             skillId: agent.skillId,
             templateId: agent.templateId,

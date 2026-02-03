@@ -71,6 +71,16 @@ export const GenericResourceConstraintSchema = z.object({
   constraints: z.record(z.any()),
 });
 
+export const SkillResourceSchema = z.object({
+  type: z.literal('skill'),
+  id: z.string().min(1),
+});
+
+export const SkillResourceConstraintSchema = z.object({
+  type: z.literal('skill'),
+  components: z.array(z.string().min(1)).optional(), // Used for skill ID scoping
+});
+
 export const ResourceSchema = z.discriminatedUnion('type', [
   FsResourceSchema,
   MemoryResourceSchema,
@@ -78,6 +88,7 @@ export const ResourceSchema = z.discriminatedUnion('type', [
   HttpResourceSchema,
   GenericResourceSchema,
   CliResourceSchema,
+  SkillResourceSchema,
 ]);
 
 export const ResourceConstraintSchema = z.discriminatedUnion('type', [
@@ -87,6 +98,7 @@ export const ResourceConstraintSchema = z.discriminatedUnion('type', [
   HttpResourceConstraintSchema,
   GenericResourceConstraintSchema,
   CliResourceConstraintSchema,
+  SkillResourceConstraintSchema,
 ]);
 
 export const SessionSchema = z.object({
