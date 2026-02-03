@@ -14,6 +14,7 @@ export type ChannelConfig = {
     enabled: boolean;
     credentials: Record<string, string>;
     allowlist: string[]; // List of verified sender IDs
+    userId?: string; // Bound Polar User ID (Phase 2 Addition)
 };
 
 const channelsPath = path.join(runtimeConfig.dataDir, 'channels.json');

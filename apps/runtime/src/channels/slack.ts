@@ -47,28 +47,34 @@ export class SlackAdapter implements ChannelAdapter {
         this.messageHandler = handler;
     }
 
+
     async send(conversationId: string, text: string): Promise<void> {
         if (!this.token) {
             console.error(`Slack send failed: No bot token configured for adapter ${this.id}`);
             return;
         }
 
-        console.log(`[Slack STUB] Would send to ${conversationId}: "${text}"`);
+        console.log(`[Slack] Sending to ${conversationId}: "${text}"`);
 
-        // STUB: Real implementation:
-        /*
-        const response = await fetch('https://slack.com/api/chat.postMessage', {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${this.token}`,
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                channel: conversationId,
-                text: text
-            })
-        });
-        */
+        try {
+            const response = await fetch('https://slack.com/api/chat.postMessage', {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${this.token}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    channel: conversationId,
+                    text: text
+                })
+            });
+            const data = await response.json() as any;
+            if (!data.ok) {
+                console.error(`Slack API error:`, data.error);
+            }
+        } catch (error) {
+            console.error(`Slack network error:`, error);
+        }
     }
 
     // Helper to simulate receiving a message (useful for testing/stubbing)
@@ -88,3 +94,4 @@ export class SlackAdapter implements ChannelAdapter {
         await this.messageHandler(msg);
     }
 }
+

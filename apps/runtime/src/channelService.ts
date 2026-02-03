@@ -55,8 +55,10 @@ async function handleInboundMessage(config: ChannelConfig, adapter: ChannelAdapt
             const userId = pairingCodes.get(code)!;
 
             // Add to allowlist
+            // Add to allowlist and bind to user
             if (!config.allowlist.includes(msg.senderId)) {
                 config.allowlist.push(msg.senderId);
+                config.userId = userId; // Bind channel to this user
                 await updateChannel(config);
                 await adapter.send(msg.conversationId, `✅ Successfully paired with user ${userId}!`);
 
@@ -137,25 +139,37 @@ export async function sendChannelMessage(channelId: string, conversationId: stri
 
 // Broadcast a message to all channels where the user is allowlisted
 // This is a simplified "User Routing" for Phase 2
+// Broadcast a message to all channels where the user is paired
+// This effectively routes notifications to the correct user.
 export async function broadcastProposal(userId: string, text: string) {
     const channels = await loadChannels();
     let sentCount = 0;
 
     for (const config of channels) {
         if (!config.enabled) continue;
-        if (config.allowlist.includes(userId)) {
+
+        // Match by bound User ID (Preferred) or Fallback to allowlist (Legacy)
+        const isUserChannel = config.userId === userId || (config.allowlist.length > 0 && !config.userId && config.allowlist.includes(userId /* unsafe fallback */));
+
+        // Note: The fallback check config.allowlist.includes(userId) is technically incorrect 
+        // because allowlist has SenderIDs (e.g. Telegram ID) not Polar User IDs.
+        // But for dev/testing where they might match or mapped manually, we keep it loose.
+        // The primary check is `config.userId === userId`.
+
+        if (config.userId === userId) {
             const adapter = adapters.get(config.id);
-            // STUB: We need a way to map UserId -> Last ConversationId
-            // For MVP, if the adapter supports tracking conversation context, use it.
-            // But we don't have that map yet. 
-            // So we will just log that we WOULD send it, unless we have a "last active conversation" stored.
-            // As a fallback for Phase 2 validation, we'll try to send if we have a way.
+            if (adapter) {
+                // We send to the last active conversation if we tracked it, 
+                // or just broadcast to the channel (works for 1:1 bots like Telegram).
+                // Since allowlist stores senderIds, we pick the first one as "the user's chat id"
+                const targetConversationId = config.allowlist[0];
 
-            console.log(`[Broadcast] Would send to user ${userId} on ${config.id}: ${text}`);
-
-            // To make this testable, if we had a stored conversation map (like 'user_last_conv'), we'd use it.
-            // For now, we rely on the console log to prove the flow works.
-            sentCount++;
+                if (targetConversationId) {
+                    console.log(`[Broadcast] Sending to ${userId} on ${config.id} (Conversation: ${targetConversationId})`);
+                    await adapter.send(targetConversationId, text);
+                    sentCount++;
+                }
+            }
         }
     }
     return sentCount;
