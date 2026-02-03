@@ -1,7 +1,13 @@
 # Phase 2 - Stage 2: Connectors (Typed Integrations)
 
+## Phase 1 Foundation
+This stage utilizes the infrastructure established in Phase 1:
+- **Gateway Enforcement**: Request interception logic and token validation.
+- **Tool Introspection**: Mechanism for workers to query allowed methods.
+- **Rate Limiting**: Framework for per-session and per-token request caps.
+
 ## Goal
-Build the first set of "Real" integrations using the **Connector** pattern. Connectors are **Gateway Services** that enforce policy before executing code.
+Build the first set of "Real" integrations using the **Connector** pattern. This stage addresses a **CRITICAL GAP from Phase 1: Egress Control (HTTP host allowlists)**.
 
 ## 1. Connector Architecture
 Connectors are distinct form the Agent Worker. The Worker *requests*, the Gateway *decides & executes*.

@@ -12,6 +12,8 @@ import {
   HttpResource,
   GenericResourceConstraint,
   GenericResource,
+  CliResourceConstraint,
+  CliResource,
 } from './schemas.js';
 
 export type PolicyDecision = {
@@ -102,6 +104,13 @@ function matchesGenericConstraint(constraint: GenericResourceConstraint, resourc
   return true;
 }
 
+function matchesCliConstraint(constraint: CliResourceConstraint, resource: CliResource): boolean {
+  if (constraint.commands && !constraint.commands.includes(resource.command)) {
+    return false;
+  }
+  return true;
+}
+
 export function matchesResourceConstraint(
   constraint: ResourceConstraint,
   resource: Resource,
@@ -124,6 +133,10 @@ export function matchesResourceConstraint(
 
   if (constraint.type === 'connector' && resource.type === 'connector') {
     return matchesGenericConstraint(constraint, resource);
+  }
+
+  if (constraint.type === 'cli' && resource.type === 'cli') {
+    return matchesCliConstraint(constraint, resource);
   }
 
   return false;
@@ -195,6 +208,12 @@ function buildCapabilityConstraints(
       constraints: { resourceIds: [request.resource.resourceId] },
     };
     constraints.resource = genericConstraint;
+  } else if (request.resource.type === 'cli') {
+    const cliConstraint: CliResourceConstraint = {
+      type: 'cli',
+      commands: [request.resource.command]
+    };
+    constraints.resource = cliConstraint;
   }
 
   return constraints;

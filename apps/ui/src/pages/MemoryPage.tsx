@@ -10,7 +10,7 @@ const MemoryPage: React.FC = () => {
         try {
             setLoading(true);
             const data = await fetchMemory();
-            setItems(data);
+            setItems(data.items);
             setError(null);
         } catch (err) {
             setError((err as Error).message);

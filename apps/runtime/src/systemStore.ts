@@ -13,6 +13,7 @@ const STATUS_FILE = path.join(runtimeConfig.dataDir, 'system_status.json');
 const DEFAULT_STATUS: SystemStatus = {
     mode: 'normal',
     lastModeChange: new Date().toISOString(),
+    skillPolicyMode: 'developer', // Default to developer mode
 };
 
 export async function getSystemStatus(): Promise<SystemStatus> {
@@ -47,6 +48,7 @@ export async function setEmergencyMode(enabled: boolean, reason?: string): Promi
             mode: enabled ? 'emergency' : 'normal',
             lastModeChange: new Date().toISOString(),
             reason: enabled ? reason : undefined,
+            skillPolicyMode: current.skillPolicyMode,
         };
 
         await saveSystemStatus(newStatus);
@@ -68,3 +70,55 @@ export async function setEmergencyMode(enabled: boolean, reason?: string): Promi
         return newStatus;
     });
 }
+
+/**
+ * Set the skill policy mode.
+ * - 'developer': Allow unsigned/locally_trusted skills (for development)
+ * - 'signed_only': Only allow trusted (cryptographically signed) skills (for production)
+ */
+export async function setSkillPolicyMode(mode: 'developer' | 'signed_only'): Promise<SystemStatus> {
+    return await mutex.runExclusive(async () => {
+        const current = await getSystemStatus();
+        if (current.skillPolicyMode === mode) {
+            return current;
+        }
+
+        const newStatus: SystemStatus = {
+            ...current,
+            skillPolicyMode: mode,
+        };
+
+        await saveSystemStatus(newStatus);
+
+        await appendAudit({
+            id: crypto.randomUUID(),
+            time: new Date().toISOString(),
+            action: 'system.update_skill_policy_mode',
+            subject: 'user',
+            resource: { type: 'system', component: 'security' },
+            decision: 'allow',
+            metadata: {
+                previousMode: current.skillPolicyMode,
+                newMode: mode,
+            },
+        });
+
+        return newStatus;
+    });
+}
+
+/**
+ * Check if a skill's trust level is allowed under current policy mode.
+ */
+export async function isSkillTrustLevelAllowed(trustLevel: 'trusted' | 'locally_trusted' | 'untrusted'): Promise<boolean> {
+    const status = await getSystemStatus();
+
+    if (status.skillPolicyMode === 'signed_only') {
+        // Only cryptographically verified ("trusted") skills allowed
+        return trustLevel === 'trusted';
+    }
+
+    // Developer mode: allow all except untrusted
+    return trustLevel === 'trusted' || trustLevel === 'locally_trusted';
+}
+

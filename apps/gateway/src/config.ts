@@ -19,6 +19,19 @@ export const gatewayConfig = {
   maxHeaderSize: Number(process.env.MAX_HEADER_SIZE ?? 16 * 1024), // 16KB
   rateLimitWindowMs: 60 * 1000,
   rateLimitMaxRequests: Number(process.env.RATE_LIMIT_MAX ?? 1000), // Higher limit for gateway
+  cliAllowlist: {
+    git: {
+      bin: process.env.GIT_BIN_PATH ?? (process.platform === 'win32' ? 'git.exe' : '/usr/bin/git'),
+      allowedSubcommands: ['status', 'log', 'diff', 'show', 'branch']
+    },
+    echo: {
+      bin: process.platform === 'win32' ? 'cmd.exe' : '/bin/echo',
+      // Special handling might be needed for shell builtins, but for 'cmd /c echo' or '/bin/echo' it's a binary.
+      allowedSubcommands: [] // echo takes args directly, not subcommands usually, but our model assumes subcommand first? 
+      // Actually, for generic CLI, we might just allow arguments matching a regex.
+      // For MVP, let's stick to "git" as the primary use case which has subcommands.
+    }
+  } as Record<string, { bin: string; allowedSubcommands: string[] }>,
 };
 
 export function resolveFsPath(inputPath: string): string {

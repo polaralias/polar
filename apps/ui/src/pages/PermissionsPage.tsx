@@ -1,9 +1,15 @@
 import { useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { fetchPolicy, updatePolicy, type PolicyStore, type Grant } from '../api';
+import { api, type PolicyStore } from '../api.js';
+
+// Grant type from PolicyStore
+type Grant = PolicyStore['grants'][number];
 
 export default function PermissionsPage() {
-  const { data: policy, refetch } = useQuery({ queryKey: ['policy'], queryFn: fetchPolicy });
+  const { data: policyData, refetch } = useQuery({
+    queryKey: ['policy'],
+    queryFn: () => api.fetchPolicy()
+  });
   const [status, setStatus] = useState<string | null>(null);
 
   // New grant state
@@ -11,8 +17,11 @@ export default function PermissionsPage() {
   const [action, setAction] = useState('');
   const [resourceJson, setResourceJson] = useState('{\n  "type": "fs",\n  "path": "/"\n}');
 
+  // Extract policy from nested response
+  const policy = policyData?.policy;
+
   const mutation = useMutation({
-    mutationFn: (payload: PolicyStore) => updatePolicy(payload),
+    mutationFn: (payload: PolicyStore) => api.updatePolicy(payload),
     onSuccess: () => {
       setStatus('Saved');
       refetch();
@@ -53,7 +62,7 @@ export default function PermissionsPage() {
         grants: [...policy.grants, newGrant],
       });
       setAction(''); // clear action but keep subject common
-    } catch (e) {
+    } catch {
       setStatus('Invalid JSON in resource field');
     }
   };
@@ -75,7 +84,7 @@ export default function PermissionsPage() {
               </tr>
             </thead>
             <tbody>
-              {policy.grants.map((grant, i) => (
+              {policy.grants.map((grant: Grant, i: number) => (
                 <tr key={grant.id || i} className="border-b border-border/50">
                   <td className="p-2 font-mono text-sm">{grant.subject}</td>
                   <td className="p-2 font-mono text-sm">{grant.action}</td>

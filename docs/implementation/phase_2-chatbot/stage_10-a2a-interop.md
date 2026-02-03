@@ -1,5 +1,12 @@
 # Phase 2 - Stage 10: A2A Interoperability & Worker Spawning
 
+## Phase 1 Foundation
+This stage builds on the architectural constraints established in Phase 1:
+- **`spawnAgent`**: Core agent creation logic with mandatory `parentAgentId` tracking.
+- **Spawn Hierarchy**: Enforced depth limits (`maxAgentSpawnDepth`) and session limits (`maxAgentsPerSession`).
+- **Role Isolation**: Strictly defined `getRoleCapabilities()` where workers are forbidden from spawning or coordinating.
+- **Coordination Framework**: `proposeCoordination` logic which ensures child agents are properly attributed to their parent and session.
+
 ## Goal
 Establish the core **Planner-Worker Protocol**. The Main Agent (Orchestrator) acts as a high-level planner that cannot directly access external tools. To perform actions, it must request the Runtime to spawn specialized, ephemeral **Workers** with restricted capability tokens.
 

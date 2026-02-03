@@ -224,6 +224,137 @@ export const api = {
     method: 'POST',
     body: JSON.stringify(params),
   }),
+
+  // LLM Intelligence Configuration APIs
+  getLLMConfig: () => apiFetch<{
+    provider: string;
+    modelId: string;
+    parameters: { temperature: number; maxTokens?: number; topP?: number };
+    tierModels?: { cheap?: string; fast?: string; writing?: string; reasoning?: string };
+    hasCredential: boolean;
+    providerCredentials: Record<string, boolean>;
+  }>('/llm/config'),
+
+  updateLLMConfig: (config: {
+    provider?: string;
+    modelId?: string;
+    parameters?: { temperature?: number; maxTokens?: number; topP?: number };
+    tierModels?: { cheap?: string; fast?: string; writing?: string; reasoning?: string } | undefined;
+  }) => apiFetch<{ ok: boolean }>('/llm/config', {
+    method: 'POST',
+    body: JSON.stringify(config),
+  }),
+
+  getLLMStatus: () => apiFetch<{ configured: boolean; provider: string; model: string }>('/llm/status'),
+
+  getLLMModels: async (provider?: string) => {
+    const query = provider ? `?provider=${provider}` : '';
+    const data = await apiFetch<{ models: Array<{ id: string; name: string }> }>(`/llm/models${query}`);
+    return data.models.map(m => m.id);
+  },
+
+  getLLMProviderStatuses: () => apiFetch<Record<string, { available: boolean; hasCredential: boolean }>>('/llm/providers/status'),
+
+  setLLMCredential: (provider: string, credential: string) => apiFetch<{ ok: boolean }>('/llm/credentials', {
+    method: 'POST',
+    body: JSON.stringify({ provider, credential }),
+  }),
+
+  deleteLLMCredential: (provider: string) => apiFetch<{ ok: boolean }>(`/llm/credentials/${provider}`, {
+    method: 'DELETE',
+  }),
+
+  // =========================================================================
+  // User Preferences & Personalization
+  // =========================================================================
+
+  getPreferences: () => apiFetch<{
+    id: string;
+    userId: string;
+    customInstructions: {
+      aboutUser: string;
+      responseStyle: string;
+    };
+    userContext: {
+      work: {
+        role?: string;
+        industry?: string;
+        typicalHours?: string;
+        timezone?: string;
+      };
+      personal: {
+        familyContext?: string;
+        preferredContactTimes?: string;
+      };
+      goals: Array<{
+        id: string;
+        description: string;
+        category: 'professional' | 'personal' | 'learning';
+        createdAt: string;
+        checkInScheduled: boolean;
+      }>;
+    };
+    onboarding: {
+      completed: boolean;
+      startedAt?: string;
+      completedAt?: string;
+      phase: 'not_started' | 'in_progress' | 'completed';
+      coveredTopics: Array<'work' | 'personal' | 'goals'>;
+    };
+    enabled: boolean;
+    createdAt: string;
+    updatedAt: string;
+  }>('/preferences'),
+
+  updateCustomInstructions: (instructions: { aboutUser?: string; responseStyle?: string }) =>
+    apiFetch<{ ok: boolean }>('/preferences/instructions', {
+      method: 'PUT',
+      body: JSON.stringify(instructions),
+    }),
+
+  updateUserContext: (context: {
+    work?: { role?: string; industry?: string; typicalHours?: string; timezone?: string };
+    personal?: { familyContext?: string; preferredContactTimes?: string };
+  }) =>
+    apiFetch<{ ok: boolean }>('/preferences/context', {
+      method: 'PUT',
+      body: JSON.stringify(context),
+    }),
+
+  addGoal: (goal: { description: string; category: 'professional' | 'personal' | 'learning' }) =>
+    apiFetch<{ ok: boolean }>('/preferences/goals', {
+      method: 'POST',
+      body: JSON.stringify(goal),
+    }),
+
+  removeGoal: (goalId: string) =>
+    apiFetch<{ ok: boolean }>(`/preferences/goals/${goalId}`, {
+      method: 'DELETE',
+    }),
+
+  setPersonalizationEnabled: (enabled: boolean) =>
+    apiFetch<{ ok: boolean }>('/preferences/enabled', {
+      method: 'PUT',
+      body: JSON.stringify({ enabled }),
+    }),
+
+  getOnboardingStatus: () =>
+    apiFetch<{
+      needsOnboarding: boolean;
+      phase: 'not_started' | 'in_progress' | 'completed';
+      coveredTopics: Array<'work' | 'personal' | 'goals'>;
+      completedAt?: string;
+    }>('/preferences/onboarding-status'),
+
+  startOnboarding: () =>
+    apiFetch<{ ok: boolean; phase: string }>('/preferences/onboarding/start', {
+      method: 'POST',
+    }),
+
+  completeOnboarding: () =>
+    apiFetch<{ ok: boolean; completedAt: string }>('/preferences/onboarding/complete', {
+      method: 'POST',
+    }),
 };
 
 export const {

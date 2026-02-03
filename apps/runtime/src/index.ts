@@ -78,7 +78,7 @@ declare module 'fastify' {
   interface FastifyRequest {
     principal?: {
       id: string;
-      role: 'user' | 'system' | 'internal';
+      role: 'user' | 'system' | 'internal' | 'main' | 'coordinator' | 'worker';
     };
   }
 }
@@ -196,6 +196,49 @@ app.post('/sessions/:id/messages', async (request, reply) => {
   const workerRequest = parseMessage(body.message);
   if (!workerRequest) {
     return { ok: true, message: savedMessage };
+  }
+
+  if (workerRequest.action === 'worker.spawn') {
+    const capabilities = workerRequest.args?.capabilities as string[];
+    // Extract model tier for tier selection (cheap, fast, writing, reasoning)
+    // The tool uses 'modelTier', we pass it as 'modelHint' to the LLM service
+    const modelHint = (workerRequest.args?.modelTier || workerRequest.args?.modelHint) as string | undefined;
+
+    // 1. Authorization: Only Main/Coordinator can spawn
+    const requesterRole = request.principal?.role;
+    if (requesterRole !== 'user' && requesterRole !== 'main' && requesterRole !== 'coordinator' && requesterRole !== 'internal') {
+      return reply.status(403).send({ error: 'Only planners can spawn workers' });
+    }
+
+    const { startWorker } = await import('./workerRuntime.js');
+    const agent = await spawnAgent({
+      role: 'worker',
+      sessionId: session.id,
+      userId: session.subject,
+      skillId: workerRequest.args?.skillId as string,
+      metadata: {
+        goal: workerRequest.args?.goal,
+        capabilities: capabilities,
+        modelHint: modelHint, // Pass model hint for tier selection
+        readOnly: workerRequest.args?.readOnly, // Explicit read-only flag
+      }
+    });
+
+    await startWorker(agent);
+
+    await appendAudit({
+      id: crypto.randomUUID(),
+      time: new Date().toISOString(),
+      subject: request.principal?.id || 'main',
+      action: 'worker.spawn',
+      decision: 'allow',
+      resource: { type: 'system', component: 'worker' },
+      sessionId: session.id,
+      agentId: agent.id,
+      metadata: { capabilities, goal: workerRequest.args?.goal, modelHint }
+    });
+
+    return { ok: true, agentId: agent.id };
   }
 
   const path = workerRequest.path || (workerRequest.args?.path as string);
@@ -630,6 +673,19 @@ app.post('/skills/:id/disable', async (request, reply) => {
   return { ok: true };
 });
 
+app.post('/skills/:id/rollback', async (request, reply) => {
+  const { id } = request.params as { id: string };
+  const body = request.body as { version?: string };
+
+  const { rollbackSkill } = await import('./skillStore.js');
+  try {
+    const skill = await rollbackSkill(id, body?.version);
+    return { ok: true, skill };
+  } catch (error) {
+    return reply.status(400).send({ error: (error as Error).message });
+  }
+});
+
 app.post('/skills/:id/grant', async (request, reply) => {
   const { id } = request.params as { id: string };
   const skill = await getSkill(id);
@@ -968,8 +1024,36 @@ app.post('/channels', async (request, reply) => {
     return reply.status(400).send({ error: 'id and type are required' });
   }
   await updateChannel(body);
+  // Restart service to pick up new config
+  const { startChannelService } = await import('./channelService.js');
+  startChannelService();
   return { ok: true };
 });
+
+app.post('/channels/pair', async (request, reply) => {
+  const { generatePairingCode } = await import('./channelService.js');
+  const userId = request.principal?.id || 'user';
+  const code = await generatePairingCode(userId);
+  return { code, expiresSeconds: 600 };
+});
+
+app.post('/channels/:id/send', async (request, reply) => {
+  const { id } = request.params as { id: string };
+  const body = request.body as { conversationId: string; text: string };
+
+  // Authz TODO: check user permission
+
+  const { sendChannelMessage } = await import('./channelService.js');
+  try {
+    await sendChannelMessage(id, body.conversationId, body.text);
+    return { ok: true };
+  } catch (e) {
+    return reply.status(500).send({ error: (e as Error).message });
+  }
+});
+
+// Start Channel Service
+import('./channelService.js').then(m => m.startChannelService());
 
 app.post('/channels/:id/allowlist', async (request, reply) => {
   const { getChannel, updateChannel } = await import('./channelStore.js');
@@ -1141,6 +1225,18 @@ app.post('/system/emergency', async (request, reply) => {
   return { ok: true, status };
 });
 
+app.post('/system/policy-mode', async (request, reply) => {
+  const { setSkillPolicyMode } = await import('./systemStore.js');
+  const body = request.body as { mode: 'developer' | 'signed_only' };
+
+  if (!body.mode || !['developer', 'signed_only'].includes(body.mode)) {
+    return reply.status(400).send({ error: "mode must be either 'developer' or 'signed_only'" });
+  }
+
+  const status = await setSkillPolicyMode(body.mode);
+  return { ok: true, status };
+});
+
 app.get('/external-agents', async () => {
   const { loadExternalAgents } = await import('./externalAgentStore.js');
   const agents = await loadExternalAgents();
@@ -1158,12 +1254,503 @@ app.post('/external-agents', async (request, reply) => {
   return { ok: true };
 });
 
+
 app.delete('/external-agents/:id', async (request, reply) => {
   const { id } = request.params as { id: string };
   const { removeExternalAgent } = await import('./externalAgentStore.js');
   await removeExternalAgent(id);
   return { ok: true };
 });
+
+// === Automation & Events ===
+
+app.get('/automations', async () => {
+  const { listAutomations } = await import('./automationService.js');
+  return { automations: listAutomations() };
+});
+
+app.post('/automations', async (request, reply) => {
+  const { createAutomation } = await import('./automationService.js');
+  const { AutomationEnvelopeSchema } = await import('@polar/core');
+  // Schema excludes id/createdAt for creation input usually, but we reuse for now or strict parse
+  // Basic validation
+  try {
+    const body = request.body as any;
+    const env = await createAutomation(body);
+    return { ok: true, automation: env };
+  } catch (e) {
+    return reply.status(400).send({ error: (e as Error).message });
+  }
+});
+
+app.delete('/automations/:id', async (request, reply) => {
+  const { id } = request.params as { id: string };
+  const { deleteAutomation } = await import('./automationService.js');
+  await deleteAutomation(id);
+  return { ok: true };
+});
+
+// ============================================================================
+// LLM Brain Endpoints
+// ============================================================================
+
+app.get('/llm/config', async () => {
+  const { llmService } = await import('./llm/index.js');
+  const config = await llmService.getConfig();
+  // Flatten the response for the UI (it expects the config fields directly, not nested in { config })
+  return config;
+});
+
+app.post('/llm/config', async (request, reply) => {
+  const body = request.body as {
+    provider?: 'openrouter' | 'anthropic' | 'ollama';
+    modelId?: string;
+    parameters?: { temperature?: number; maxTokens?: number; topP?: number };
+    subAgentModels?: { fast?: string; reasoning?: string };
+  };
+
+  const { llmService } = await import('./llm/index.js');
+  const updated = await llmService.updateConfig(body);
+
+  await appendAudit({
+    id: crypto.randomUUID(),
+    time: new Date().toISOString(),
+    subject: request.principal?.id || 'user',
+    action: 'llm.config_update',
+    decision: 'allow',
+    resource: { type: 'system', component: 'llm' },
+    requestId: crypto.randomUUID(),
+    metadata: { provider: updated.provider, modelId: updated.modelId },
+  });
+
+  return { ok: true, config: updated };
+});
+
+app.get('/llm/status', async () => {
+  const { llmService } = await import('./llm/index.js');
+  const status = await llmService.isConfigured();
+  return { status };
+});
+
+app.get('/llm/providers/status', async () => {
+  const { llmService } = await import('./llm/index.js');
+  const statuses = await llmService.getProviderStatuses();
+  return statuses;
+});
+
+app.get('/llm/models', async (request) => {
+  const { llmService } = await import('./llm/index.js');
+  const query = request.query as { provider?: string };
+  const models = await llmService.listModels(query.provider);
+  return { models };
+});
+
+app.post('/llm/chat', async (request, reply) => {
+  const body = request.body as {
+    sessionId: string;
+    message: string;
+  };
+
+  if (!body?.sessionId || !body?.message) {
+    return reply.status(400).send({ error: 'sessionId and message are required' });
+  }
+
+  const session = getSession(body.sessionId);
+  if (!session) {
+    return reply.status(404).send({ error: 'Session not found' });
+  }
+
+  // Verify session ownership
+  if (session.subject !== request.principal?.id && request.principal?.role !== 'internal') {
+    return reply.status(403).send({ error: 'Forbidden: access to session denied' });
+  }
+
+  const { getSystemStatus } = await import('./systemStore.js');
+  const status = await getSystemStatus();
+  if (status.mode === 'emergency') {
+    return reply.status(503).send({ error: 'System is in EMERGENCY MODE. LLM calls are disabled.' });
+  }
+
+  const agent = session.mainAgentId ? await getAgent(session.mainAgentId) : null;
+  if (!agent) {
+    return reply.status(400).send({ error: 'Session has no main agent' });
+  }
+
+  // Get conversation history from message store
+  const { getSessionMessages } = await import('./messageStore.js');
+  const history = await getSessionMessages(session.id);
+
+  // Build context with the new LLM module
+  const { compileMainAgentContext, llmService } = await import('./llm/index.js');
+
+  // Convert stored messages to LLM format
+  const conversationMessages = history.map(msg => ({
+    role: msg.role as 'user' | 'assistant' | 'system',
+    content: msg.content,
+  }));
+
+  // Add the new user message
+  conversationMessages.push({
+    role: 'user' as const,
+    content: body.message,
+  });
+
+  try {
+    // Compile the full context
+    const sessionContext = session.projectPath
+      ? { id: session.id, projectPath: session.projectPath }
+      : { id: session.id };
+    const context = await compileMainAgentContext(
+      agent,
+      sessionContext,
+      conversationMessages,
+    );
+
+    // Call the LLM
+    const response = await llmService.chat(
+      {
+        messages: context.messages,
+        tools: context.tools,
+      },
+      {
+        sessionId: session.id,
+        agentId: agent.id,
+      },
+    );
+
+    // Save the assistant's response to message history
+    if (response.content) {
+      await appendMessage({
+        sessionId: session.id,
+        role: 'assistant',
+        content: response.content,
+      });
+    }
+
+    return {
+      ok: true,
+      content: response.content,
+      toolCalls: response.toolCalls,
+      finishReason: response.finishReason,
+      usage: response.usage,
+    };
+  } catch (error) {
+    console.error('LLM chat failed:', error);
+    return reply.status(500).send({
+      error: (error as Error).message,
+      retryable: (error as any).retryable ?? false,
+    });
+  }
+});
+
+// Endpoint to set/update LLM API keys securely
+app.post('/llm/credentials', async (request, reply) => {
+  const body = request.body as {
+    provider: 'openrouter' | 'anthropic' | 'ollama';
+    credential: string;
+  };
+
+  if (!body?.provider || !body?.credential) {
+    return reply.status(400).send({ error: 'provider and credential are required' });
+  }
+
+  const { getSystemStatus } = await import('./systemStore.js');
+  const status = await getSystemStatus();
+  if (status.mode === 'emergency') {
+    return reply.status(503).send({ error: 'System is in EMERGENCY MODE. Credential updates are disabled.' });
+  }
+
+  const { setSecret } = await import('./secretsService.js');
+  const { LLM_CREDENTIAL_KEYS } = await import('./llm/types.js');
+
+  const credentialKey = LLM_CREDENTIAL_KEYS[body.provider];
+  await setSecret(credentialKey, body.credential);
+
+  await appendAudit({
+    id: crypto.randomUUID(),
+    time: new Date().toISOString(),
+    subject: request.principal?.id || 'user',
+    action: 'llm.credential_update',
+    decision: 'allow',
+    resource: { type: 'system', component: 'llm' },
+    requestId: crypto.randomUUID(),
+    metadata: { provider: body.provider },
+  });
+
+  return { ok: true };
+});
+
+app.delete('/llm/credentials/:provider', async (request, reply) => {
+  const { provider } = request.params as { provider: string };
+
+  if (!['openrouter', 'anthropic', 'ollama'].includes(provider)) {
+    return reply.status(400).send({ error: 'Invalid provider' });
+  }
+
+  const { deleteSecret } = await import('./secretsService.js');
+  const { LLM_CREDENTIAL_KEYS } = await import('./llm/types.js');
+
+  const credentialKey = LLM_CREDENTIAL_KEYS[provider as keyof typeof LLM_CREDENTIAL_KEYS];
+  await deleteSecret(credentialKey);
+
+  await appendAudit({
+    id: crypto.randomUUID(),
+    time: new Date().toISOString(),
+    subject: request.principal?.id || 'user',
+    action: 'llm.credential_delete',
+    decision: 'allow',
+    resource: { type: 'system', component: 'llm' },
+    requestId: crypto.randomUUID(),
+    metadata: { provider },
+  });
+
+  return { ok: true };
+});
+
+// Intent classifier endpoint for proactive action validation
+app.post('/llm/classify-intent', async (request, reply) => {
+  const body = request.body as {
+    sessionId?: string;
+    proposalContext: string;
+    userMessage: string;
+  };
+
+  if (!body?.proposalContext || !body?.userMessage) {
+    return reply.status(400).send({ error: 'proposalContext and userMessage are required' });
+  }
+
+  const { classifyIntent } = await import('./llm/index.js');
+  const result = await classifyIntent(body.proposalContext, body.userMessage, body.sessionId);
+
+  return { result };
+});
+
+// Conversation summarization endpoint
+app.post('/llm/summarize', async (request, reply) => {
+  const body = request.body as {
+    sessionId?: string;
+    messages: Array<{ role: string; content: string }>;
+  };
+
+  if (!body?.messages || !Array.isArray(body.messages)) {
+    return reply.status(400).send({ error: 'messages array is required' });
+  }
+
+  const { summarizeConversation } = await import('./llm/index.js');
+  const result = await summarizeConversation(
+    body.messages.map(m => ({
+      role: m.role as 'user' | 'assistant' | 'system',
+      content: m.content,
+    })),
+    body.sessionId,
+  );
+
+  return { result };
+});
+
+// ============================================================================
+// End LLM Brain Endpoints
+// ============================================================================
+
+// ============================================================================
+// User Preferences & Personalization Endpoints
+// ============================================================================
+
+app.get('/preferences', async (request) => {
+  const { getOrCreatePreferences } = await import('./userPreferences.js');
+  const userId = request.principal?.id || 'default-user';
+  const prefs = await getOrCreatePreferences(userId);
+  return prefs;
+});
+
+app.put('/preferences/instructions', async (request, reply) => {
+  const { updateCustomInstructions } = await import('./userPreferences.js');
+  const userId = request.principal?.id || 'default-user';
+
+  const body = request.body as {
+    aboutUser?: string;
+    responseStyle?: string;
+  };
+
+  if (body.aboutUser !== undefined && body.aboutUser.length > 2000) {
+    return reply.status(400).send({ error: 'aboutUser exceeds 2000 character limit' });
+  }
+
+  if (body.responseStyle !== undefined && body.responseStyle.length > 1000) {
+    return reply.status(400).send({ error: 'responseStyle exceeds 1000 character limit' });
+  }
+
+  const prefs = await updateCustomInstructions(userId, body);
+
+  await appendAudit({
+    id: crypto.randomUUID(),
+    time: new Date().toISOString(),
+    subject: userId,
+    action: 'preferences.update_instructions',
+    decision: 'allow',
+    resource: { type: 'system', component: 'preferences' },
+    requestId: crypto.randomUUID(),
+  });
+
+  return prefs;
+});
+
+app.put('/preferences/context', async (request) => {
+  const { updateUserContext } = await import('./userPreferences.js');
+  const userId = request.principal?.id || 'default-user';
+
+  const body = request.body as {
+    work?: { role?: string; industry?: string; typicalHours?: string; timezone?: string };
+    personal?: { familyContext?: string; preferredContactTimes?: string };
+  };
+
+  const prefs = await updateUserContext(userId, body);
+
+  await appendAudit({
+    id: crypto.randomUUID(),
+    time: new Date().toISOString(),
+    subject: userId,
+    action: 'preferences.update_context',
+    decision: 'allow',
+    resource: { type: 'system', component: 'preferences' },
+    requestId: crypto.randomUUID(),
+  });
+
+  return prefs;
+});
+
+app.post('/preferences/goals', async (request, reply) => {
+  const { addGoal } = await import('./userPreferences.js');
+  const userId = request.principal?.id || 'default-user';
+
+  const body = request.body as {
+    description: string;
+    category: 'professional' | 'personal' | 'learning';
+  };
+
+  if (!body.description || !body.category) {
+    return reply.status(400).send({ error: 'description and category are required' });
+  }
+
+  const prefs = await addGoal(userId, body);
+
+  await appendAudit({
+    id: crypto.randomUUID(),
+    time: new Date().toISOString(),
+    subject: userId,
+    action: 'preferences.add_goal',
+    decision: 'allow',
+    resource: { type: 'system', component: 'preferences' },
+    requestId: crypto.randomUUID(),
+  });
+
+  return prefs;
+});
+
+app.delete('/preferences/goals/:goalId', async (request) => {
+  const { getOrCreatePreferences, updateUserContext } = await import('./userPreferences.js');
+  const userId = request.principal?.id || 'default-user';
+  const { goalId } = request.params as { goalId: string };
+
+  const prefs = await getOrCreatePreferences(userId);
+  const newGoals = prefs.userContext.goals.filter(g => g.id !== goalId);
+
+  const updated = await updateUserContext(userId, { goals: newGoals });
+
+  await appendAudit({
+    id: crypto.randomUUID(),
+    time: new Date().toISOString(),
+    subject: userId,
+    action: 'preferences.remove_goal',
+    decision: 'allow',
+    resource: { type: 'system', component: 'preferences' },
+    requestId: crypto.randomUUID(),
+    metadata: { goalId },
+  });
+
+  return updated;
+});
+
+app.put('/preferences/enabled', async (request) => {
+  const { setPersonalizationEnabled } = await import('./userPreferences.js');
+  const userId = request.principal?.id || 'default-user';
+
+  const body = request.body as { enabled: boolean };
+
+  const prefs = await setPersonalizationEnabled(userId, body.enabled);
+
+  return prefs;
+});
+
+app.get('/preferences/onboarding-status', async (request) => {
+  const { getOrCreatePreferences, needsOnboarding } = await import('./userPreferences.js');
+  const userId = request.principal?.id || 'default-user';
+
+  const prefs = await getOrCreatePreferences(userId);
+  const needs = await needsOnboarding(userId);
+
+  return {
+    needsOnboarding: needs,
+    phase: prefs.onboarding.phase,
+    coveredTopics: prefs.onboarding.coveredTopics,
+    completedAt: prefs.onboarding.completedAt,
+  };
+});
+
+app.post('/preferences/onboarding/start', async (request) => {
+  const { startOnboarding, getOrCreatePreferences } = await import('./userPreferences.js');
+  const userId = request.principal?.id || 'default-user';
+
+  await startOnboarding(userId);
+  const prefs = await getOrCreatePreferences(userId);
+
+  return { ok: true, phase: prefs.onboarding.phase };
+});
+
+app.post('/preferences/onboarding/complete', async (request) => {
+  const { completeOnboarding, getOrCreatePreferences } = await import('./userPreferences.js');
+  const userId = request.principal?.id || 'default-user';
+
+  await completeOnboarding(userId);
+  const prefs = await getOrCreatePreferences(userId);
+
+  return { ok: true, completedAt: prefs.onboarding.completedAt };
+});
+
+app.post('/preferences/onboarding/topic', async (request, reply) => {
+  const { completeOnboardingTopic, getOrCreatePreferences } = await import('./userPreferences.js');
+  const userId = request.principal?.id || 'default-user';
+
+  const body = request.body as { topic: 'work' | 'personal' | 'goals' };
+
+  if (!['work', 'personal', 'goals'].includes(body.topic)) {
+    return reply.status(400).send({ error: 'topic must be work, personal, or goals' });
+  }
+
+  await completeOnboardingTopic(userId, body.topic);
+  const prefs = await getOrCreatePreferences(userId);
+
+  return { ok: true, coveredTopics: prefs.onboarding.coveredTopics };
+});
+
+// ============================================================================
+// End User Preferences Endpoints
+// ============================================================================
+
+app.post('/events/ingest', async (request, reply) => {
+  const { ingestEvent } = await import('./eventBus.js');
+  const body = request.body as { source: string; type: string; payload: any };
+
+  if (!body.source || !body.type) {
+    return reply.status(400).send({ error: 'source and type required' });
+  }
+
+  const event = await ingestEvent(body.source, body.type, body.payload || {});
+  return { ok: true, eventId: event.id };
+});
+
+// Start Automation Service
+import('./automationService.js').then(m => m.startAutomationService());
 
 // Initial security check
 const { runDiagnostics } = await import('./doctorService.js');

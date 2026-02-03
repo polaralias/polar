@@ -33,6 +33,7 @@ export async function runCompaction(sessionId: string, subject: string): Promise
         type: 'session',
         content: summaryContent,
         scopeId: sessionId,
+        sourceId: 'system.compactor',
         sensitivityHint: 'low',
         ttlSeconds: 3600 * 24 * 7, // Keep summaries for a week
     }, subject);

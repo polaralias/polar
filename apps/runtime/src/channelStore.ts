@@ -5,7 +5,7 @@ import { Mutex } from 'async-mutex';
 
 const mutex = new Mutex();
 
-export type ChannelType = 'slack' | 'discord' | 'webhook' | 'email';
+export type ChannelType = 'slack' | 'discord' | 'webhook' | 'email' | 'telegram';
 
 export type ChannelConfig = {
     id: string;

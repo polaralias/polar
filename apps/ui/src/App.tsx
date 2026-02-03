@@ -8,6 +8,8 @@ import { AgentsPage } from './pages/AgentsPage.js';
 import OverviewPage from './pages/OverviewPage.js';
 import DiagnosticsPage from './pages/DiagnosticsPage.js';
 import ChannelsPage from './pages/ChannelsPage.js';
+import IntelligencePage from './pages/IntelligencePage.js';
+import PersonalizationPage from './pages/PersonalizationPage.js';
 
 const navClass = ({ isActive }: { isActive: boolean }) => (isActive ? 'active' : '');
 
@@ -45,6 +47,12 @@ export default function App() {
             <NavLink to="/channels" className={navClass}>
               Channels
             </NavLink>
+            <NavLink to="/intelligence" className={navClass}>
+              Intelligence
+            </NavLink>
+            <NavLink to="/personalization" className={navClass}>
+              Personalization
+            </NavLink>
             <NavLink to="/diagnostics" className={navClass}>
               Doctor
             </NavLink>
@@ -60,6 +68,8 @@ export default function App() {
           <Route path="/permissions" element={<PermissionsPage />} />
           <Route path="/agents" element={<AgentsPage sessionId="default-session" />} />
           <Route path="/channels" element={<ChannelsPage />} />
+          <Route path="/intelligence" element={<IntelligencePage />} />
+          <Route path="/personalization" element={<PersonalizationPage />} />
           <Route path="/diagnostics" element={<DiagnosticsPage />} />
         </Routes>
       </div>

@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { fetchAudit, type AuditEvent } from '../api';
+import { fetchAudit, type AuditEvent } from '../api.js';
 
 export default function AuditPage() {
   const [decision, setDecision] = useState<string>('');

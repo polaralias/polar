@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
+import { spawn } from 'node:child_process';
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import {
@@ -429,6 +430,190 @@ app.post('/tools/http.request', async (request, reply) => {
     await sendAudit(buildAuditEvent(payload.sub, 'http.request', resource, 'allow', `Fetch failed: ${(err as Error).message}`, payload.jti, body.messageId, body.parentEventId));
     return reply.status(502).send({ error: `Request failed: ${(err as Error).message}` });
   }
+});
+
+app.post('/tools/google.mail', async (request, reply) => {
+  const body = request.body as { token?: string; resourceId?: string; action?: string; args?: any; messageId?: string; parentEventId?: string };
+  // action: 'list', 'send'
+
+  if (!body?.token || !body?.resourceId || !body?.action) {
+    return reply.status(401).send({ error: 'Token, resourceId, and action are required' });
+  }
+
+  const resource = { type: 'connector', connectorId: 'google.mail', resourceId: body.resourceId };
+
+  let payload;
+  try {
+    payload = await verifyCapabilityToken(body.token, await readSigningKey());
+    const intro = await introspectToken(body.token);
+    if (!intro.active) {
+      await sendAudit(buildAuditEvent(payload.sub, 'google.mail', resource, 'deny', `Introspection failed: ${intro.error}`, payload.jti, body.messageId, body.parentEventId));
+      return reply.status(401).send({ error: 'Token revoked' });
+    }
+  } catch {
+    await sendAudit(buildAuditEvent('unknown', 'google.mail', resource, 'deny', 'Invalid token', undefined, body.messageId, body.parentEventId));
+    return reply.status(401).send({ error: 'Invalid token' });
+  }
+
+  if (payload.act !== 'google.mail') {
+    await sendAudit(buildAuditEvent(payload.sub, 'google.mail', resource, 'deny', 'Action mismatch', payload.jti, body.messageId, body.parentEventId));
+    return reply.status(403).send({ error: 'Action not permitted' });
+  }
+
+  // Cast resource to any because core might need update to support GenericResource fully in matchesResourceConstraint types if strict
+  const allowed = matchesResourceConstraint(payload.res, resource as any);
+  if (!allowed) {
+    await sendAudit(buildAuditEvent(payload.sub, 'google.mail', resource, 'deny', 'Resource denied', payload.jti, body.messageId, body.parentEventId));
+    return reply.status(403).send({ error: 'Access to this mailbox is not permitted' });
+  }
+
+  await sendAudit(buildAuditEvent(payload.sub, 'google.mail', resource, 'allow', undefined, payload.jti, body.messageId, body.parentEventId));
+  return { ok: true, status: 'Mock Email Action Complete', action: body.action };
+});
+
+app.post('/tools/github.repo', async (request, reply) => {
+  const body = request.body as { token?: string; resourceId?: string; action?: string; args?: any; messageId?: string; parentEventId?: string };
+  // resourceId: 'owner/repo'
+
+  if (!body?.token || !body?.resourceId || !body?.action) {
+    return reply.status(401).send({ error: 'Token, resourceId (owner/repo), and action are required' });
+  }
+
+  const resource = { type: 'connector', connectorId: 'github.repo', resourceId: body.resourceId };
+
+  let payload;
+  try {
+    payload = await verifyCapabilityToken(body.token, await readSigningKey());
+    const intro = await introspectToken(body.token);
+    if (!intro.active) {
+      await sendAudit(buildAuditEvent(payload.sub, 'github.repo', resource, 'deny', `Introspection failed: ${intro.error}`, payload.jti, body.messageId, body.parentEventId));
+      return reply.status(401).send({ error: 'Token revoked' });
+    }
+  } catch {
+    await sendAudit(buildAuditEvent('unknown', 'github.repo', resource, 'deny', 'Invalid token', undefined, body.messageId, body.parentEventId));
+    return reply.status(401).send({ error: 'Invalid token' });
+  }
+
+  if (payload.act !== 'github.repo') {
+    await sendAudit(buildAuditEvent(payload.sub, 'github.repo', resource, 'deny', 'Action mismatch', payload.jti, body.messageId, body.parentEventId));
+    return reply.status(403).send({ error: 'Action not permitted' });
+  }
+
+  const allowed = matchesResourceConstraint(payload.res, resource as any);
+  if (!allowed) {
+    await sendAudit(buildAuditEvent(payload.sub, 'github.repo', resource, 'deny', 'Resource denied', payload.jti, body.messageId, body.parentEventId));
+    return reply.status(403).send({ error: 'Access to this repo is not permitted' });
+  }
+
+  await sendAudit(buildAuditEvent(payload.sub, 'github.repo', resource, 'allow', undefined, payload.jti, body.messageId, body.parentEventId));
+  return { ok: true, status: 'Mock GitHub Action Complete', action: body.action };
+});
+
+app.post('/tools/cli.run', async (request, reply) => {
+  const body = request.body as { token?: string; command?: string; args?: string[]; messageId?: string; parentEventId?: string };
+
+  if (!body?.token || !body?.command) {
+    return reply.status(401).send({ error: 'Token and command are required' });
+  }
+
+  // 1. Validate Command against Allowlist
+  const allowlist = gatewayConfig.cliAllowlist;
+  const config = allowlist[body.command];
+
+  if (!config) {
+    return reply.status(403).send({ error: `Command '${body.command}' is not in the allowlist` });
+  }
+
+  // 2. Validate Args (Subcommands & Shell safety)
+  const args = body.args || [];
+
+  // Rule: Must prevent shell injection characters if they somehow slipped through.
+  // Although 'spawn' array-format protects against most, purely restrictive policy is better.
+  const shellMetachars = /[|&;<>$`\\]/;
+  if (args.some(arg => shellMetachars.test(arg))) {
+    return reply.status(400).send({ error: 'Arguments contain forbidden shell metacharacters' });
+  }
+
+  // Rule: First argument usually serves as subcommand checking for git
+  if (config.allowedSubcommands.length > 0) {
+    const subcommand = args[0];
+    if (!subcommand || !config.allowedSubcommands.includes(subcommand)) {
+      return reply.status(403).send({ error: `Subcommand '${subcommand}' is not allowed for ${body.command}` });
+    }
+  }
+
+  const resource = { type: 'cli', command: body.command };
+
+  // 3. Token Verification
+  let payload;
+  try {
+    payload = await verifyCapabilityToken(body.token, await readSigningKey());
+    const intro = await introspectToken(body.token);
+    if (!intro.active) {
+      await sendAudit(buildAuditEvent(payload.sub, 'cli.run', resource, 'deny', `Introspection failed: ${intro.error}`, payload.jti, body.messageId, body.parentEventId));
+      return reply.status(401).send({ error: 'Token revoked' });
+    }
+  } catch {
+    await sendAudit(buildAuditEvent('unknown', 'cli.run', resource, 'deny', 'Invalid token', undefined, body.messageId, body.parentEventId));
+    return reply.status(401).send({ error: 'Invalid token' });
+  }
+
+  if (payload.act !== 'cli.run') {
+    await sendAudit(buildAuditEvent(payload.sub, 'cli.run', resource, 'deny', 'Action mismatch', payload.jti, body.messageId, body.parentEventId));
+    return reply.status(403).send({ error: 'Action not permitted' });
+  }
+
+  // 4. Policy Check
+  const allowed = matchesResourceConstraint(payload.res, resource as any);
+  if (!allowed) {
+    await sendAudit(buildAuditEvent(payload.sub, 'cli.run', resource, 'deny', 'Resource denied', payload.jti, body.messageId, body.parentEventId));
+    return reply.status(403).send({ error: 'Access to this command is not permitted' });
+  }
+
+  // 5. Execution
+  return new Promise((resolve) => {
+    const child = spawn(config.bin, args, {
+      cwd: gatewayConfig.fsBaseDir, // Enforce working directory in sandbox
+      env: {}, // Clean env, or strictly allowed vars
+      timeout: 10000 // 10s timeout
+    });
+
+    let stdout = '';
+    let stderr = '';
+    let outputSize = 0;
+    const MAX_OUTPUT = 100 * 1024; // 100KB
+
+    child.stdout.on('data', (data) => {
+      if (outputSize < MAX_OUTPUT) {
+        stdout += data.toString();
+        outputSize += data.length;
+      }
+    });
+    child.stderr.on('data', (data) => {
+      if (outputSize < MAX_OUTPUT) {
+        stderr += data.toString();
+        outputSize += data.length;
+      }
+    });
+
+    child.on('close', async (code) => {
+      const truncated = outputSize >= MAX_OUTPUT ? '...[truncated]' : '';
+
+      await sendAudit(buildAuditEvent(payload.sub, 'cli.run', resource, 'allow', `Exit code: ${code}`, payload.jti, body.messageId, body.parentEventId));
+
+      resolve({
+        ok: code === 0,
+        code,
+        stdout: stdout + truncated,
+        stderr: stderr
+      });
+    });
+
+    child.on('error', async (err) => {
+      await sendAudit(buildAuditEvent(payload.sub, 'cli.run', resource, 'allow', `Exec failed: ${err.message}`, payload.jti, body.messageId, body.parentEventId));
+      resolve(reply.status(500).send({ error: err.message }));
+    });
+  });
 });
 
 // Startup Safety Check

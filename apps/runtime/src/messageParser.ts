@@ -47,5 +47,14 @@ export function parseMessage(message: string): WorkerRequest | null {
     return path ? { action: 'fs.listDir', path, args: { path } } : null;
   }
 
+  if (lower.startsWith('spawn worker ')) {
+    try {
+      const args = JSON.parse(trimmed.slice('spawn worker '.length).trim());
+      return { action: 'worker.spawn', args };
+    } catch {
+      // Invalid JSON args
+    }
+  }
+
   return null;
 }

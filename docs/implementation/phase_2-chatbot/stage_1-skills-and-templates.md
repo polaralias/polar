@@ -1,5 +1,12 @@
 # Phase 2 - Stage 1: Skills & Templates
 
+## Phase 1 Foundation
+This stage utilizes the following core components built in Phase 1:
+- **`SkillManifestSchema`**: Support for identity, versioning, and `requestedCapabilities`.
+- **`installerService.ts`**: Core logic for bundle hash verification and file extraction.
+- **`skillStore.ts`**: Persistent storage for skill metadata and lifecycle state.
+- **Permission Diffing**: `calculatePermissionDiff` logic to detect credential/capability expansion on upgrade.
+
 ## Goal
 Turn the platform into an extensible assistant using a hybrid **Skill Architecture**. This aligns with open standards (e.g., Anthropic `SKILL.md`) for defining logic, while wrapping them in Polar's strict security model (Manifests + Permissions).
 

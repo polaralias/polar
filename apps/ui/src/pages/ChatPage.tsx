@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { api, type Session, type Skill, type Agent } from '../api';
+import { api, type Session, type Skill, type Agent } from '../api.js';
 
 export default function ChatPage() {
   const [session, setSession] = useState<Session | null>(null);

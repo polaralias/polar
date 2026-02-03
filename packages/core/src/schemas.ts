@@ -55,6 +55,16 @@ export const HttpResourceConstraintSchema = z.object({
   allowHeaders: z.array(z.string().min(1)).optional(),
 });
 
+export const CliResourceSchema = z.object({
+  type: z.literal('cli'),
+  command: z.string().min(1),
+});
+
+export const CliResourceConstraintSchema = z.object({
+  type: z.literal('cli'),
+  commands: z.array(z.string().min(1)).optional(),
+});
+
 export const GenericResourceConstraintSchema = z.object({
   type: z.literal('connector'),
   connectorId: z.string().min(1),
@@ -67,6 +77,7 @@ export const ResourceSchema = z.discriminatedUnion('type', [
   SystemResourceSchema,
   HttpResourceSchema,
   GenericResourceSchema,
+  CliResourceSchema,
 ]);
 
 export const ResourceConstraintSchema = z.discriminatedUnion('type', [
@@ -75,6 +86,7 @@ export const ResourceConstraintSchema = z.discriminatedUnion('type', [
   SystemResourceConstraintSchema,
   HttpResourceConstraintSchema,
   GenericResourceConstraintSchema,
+  CliResourceConstraintSchema,
 ]);
 
 export const SessionSchema = z.object({
@@ -247,6 +259,9 @@ export const SkillProvenanceSchema = z.object({
   publicKey: z.string().optional(),
   trustLevel: TrustLevelSchema,
   verifiedAt: z.string().datetime(),
+  // Runtime integrity verification fields (TOCTOU protection)
+  integrityFailed: z.boolean().optional(),
+  integrityCheckedAt: z.string().datetime().optional(),
 });
 
 export const SkillSchema = z.object({
@@ -270,6 +285,11 @@ export const SystemStatusSchema = z.object({
   mode: z.enum(['normal', 'emergency']),
   lastModeChange: z.string().datetime(),
   reason: z.string().optional(),
+  /** Skill policy mode: controls which skills can be loaded */
+  skillPolicyMode: z.enum([
+    'developer', // Allow unsigned/locally_trusted skills (development)
+    'signed_only', // Only allow trusted (signed) skills (production)
+  ]).optional().default('developer'),
 });
 
 export const AgentStatusSchema = z.enum(['pending', 'running', 'completed', 'failed', 'terminated']);
@@ -353,4 +373,6 @@ export type AgentManifest = z.infer<typeof AgentManifestSchema>;
 export type HttpResourceConstraint = z.infer<typeof HttpResourceConstraintSchema>;
 export type GenericResourceConstraint = z.infer<typeof GenericResourceConstraintSchema>;
 export type SkillContent = z.infer<typeof SkillContentSchema>;
+export type CliResource = z.infer<typeof CliResourceSchema>;
+export type CliResourceConstraint = z.infer<typeof CliResourceConstraintSchema>;
 

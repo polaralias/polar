@@ -56,35 +56,85 @@ export async function startWorker(agent: Agent): Promise<void> {
         }
 
     } else {
-        // For agents without a skill, we assume they are purely virtual or orchestrated by the system
-        // unless we have a default worker.
-        // Given the requirement "Worker Execution is Mocked" -> "updates status but does not start a process",
-        // we should probably only start a process if we have code to run.
-        // If there is no skillId, we'll leave it as is (or maybe we shouldn't fail it?)
-        // The matrix gap specifically talks about "Worker Runtime implementation".
-        // Let's assume for now valid agents have skills or templates.
-        console.warn(`No skillId for agent ${agent.id}, skipping process spawn.`);
+        // Fallback for Instruction-Only Skills (Virtual Workers)
+        // If no skill provided, or no code found, we treat it as a Virtual Worker.
+        console.log(`No specific entry point for agent ${agent.id}. Treating as Virtual Worker.`);
+
+        // Spawn a placeholder process that stays alive until killed, 
+        // representing the "Thinking" state of the LLM worker.
+        // In a real implementation, this would be the `llm-worker` service.
+        const child = fork('-e', ['setInterval(() => {}, 10000)'], {
+            env: { ...process.env }, // minimalistic env
+            stdio: 'ignore'
+        });
+        activeProcesses.set(agent.id, child);
+        updateAgentStatus(agent.id, 'running');
+
+        // We do NOT mint a token for the process itself if it's virtual/placeholder, 
+        // as the Runtime/LLMService acts on its behalf.
         return;
     }
 
-    // 2. Mint Token
-    // We give the agent a token to interact with the runtime via a dedicated IPC channel.
-    // SECURITY: This token is constrained to the 'runtime.workerChannel' action only,
-    // preventing it from being used for any privileged gateway operations.
-    // We include policy version to ensure revocation works correctly.
-    const { getSubjectPolicyVersion } = await import('./policyStore.js');
+    // 2. Validate and Mint Token with Requested Capabilities
+    // CRITICAL FIX: Workers now receive tokens with their requested capabilities,
+    // not just runtime.workerChannel. This enables workers to perform external tasks.
+    const { getSubjectPolicyVersion, loadPolicy } = await import('./policyStore.js');
     const policyVersion = await getSubjectPolicyVersion(agent.id);
 
-    const capability: Capability = {
-        id: crypto.randomUUID(),
-        subject: agent.id,
-        action: 'runtime.workerChannel', // Constrained to worker IPC only
-        resource: { type: 'system', components: ['runtime'] },
-        expiresAt: Math.floor(Date.now() / 1000) + (24 * 60 * 60), // 24 hours
-    };
+    // Extract requested capabilities from agent metadata
+    const requestedCapabilities = (agent.metadata?.capabilities as string[]) || [];
+    const isReadOnly = agent.metadata?.readOnly !== false; // Default to read-only
+
+    // Filter capabilities: if read-only, only allow *.read actions
+    let allowedCapabilities = requestedCapabilities;
+    if (isReadOnly) {
+        allowedCapabilities = requestedCapabilities.filter(cap =>
+            cap.endsWith('.read') || cap === 'runtime.workerChannel'
+        );
+        if (allowedCapabilities.length !== requestedCapabilities.length) {
+            console.warn(`Worker ${agent.id} restricted to read-only: ${allowedCapabilities.join(', ')}`);
+        }
+    }
+
+    // Policy evaluation: Verify the spawning user/agent has grants for these capabilities
+    const policy = await loadPolicy();
+    const userId = agent.userId;
+    const userGrants = policy.grants.filter(g => g.subject === userId);
+    const userGrantedActions = new Set(userGrants.map(g => g.action));
+
+    // Only allow capabilities that the parent has been granted (prevents privilege escalation)
+    const validatedCapabilities = allowedCapabilities.filter(cap => {
+        if (cap === 'runtime.workerChannel') return true; // Always allow IPC
+        const hasGrant = userGrantedActions.has(cap);
+        if (!hasGrant) {
+            console.warn(`Worker ${agent.id}: capability ${cap} denied - user lacks grant`);
+        }
+        return hasGrant;
+    });
+
+    // Always include runtime.workerChannel for IPC
+    if (!validatedCapabilities.includes('runtime.workerChannel')) {
+        validatedCapabilities.push('runtime.workerChannel');
+    }
 
     const signingKey = await readSigningKey();
-    const token = await mintCapabilityToken(capability, signingKey, policyVersion);
+
+    // Mint separate tokens for each capability (or a compound token)
+    // For simplicity, we create one token per capability and pass them comma-separated
+    const tokens: string[] = [];
+    for (const action of validatedCapabilities) {
+        const capability: Capability = {
+            id: crypto.randomUUID(),
+            subject: agent.id,
+            action,
+            resource: { type: 'system', components: ['*'] }, // Allow any resource for now
+            expiresAt: Math.floor(Date.now() / 1000) + (24 * 60 * 60), // 24 hours
+        };
+        const token = await mintCapabilityToken(capability, signingKey, policyVersion);
+        tokens.push(token);
+    }
+
+    const combinedToken = tokens.join(',');
 
     await appendAudit({
         id: crypto.randomUUID(),
@@ -94,10 +144,13 @@ export async function startWorker(agent: Agent): Promise<void> {
         decision: 'allow',
         resource: { type: 'system', component: 'worker' },
         agentId: agent.id,
-        requestId: capability.id, // Linking ID
+        requestId: crypto.randomUUID(), // Linking ID
         metadata: {
             skillId: agent.skillId,
             templateId: agent.templateId,
+            grantedCapabilities: validatedCapabilities,
+            requestedCapabilities,
+            readOnly: isReadOnly,
         }
     });
 
@@ -107,7 +160,7 @@ export async function startWorker(agent: Agent): Promise<void> {
         env: {
             ...process.env,
             POLAR_RUNTIME_URL: `http://localhost:${runtimeConfig.port}`, // e.g. http://localhost:4000
-            POLAR_AGENT_TOKEN: token,
+            POLAR_AGENT_TOKEN: combinedToken,
             POLAR_AGENT_ID: agent.id,
             POLAR_SESSION_ID: agent.sessionId,
             POLAR_WORKER_TEMPLATE_ID: agent.templateId || '',
