@@ -5,7 +5,7 @@
  */
 
 import { Agent } from '@polar/core';
-import { loadSkills } from '../skillStore.js';
+import { loadSkillsWithVerification } from '../skillStore.js';
 import { queryMemory } from '../memoryStore.js';
 import { loadPolicy } from '../policyStore.js';
 import { buildPersonalizationPrompt, buildOnboardingPrompt } from '../userPreferences.js';
@@ -211,7 +211,7 @@ export async function compileMainAgentContext(
 
     // Add available skills
     if (opts.includeSkills) {
-        const skills = await loadSkills();
+        const skills = await loadSkillsWithVerification();
         const enabledSkills = skills.filter(s => s.status === 'enabled');
 
         if (enabledSkills.length > 0) {

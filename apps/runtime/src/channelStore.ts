@@ -32,6 +32,7 @@ export async function loadChannels() {
 }
 
 export async function saveChannels() {
+    await fs.mkdir(runtimeConfig.dataDir, { recursive: true });
     await fs.writeFile(channelsPath, JSON.stringify(channels, null, 2), 'utf-8');
 }
 

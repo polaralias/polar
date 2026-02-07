@@ -206,13 +206,15 @@ export class AnthropicProvider implements LLMProviderAdapter {
     }
 
     async listModels(_apiKey: string): Promise<string[]> {
-        // Anthropic doesn't have a models endpoint, return known models
-        // Updated to Claude 4.5 family per provider-alignment.md
+        // Anthropic has no public list endpoint for all accounts; return known models.
         return [
+            'claude-opus-4-6',
+            'claude-sonnet-4-5',
+            'claude-haiku-4-5',
+            // Legacy IDs for compatibility
             'claude-opus-4.5',
             'claude-sonnet-4.5',
             'claude-haiku-4.5',
-            // Legacy models still supported
             'claude-3-5-sonnet-20241022',
             'claude-3-5-haiku-20241022',
             'claude-3-opus-20240229',

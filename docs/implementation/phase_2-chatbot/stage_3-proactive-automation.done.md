@@ -3,6 +3,9 @@
 ## Goal
 Move beyond "User acts, Assistant reacts" to "Assistant acts on Trigger". Enable the system to handle events and execute pre-approved workflows via **Automation Envelopes**.
 
+## Implementation Status (as of February 7, 2026)
+**Status**: Complete
+
 ## 1. Automation Envelopes & Hooks
 Define the `AutomationEnvelope` structure. This describes a persisted automation rule.
 
@@ -52,9 +55,15 @@ Allow users to configure automations via natural language.
 *   **Active Automations**: List all running envelopes with ability to pause/delete.
 
 ## Acceptance Criteria
-- [ ] Event ingestion pipeline works and deduplicates events.
-- [ ] Automation Envelope can be defined, persisted, and retrieved.
-- [ ] Tier 0 trigger sends a batched notification.
-- [ ] Tier 2 trigger creates a proposal requiring distinct user action.
-- [ ] Tier 3 trigger executes immediately (and is audited).
-- [ ] Chat-driven setup flow works: User request -> Config Proposal -> Active Automation.
+- [x] Event ingestion pipeline works and deduplicates events.
+- [x] Automation Envelope can be defined, persisted, and retrieved.
+- [x] Tier 0 trigger sends a batched notification.
+- [x] Tier 2 trigger creates a proposal requiring distinct user action.
+- [x] Tier 3 trigger executes immediately (and is audited).
+- [x] Chat-driven setup flow works: User request -> Config Proposal -> Active Automation.
+
+## Pending Implementation Gaps (as of February 7, 2026)
+- No blocking gaps remain for Stage 3 acceptance.
+- Tier 0 notifications are batched and delivered as grouped user-facing summaries.
+- Chat-native automation setup now supports proposal and explicit confirm/cancel activation flow.
+- Event ingestion dedupe state persists across restarts via runtime event history storage.

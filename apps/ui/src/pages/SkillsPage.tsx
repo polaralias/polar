@@ -6,6 +6,7 @@ export default function SkillsPage() {
     const [error, setError] = useState<string | null>(null);
     const [installPath, setInstallPath] = useState('');
     const [loading, setLoading] = useState(false);
+    const [grantConfig, setGrantConfig] = useState<Record<string, { selected: string[]; requiresConfirmation: string[] }>>({});
 
     const loadSkills = async () => {
         try {
@@ -22,6 +23,22 @@ export default function SkillsPage() {
         return () => clearInterval(interval);
     }, []);
 
+    useEffect(() => {
+        setGrantConfig((prev) => {
+            const next = { ...prev };
+            for (const skill of skills) {
+                if (!next[skill.manifest.id]) {
+                    const selected = skill.manifest.requestedCapabilities.map((cap) => cap.action);
+                    const requiresConfirmation = skill.manifest.requestedCapabilities
+                        .filter((cap) => cap.requiresConfirmation)
+                        .map((cap) => cap.action);
+                    next[skill.manifest.id] = { selected, requiresConfirmation };
+                }
+            }
+            return next;
+        });
+    }, [skills]);
+
     const handleToggle = async (id: string, currentStatus: Skill['status']) => {
         try {
             if (currentStatus === 'enabled') {
@@ -37,11 +54,40 @@ export default function SkillsPage() {
 
     const handleGrant = async (id: string) => {
         try {
-            await grantSkill(id);
+            const config = grantConfig[id];
+            const selected = config?.selected || [];
+            const requiresConfirmation = (config?.requiresConfirmation || []).filter(action => selected.includes(action));
+            await grantSkill(id, { capabilities: selected, requiresConfirmationActions: requiresConfirmation });
             loadSkills();
         } catch (err) {
             setError((err as Error).message);
         }
+    };
+
+    const toggleCapability = (skillId: string, action: string) => {
+        setGrantConfig((prev) => {
+            const current = prev[skillId] || { selected: [], requiresConfirmation: [] };
+            const isSelected = current.selected.includes(action);
+            const selected = isSelected
+                ? current.selected.filter((item) => item !== action)
+                : [...current.selected, action];
+            const requiresConfirmation = selected.includes(action)
+                ? current.requiresConfirmation
+                : current.requiresConfirmation.filter((item) => item !== action);
+            return { ...prev, [skillId]: { selected, requiresConfirmation } };
+        });
+    };
+
+    const toggleRequiresConfirmation = (skillId: string, action: string) => {
+        setGrantConfig((prev) => {
+            const current = prev[skillId] || { selected: [], requiresConfirmation: [] };
+            const selected = current.selected.includes(action) ? current.selected : [...current.selected, action];
+            const enabled = current.requiresConfirmation.includes(action);
+            const requiresConfirmation = enabled
+                ? current.requiresConfirmation.filter((item) => item !== action)
+                : [...current.requiresConfirmation, action];
+            return { ...prev, [skillId]: { selected, requiresConfirmation } };
+        });
     };
 
     const handleRevoke = async (id: string) => {
@@ -128,9 +174,38 @@ export default function SkillsPage() {
 
                         <div className="skill-actions">
                             {skill.status === 'pending_consent' ? (
-                                <button className="primary" onClick={() => handleGrant(skill.manifest.id)}>
-                                    Grant &amp; Enable
-                                </button>
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', width: '100%' }}>
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                                        {skill.manifest.requestedCapabilities.map((cap) => {
+                                            const selected = grantConfig[skill.manifest.id]?.selected?.includes(cap.action) ?? true;
+                                            const requiresConfirmation = grantConfig[skill.manifest.id]?.requiresConfirmation?.includes(cap.action)
+                                                ?? Boolean(cap.requiresConfirmation);
+                                            return (
+                                                <div key={`${skill.manifest.id}-${cap.action}`} style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '8px' }}>
+                                                    <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px' }}>
+                                                        <input
+                                                            type="checkbox"
+                                                            checked={selected}
+                                                            onChange={() => toggleCapability(skill.manifest.id, cap.action)}
+                                                        />
+                                                        <code>{cap.action}</code>
+                                                    </label>
+                                                    <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px' }}>
+                                                        <input
+                                                            type="checkbox"
+                                                            checked={requiresConfirmation}
+                                                            onChange={() => toggleRequiresConfirmation(skill.manifest.id, cap.action)}
+                                                        />
+                                                        Require Approval
+                                                    </label>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                    <button className="primary" onClick={() => handleGrant(skill.manifest.id)}>
+                                        Grant &amp; Enable
+                                    </button>
+                                </div>
                             ) : (
                                 <>
                                     <button onClick={() => handleToggle(skill.manifest.id, skill.status)}>

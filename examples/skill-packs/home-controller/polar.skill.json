@@ -1,0 +1,45 @@
+{
+  "id": "home-controller.safe-services",
+  "name": "Home Controller",
+  "version": "1.0.0",
+  "description": "Safe Home Assistant control with service allowlists.",
+  "workerTemplates": [
+    {
+      "id": "toggle_light",
+      "name": "Toggle Light",
+      "description": "Turns a light on/off using allowlisted service calls.",
+      "requiredCapabilities": [
+        "home.assistant"
+      ]
+    },
+    {
+      "id": "check_state",
+      "name": "Check Device State",
+      "description": "Reads a Home Assistant entity state.",
+      "requiredCapabilities": [
+        "home.assistant"
+      ]
+    }
+  ],
+  "requestedCapabilities": [
+    {
+      "connector": "home_assistant",
+      "action": "home.assistant",
+      "resource": {
+        "type": "connector",
+        "connectorId": "home.assistant",
+        "constraints": {
+          "allowServices": [
+            "light.turn_on",
+            "light.turn_off"
+          ],
+          "blockedServices": [
+            "lock.unlock",
+            "lock.open"
+          ]
+        }
+      },
+      "justification": "Need safe Home Assistant access for non-critical automations."
+    }
+  ]
+}

@@ -3,6 +3,9 @@
 ## Goal
 Make the assistant feel like *your* assistant. This stage enables users to define globally applied preferences and custom instructions that shape the persona and behavior of the agent without compromising its security or functional purpose.
 
+## Implementation Status (as of February 7, 2026)
+**Status**: Complete
+
 ## 1. Custom Instructions
 Inspired by modern LLM features, users can define two key text blocks that are injected into the agent's context.
 
@@ -95,13 +98,36 @@ Data collection is ongoing. The agent uses the initial "Ambitions" data to sched
 *   **Sanitization**: Basic input sanitization to prevent massive token consumption or malformed control characters.
 
 ## Acceptance Criteria
-- [ ] User can edit "About Me" and "Response Style" in Settings.
-- [ ] Changes are reflected immediately in the next chat turn.
-- [ ] **Onboarding Conversation** triggers seamlessly on first run.
-- [ ] Agent successfully extracts Work, Personal, and Goal data into preferences.
-- [ ] **Proactive Triggers** (e.g., 6-month check-in) are scheduled based on onboarding data.
-- [ ] Large instructions are truncated or warned (Context window management).
-- [ ] Security invariants hold even if Custom Instructions attempt to bypass them.
+- [x] User can edit "About Me" and "Response Style" in Settings.
+- [x] Changes are reflected immediately in the next chat turn.
+- [x] **Onboarding Conversation** triggers seamlessly on first run.
+- [x] Agent successfully extracts Work, Personal, and Goal data into preferences.
+- [x] **Proactive Triggers** (e.g., 6-month check-in) are scheduled based on onboarding data.
+- [x] Large instructions are truncated or warned (Context window management).
+- [x] Security invariants hold even if Custom Instructions attempt to bypass them.
+
+## Implementation Summary
+- Added onboarding extraction pipeline (`onboardingService.ts`) that:
+  - starts onboarding automatically on first conversational turn
+  - extracts work/personal/goals signals from user messages
+  - updates structured user preferences
+  - marks onboarding topics complete and auto-completes onboarding once all required topics are covered
+- Added goal check-in scheduler (`goalCheckInService.ts`) with 6-month default cadence:
+  - auto-schedules unscheduled goals
+  - persists pending/sent check-ins
+  - dispatches due check-ins to channels and active session threads
+- Added runtime integrations:
+  - `/sessions/:id/messages` now runs onboarding extraction after user message persistence
+  - `/preferences` and `/preferences/goals` synchronize goal check-in scheduling
+  - `/preferences/checkins` returns scheduled/sent check-in records
+- Added UI visibility:
+  - Personalization page now shows per-goal check-in status and next due date.
+
+## Validation Snapshot
+- `pnpm --filter @polar/runtime build` ✅
+- `pnpm --filter @polar/ui build` ✅
+- `pnpm --filter @polar/runtime test` ✅
+- `apps/runtime/test/onboarding_personalization.test.ts` ✅
 
 ## Deferred from Phase 1 (Maturity)
 - **Profile-Based Memory Categories**: Implement strictly isolated memory categories (e.g., Family vs. Work) linked to the user's profile to prevent cross-context data leakage.

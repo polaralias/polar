@@ -7,6 +7,68 @@ export type Session = {
   status?: 'active' | 'terminated';
 };
 
+export type SystemStatus = {
+  mode: 'normal' | 'emergency';
+  lastModeChange: string;
+  reason?: string;
+  skillPolicyMode: 'developer' | 'signed_only';
+};
+
+export type TrustedPublisher = {
+  id: string;
+  name: string;
+  publicKey: string;
+  fingerprint: string;
+  createdAt: string;
+  lastUsedAt?: string;
+};
+
+export type GoalCheckIn = {
+  id: string;
+  userId: string;
+  goalId: string;
+  goalDescription: string;
+  goalCategory: 'professional' | 'personal' | 'learning';
+  dueAt: string;
+  createdAt: string;
+  status: 'pending' | 'sent';
+  sentAt?: string;
+};
+
+export type Channel = {
+  id: string;
+  type: string;
+  name: string;
+  enabled: boolean;
+  allowlist: string[];
+  userId?: string;
+};
+
+export type ChannelRoute = {
+  channelId: string;
+  conversationId: string;
+  sessionId: string;
+};
+
+export type QuarantinedAttachment = {
+  id: string;
+  quarantinedAt: string;
+  sessionId: string;
+  userId?: string;
+  channelId: string;
+  conversationId: string;
+  senderId: string;
+  attachment: {
+    type: 'image' | 'document';
+    url: string;
+    mimeType: string;
+  };
+  status: 'quarantined' | 'analysis_requested' | 'analyzed' | 'rejected';
+  analysisRequestedAt?: string;
+  analysisRequestedBy?: string;
+  analysisNote?: string;
+};
+
 export type AuditEvent = {
   id: string;
   time: string;
@@ -61,16 +123,32 @@ export type Skill = {
       connector: string;
       action: string;
       resource: {
-        type: 'fs';
+        type: 'fs' | 'http' | 'connector' | 'cli' | 'system' | 'memory' | 'skill';
         root?: string;
         paths?: string[];
+        allowHosts?: string[];
+        allowMethods?: string[];
+        connectorId?: string;
+        constraints?: Record<string, unknown>;
+        commands?: string[];
+        components?: string[];
       };
       justification: string;
+      requiresConfirmation?: boolean;
     }>;
   };
-  status: 'enabled' | 'disabled' | 'pending_consent';
+  status: 'enabled' | 'disabled' | 'pending_consent' | 'emergency_disabled';
   installedAt: string;
   path: string;
+  provenance?: {
+    hash: string;
+    signature?: string;
+    publicKey?: string;
+    trustLevel: 'trusted' | 'locally_trusted' | 'untrusted';
+    verifiedAt?: string;
+    integrityFailed?: boolean;
+    integrityCheckedAt?: string;
+  };
 };
 
 export type CoordinationPattern = 'fan-out-fan-in' | 'pipeline' | 'supervisor';
@@ -90,11 +168,21 @@ export type PolicyStore = {
     subject: string;
     action: string;
     resource: {
-      type: 'fs';
+      type: 'fs' | 'http' | 'connector' | 'cli' | 'system' | 'memory' | 'skill';
       root?: string;
       paths?: string[];
+      allowHosts?: string[];
+      allowMethods?: string[];
+      connectorId?: string;
+      constraints?: Record<string, unknown>;
+      commands?: string[];
+      components?: string[];
+      memoryType?: string;
+      scopeIds?: string[];
+      id?: string;
     };
     fields?: string[];
+    requiresConfirmation?: boolean;
     expiresAt?: number;
   }>;
   rules: Array<{
@@ -136,9 +224,96 @@ export type MemoryItem = {
   };
 };
 
+export type LLMModelOption = {
+  id: string;
+  name: string;
+  provider: string;
+  tier?: 'flagship' | 'balanced' | 'efficient';
+  tags?: string[];
+};
+
+export type PlannerToolCall = {
+  id: string;
+  name: string;
+  arguments: Record<string, unknown>;
+};
+
+export type PlannerToolResult = {
+  callId: string;
+  name: string;
+  ok: boolean;
+  data?: unknown;
+  error?: string;
+};
+
+export type WorkerTraceEvent = {
+  id: string;
+  time: string;
+  action: string;
+  tool?: string;
+  decision: 'allow' | 'deny';
+  reason?: string;
+  resource: {
+    type: string;
+    path?: string;
+    root?: string;
+    url?: string;
+    method?: string;
+    component?: string;
+  };
+  requestId?: string;
+  messageId?: string;
+  parentEventId?: string;
+  metadata?: Record<string, unknown>;
+};
+
+export type WorkerTrace = {
+  agentId: string;
+  events: WorkerTraceEvent[];
+};
+
+export type ApprovalStatus = 'pending' | 'approved' | 'denied' | 'executed' | 'failed';
+
+export type Approval = {
+  id: string;
+  status: ApprovalStatus;
+  jti: string;
+  subject: string;
+  action: string;
+  sessionId?: string;
+  agentId?: string;
+  traceId?: string;
+  parentEventId?: string;
+  resource: Record<string, unknown>;
+  createdAt: string;
+  decidedAt?: string;
+  decidedBy?: string;
+  decisionReason?: string;
+  result?: unknown;
+  error?: string;
+};
+
+export type SendMessageResponse = {
+  ok: boolean;
+  action?: string;
+  path?: string;
+  result?: { content?: string; entries?: string[] };
+  toolResults?: PlannerToolResult[];
+  workerAgentIds?: string[];
+  workerTraces?: WorkerTrace[];
+  toolCalls?: PlannerToolCall[];
+  message?: { id: string; role: string; content: string };
+  agentId?: string;
+};
+
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  const token = localStorage.getItem('polar_token') || 'polar-dev-token-456';
+
   const response = await fetch(`/api${path}`, {
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`
+    },
     ...init,
   });
 
@@ -157,7 +332,31 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   getDoctorResults: () => apiFetch<{ results: any[] }>('/doctor'),
-  getChannels: () => apiFetch<{ channels: any[] }>('/channels'),
+  getSessions: (status?: 'active' | 'terminated') => {
+    const suffix = status ? `?status=${status}` : '';
+    return apiFetch<{ sessions: Session[] }>(`/sessions${suffix}`);
+  },
+  getChannels: () => apiFetch<{ channels: Channel[] }>('/channels'),
+  getChannelRoutes: (channelId: string) => apiFetch<{ routes: ChannelRoute[] }>(`/channels/${channelId}/routes`),
+  setChannelRoute: (channelId: string, payload: { conversationId: string; sessionId: string }) => apiFetch<{ ok: boolean }>(`/channels/${channelId}/routes`, {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  }),
+  getChannelAttachments: (params: { channelId?: string; sessionId?: string; status?: QuarantinedAttachment['status'] } = {}) => {
+    const query = new URLSearchParams();
+    if (params.channelId) query.set('channelId', params.channelId);
+    if (params.sessionId) query.set('sessionId', params.sessionId);
+    if (params.status) query.set('status', params.status);
+    const suffix = query.toString() ? `?${query.toString()}` : '';
+    return apiFetch<{ attachments: QuarantinedAttachment[] }>(`/channels/attachments${suffix}`);
+  },
+  requestAttachmentAnalysis: (attachmentId: string, note?: string) => apiFetch<{ ok: boolean; attachment: QuarantinedAttachment }>(`/channels/attachments/${attachmentId}/analyze`, {
+    method: 'POST',
+    body: JSON.stringify({ note }),
+  }),
+  generateChannelPairingCode: () => apiFetch<{ code: string; expiresSeconds: number }>('/channels/pairing-code', {
+    method: 'POST',
+  }),
   getAuditLogs: async (params: Record<string, string | undefined> = {}) => {
     const query = new URLSearchParams();
     Object.entries(params).forEach(([key, value]) => {
@@ -174,15 +373,24 @@ export const api = {
   }),
   getSessionPrompt: (sessionId: string) => apiFetch<{ prompt: string }>(`/sessions/${sessionId}/prompt`),
   getAgentInstructions: (agentId: string) => apiFetch<{ instructions: string; metadata?: any }>(`/agents/${agentId}/instructions`),
-  sendMessage: (sessionId: string, message: string) => apiFetch<{
-    ok: boolean;
-    action: string;
-    path: string;
-    result: { content?: string; entries?: string[] };
-  }>(`/sessions/${sessionId}/messages`, {
+  sendMessage: (sessionId: string, message: string) => apiFetch<SendMessageResponse>(`/sessions/${sessionId}/messages`, {
     method: 'POST',
     body: JSON.stringify({ message }),
   }),
+  getWorkerTrace: (sessionId: string, params?: { agentIds?: string[]; from?: string; limit?: number }) => {
+    const query = new URLSearchParams();
+    if (params?.agentIds && params.agentIds.length > 0) {
+      query.set('agentIds', params.agentIds.join(','));
+    }
+    if (params?.from) {
+      query.set('from', params.from);
+    }
+    if (typeof params?.limit === 'number' && Number.isFinite(params.limit)) {
+      query.set('limit', String(params.limit));
+    }
+    const suffix = query.toString() ? `?${query.toString()}` : '';
+    return apiFetch<{ traces: WorkerTrace[] }>(`/sessions/${sessionId}/worker-trace${suffix}`);
+  },
   fetchPolicy: () => apiFetch<{ policy: PolicyStore }>('/permissions'),
   updatePolicy: (policy: PolicyStore) => apiFetch<{ ok: boolean }>('/permissions', {
     method: 'POST',
@@ -194,8 +402,25 @@ export const api = {
   }),
   enableSkill: (id: string) => apiFetch<{ ok: boolean }>(`/skills/${id}/enable`, { method: 'POST' }),
   disableSkill: (id: string) => apiFetch<{ ok: boolean }>(`/skills/${id}/disable`, { method: 'POST' }),
-  grantSkill: (id: string) => apiFetch<{ ok: boolean }>(`/skills/${id}/grant`, { method: 'POST' }),
+  grantSkill: (id: string, payload?: { capabilities?: string[]; requiresConfirmationActions?: string[] }) => apiFetch<{ ok: boolean }>(`/skills/${id}/grant`, {
+    method: 'POST',
+    body: JSON.stringify(payload || {}),
+  }),
   revokeSkill: (id: string) => apiFetch<{ ok: boolean }>(`/skills/${id}/revoke`, { method: 'POST' }),
+  getApprovals: (params: { sessionId?: string; status?: ApprovalStatus } = {}) => {
+    const query = new URLSearchParams();
+    if (params.sessionId) query.set('sessionId', params.sessionId);
+    if (params.status) query.set('status', params.status);
+    const suffix = query.toString() ? `?${query.toString()}` : '';
+    return apiFetch<{ approvals: Approval[] }>(`/approvals${suffix}`);
+  },
+  approveApproval: (id: string) => apiFetch<{ ok: boolean; approval: Approval; result?: unknown; error?: string }>(`/approvals/${id}/approve`, {
+    method: 'POST',
+  }),
+  denyApproval: (id: string, reason?: string) => apiFetch<{ ok: boolean; approval: Approval }>(`/approvals/${id}/deny`, {
+    method: 'POST',
+    body: JSON.stringify({ reason }),
+  }),
   fetchMemory: () => apiFetch<{ items: MemoryItem[] }>('/memory'),
   deleteMemory: (id: string) => apiFetch<{ ok: boolean }>(`/memory/${id}`, { method: 'DELETE' }),
   spawnAgent: (sessionId: string, params: {
@@ -245,12 +470,12 @@ export const api = {
     body: JSON.stringify(config),
   }),
 
-  getLLMStatus: () => apiFetch<{ configured: boolean; provider: string; model: string }>('/llm/status'),
+  getLLMStatus: () => apiFetch<{ status: { configured: boolean; provider: string; model: string; error?: string } }>('/llm/status'),
 
   getLLMModels: async (provider?: string) => {
     const query = provider ? `?provider=${provider}` : '';
-    const data = await apiFetch<{ models: Array<{ id: string; name: string }> }>(`/llm/models${query}`);
-    return data.models.map(m => m.id);
+    const data = await apiFetch<{ models: LLMModelOption[] }>(`/llm/models${query}`);
+    return data.models;
   },
 
   getLLMProviderStatuses: () => apiFetch<Record<string, { available: boolean; hasCredential: boolean }>>('/llm/providers/status'),
@@ -346,10 +571,40 @@ export const api = {
       completedAt?: string;
     }>('/preferences/onboarding-status'),
 
+  getGoalCheckIns: (status?: 'pending' | 'sent') => {
+    const suffix = status ? `?status=${status}` : '';
+    return apiFetch<{ checkIns: GoalCheckIn[] }>(`/preferences/checkins${suffix}`);
+  },
+
   startOnboarding: () =>
     apiFetch<{ ok: boolean; phase: string }>('/preferences/onboarding/start', {
       method: 'POST',
     }),
+
+  getSessionMessages: (sessionId: string) =>
+    apiFetch<{ messages: Array<{ role: 'user' | 'assistant' | 'system'; content: string }> }>(`/sessions/${sessionId}/messages`),
+
+  getSystemStatus: () => apiFetch<{ status: SystemStatus }>('/system/status'),
+  setEmergencyMode: (enabled: boolean, reason?: string) => apiFetch<{ ok: boolean; status: SystemStatus; terminatedWorkers: number; emergencyDisabledSkills: number }>('/system/emergency', {
+    method: 'POST',
+    body: JSON.stringify({ enabled, reason }),
+  }),
+  recoverEmergencySkills: (skillIds?: string[]) => apiFetch<{ ok: boolean; recoveredSkillIds: string[]; count: number }>('/system/emergency/recover', {
+    method: 'POST',
+    body: JSON.stringify({ skillIds }),
+  }),
+  setSkillPolicyMode: (mode: 'developer' | 'signed_only') => apiFetch<{ ok: boolean; status: SystemStatus }>('/system/policy-mode', {
+    method: 'POST',
+    body: JSON.stringify({ mode }),
+  }),
+  getTrustedPublishers: () => apiFetch<{ publishers: TrustedPublisher[] }>('/system/trust-store'),
+  addTrustedPublisher: (payload: { name: string; publicKey: string }) => apiFetch<{ ok: boolean; publisher: TrustedPublisher }>('/system/trust-store', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  }),
+  removeTrustedPublisher: (id: string) => apiFetch<{ ok: boolean }>(`/system/trust-store/${id}`, {
+    method: 'DELETE',
+  }),
 
   completeOnboarding: () =>
     apiFetch<{ ok: boolean; completedAt: string }>('/preferences/onboarding/complete', {

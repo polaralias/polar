@@ -10,6 +10,9 @@ This stage utilizes the following core components built in Phase 1:
 ## Goal
 Turn the platform into an extensible assistant using a hybrid **Skill Architecture**. This aligns with open standards (e.g., Anthropic `SKILL.md`) for defining logic, while wrapping them in Polar's strict security model (Manifests + Permissions).
 
+## Implementation Status (as of February 7, 2026)
+**Status**: Complete
+
 ## 1. Skill Package Format
 A skill is a folder or zip containing:
 
@@ -92,12 +95,18 @@ Build the frontend for managing skills.
 *   **Egress Control**: Explicit toggle for "Allow Internet Access" (based on explicit `net.egress` capability).
 
 ## Acceptance Criteria
-- [ ] `polar.skill.json` supports structured constraint objects (not just strings).
-- [ ] Installer validates full-archive signature/hash.
-- [ ] Runtime ignores tool definitions in `SKILL.md`.
-- [ ] Gateway enforces constraints (e.g., `http` host allowlist) independent of the worker.
-- [ ] Human approval gates pause execution until UI confirmation.
-- [ ] Tool outputs are redacted in logs.
+- [x] `polar.skill.json` supports structured constraint objects (not just strings).
+- [x] Installer validates full-archive signature/hash.
+- [x] Runtime ignores tool definitions in `SKILL.md`.
+- [x] Gateway enforces constraints (e.g., `http` host allowlist) independent of the worker.
+- [x] Human approval gates pause execution until UI confirmation.
+- [x] Tool outputs are redacted in logs.
+
+## Pending Implementation Gaps (as of February 7, 2026)
+- No blocking gaps remain for Stage 1 acceptance.
+- Full-archive hash/signature verification now covers recursive archive content and enforces signature/hash consistency.
+- Capability-level `requires_confirmation` is wired through policy, runtime pause/resume, gateway enforcement, and UI approval actions.
+- Tool output and audit payloads are sanitized before agent-context rendering and audit export paths.
 
 ## Deferred from Phase 1 (Hardening)
 - **Installer Sandbox**: Implement OS-level or WASM isolation for the installer to prevent arbitrary filesystem access during installation.

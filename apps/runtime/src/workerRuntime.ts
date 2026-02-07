@@ -8,8 +8,14 @@ import { readSigningKey } from './crypto.js';
 import { getSkill } from './skillStore.js';
 import { updateAgentStatus } from './agentStore.js';
 import { appendAudit } from './audit.js';
+import { registerTokenTraceContext } from './tokenTraceStore.js';
 
 const activeProcesses = new Map<string, ChildProcess>();
+
+export function resolveWorkerPolicyVersionSubject(agent: Agent): string {
+    // Worker tokens should be revoked when the spawning principal's policy changes.
+    return agent.userId;
+}
 
 export async function startWorker(agent: Agent): Promise<void> {
     // 1. Determine Entry Point
@@ -79,7 +85,7 @@ export async function startWorker(agent: Agent): Promise<void> {
     // CRITICAL FIX: Workers now receive tokens with their requested capabilities,
     // not just runtime.workerChannel. This enables workers to perform external tasks.
     const { getSubjectPolicyVersion, loadPolicy } = await import('./policyStore.js');
-    const policyVersion = await getSubjectPolicyVersion(agent.id);
+    const policyVersion = await getSubjectPolicyVersion(resolveWorkerPolicyVersionSubject(agent));
 
     // Extract requested capabilities from agent metadata
     const requestedCapabilities = (agent.metadata?.capabilities as string[]) || [];
@@ -100,6 +106,7 @@ export async function startWorker(agent: Agent): Promise<void> {
     const policy = await loadPolicy();
     const userId = agent.userId;
     const userGrants = policy.grants.filter(g => g.subject === userId);
+    const userGrantByAction = new Map(userGrants.map(grant => [grant.action, grant]));
     const userGrantedActions = new Set(userGrants.map(g => g.action));
 
     // Only allow capabilities that the parent has been granted (prevents privilege escalation)
@@ -122,6 +129,9 @@ export async function startWorker(agent: Agent): Promise<void> {
     // Mint separate tokens for each capability
     const tokens: string[] = [];
     const timestamp = Math.floor(Date.now() / 1000);
+    const traceId = typeof agent.metadata?.traceId === 'string' ? agent.metadata.traceId : undefined;
+    const plannerToolCallId = typeof agent.metadata?.plannerToolCallId === 'string' ? agent.metadata.plannerToolCallId : undefined;
+    const parentEventId = plannerToolCallId || traceId;
 
     for (const action of validatedCapabilities) {
         // Determine TTL based on action type
@@ -153,8 +163,16 @@ export async function startWorker(agent: Agent): Promise<void> {
             subject: agent.id,
             action,
             resource,
+            requiresConfirmation: userGrantByAction.get(action)?.requiresConfirmation === true,
             expiresAt: timestamp + ttlSeconds,
         };
+        registerTokenTraceContext({
+            jti: capability.id,
+            sessionId: agent.sessionId,
+            agentId: agent.id,
+            ...(traceId ? { traceId } : {}),
+            ...(parentEventId ? { parentEventId } : {}),
+        });
         const token = await mintCapabilityToken(capability, signingKey, policyVersion);
         tokens.push(token);
     }
@@ -185,10 +203,12 @@ export async function startWorker(agent: Agent): Promise<void> {
         env: {
             ...process.env,
             POLAR_RUNTIME_URL: `http://localhost:${runtimeConfig.port}`, // e.g. http://localhost:4000
+            POLAR_GATEWAY_URL: runtimeConfig.gatewayUrl,
             POLAR_AGENT_TOKEN: combinedToken,
             POLAR_AGENT_ID: agent.id,
             POLAR_SESSION_ID: agent.sessionId,
             POLAR_WORKER_TEMPLATE_ID: agent.templateId || '',
+            POLAR_AGENT_METADATA: JSON.stringify(agent.metadata || {}),
         },
         stdio: 'inherit', // Stream logs to parent
     });

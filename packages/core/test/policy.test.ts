@@ -50,4 +50,45 @@ describe('policy evaluation', () => {
 
     expect(decision.allowed).toBe(false);
   });
+
+  it('allows system and skill resource grants', () => {
+    const policy: PolicyStore = {
+      grants: [
+        {
+          id: 'system-grant',
+          subject: 'agent-1',
+          action: 'coordination.propose',
+          resource: { type: 'system', components: ['worker'] },
+        },
+        {
+          id: 'skill-grant',
+          subject: 'agent-1',
+          action: 'skill.execute',
+          resource: { type: 'skill', components: ['demo.skill'] },
+        },
+      ],
+      rules: [],
+    };
+
+    const systemDecision = evaluatePolicy(
+      {
+        subject: 'agent-1',
+        action: 'coordination.propose',
+        resource: { type: 'system', component: 'worker' },
+      },
+      policy,
+    );
+
+    const skillDecision = evaluatePolicy(
+      {
+        subject: 'agent-1',
+        action: 'skill.execute',
+        resource: { type: 'skill', id: 'demo.skill' },
+      },
+      policy,
+    );
+
+    expect(systemDecision.allowed).toBe(true);
+    expect(skillDecision.allowed).toBe(true);
+  });
 });

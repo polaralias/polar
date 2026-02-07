@@ -66,7 +66,7 @@ export default function App() {
           <Route path="/skills" element={<SkillsPage />} />
           <Route path="/audit" element={<AuditPage />} />
           <Route path="/permissions" element={<PermissionsPage />} />
-          <Route path="/agents" element={<AgentsPage sessionId="default-session" />} />
+          <Route path="/agents" element={<AgentsPageWrapper />} />
           <Route path="/channels" element={<ChannelsPage />} />
           <Route path="/intelligence" element={<IntelligencePage />} />
           <Route path="/personalization" element={<PersonalizationPage />} />
@@ -75,4 +75,10 @@ export default function App() {
       </div>
     </div>
   );
+}
+
+function AgentsPageWrapper() {
+  const stored = localStorage.getItem('polar-session');
+  const sessionId = stored ? JSON.parse(stored).id : 'none';
+  return <AgentsPage sessionId={sessionId} />;
 }

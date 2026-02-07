@@ -3,6 +3,9 @@
 ## Goal
 Enable safe integration with local tools (git, Apple Notes) via **CLI Wrappers**. These are typed connectors, **NOT** open shells.
 
+## Implementation Status (as of February 7, 2026)
+**Status**: Complete
+
 ## 1. CLI Connector
 Build a `CLIConnector` in the Gateway.
 
@@ -39,9 +42,9 @@ Build a `CLIConnector` in the Gateway.
 *   **Constraint**: Can only read notes in specific folders.
 
 ## Acceptance Criteria
-- [ ] `cli.run` tool refuses to run arbitrary binaries.
-- [ ] Allowlisted commands execute and return output.
-- [ ] Attempting to pass pipe characters or shell metacharacters fails.
-- [ ] Long running commands are killed (timeout).
-- [ ] Output is capped and truncated purely.
-- [ ] Audit log records the exact command array.
+- [x] `cli.run` tool refuses to run arbitrary binaries.
+- [x] Allowlisted commands execute and return output.
+- [x] Attempting to pass pipe characters or shell metacharacters fails.
+- [x] Long running commands are killed (timeout).
+- [x] Output is capped and truncated purely.
+- [x] Audit log records the exact command array.

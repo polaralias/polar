@@ -69,16 +69,27 @@ export async function runDiagnostics(): Promise<DoctorResult[]> {
             id: 'audit_log',
             name: 'Audit Log Health',
             status: 'OK',
-            message: 'Audit log is writable.',
+            message: 'Audit log is present and writable.',
         });
     } catch {
-        results.push({
-            id: 'audit_log',
-            name: 'Audit Log Health',
-            status: 'CRITICAL',
-            message: 'Audit log is not writable or missing.',
-            remediation: 'Check permissions for ' + runtimeConfig.auditPath,
-        });
+        // Check if directory is writable
+        try {
+            await fs.access(runtimeConfig.dataDir, fsConstants.W_OK);
+            results.push({
+                id: 'audit_log',
+                name: 'Audit Log Health',
+                status: 'OK',
+                message: 'Audit log missing, but data directory is writable (will be created on first use).',
+            });
+        } catch {
+            results.push({
+                id: 'audit_log',
+                name: 'Audit Log Health',
+                status: 'CRITICAL',
+                message: 'Audit log is missing and data directory is not writable.',
+                remediation: 'Check permissions for ' + runtimeConfig.dataDir,
+            });
+        }
     }
 
     // 3. Policy Integrity Check
@@ -150,8 +161,8 @@ export async function runDiagnostics(): Promise<DoctorResult[]> {
         results.push({
             id: 'gateway_health',
             name: 'Gateway Connectivity',
-            status: 'CRITICAL',
-            message: 'Gateway is unreachable.',
+            status: 'WARNING',
+            message: 'Gateway is unreachable. Runtime will function but external tools will fail.',
             remediation: 'Start the gateway service.',
         });
     }
@@ -421,8 +432,8 @@ export async function runDiagnostics(): Promise<DoctorResult[]> {
         results.push({
             id: 'introspection_health',
             name: 'Introspection Service',
-            status: 'CRITICAL',
-            message: 'Internal introspection endpoint is unreachable.',
+            status: 'WARNING',
+            message: 'Internal introspection endpoint is unreachable (may not be listening yet).',
         });
     }
 
@@ -500,6 +511,35 @@ export async function runDiagnostics(): Promise<DoctorResult[]> {
         }
     } catch {
         // ignore
+    }
+
+    // 15. Intelligence Check
+    try {
+        const { llmService } = await import('./llm/service.js');
+        const status = await llmService.isConfigured();
+        if (status.configured) {
+            results.push({
+                id: 'intelligence_health',
+                name: 'Intelligence Service',
+                status: 'OK',
+                message: `LLM is configured and reachable (${status.provider}/${status.model}).`,
+            });
+        } else {
+            results.push({
+                id: 'intelligence_health',
+                name: 'Intelligence Service',
+                status: 'WARNING',
+                message: `LLM is not correctly configured: ${status.error}`,
+                remediation: 'Go to Settings > Intelligence to configure your AI provider.',
+            });
+        }
+    } catch {
+        results.push({
+            id: 'intelligence_health',
+            name: 'Intelligence Service',
+            status: 'WARNING',
+            message: 'Could not check intelligence status.',
+        });
     }
 
     return results;

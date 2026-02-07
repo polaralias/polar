@@ -45,9 +45,9 @@ async function init() {
     await fs.access(runtimeConfig.policyPath);
     console.log('✅ Policy file already exists.');
   } catch {
-    const policy = { grants: [], rules: [{ id: 'default-deny', effect: 'deny', reason: 'Default deny-all policy' }] };
+    const policy = { grants: [], rules: [] };
     await fs.writeFile(runtimeConfig.policyPath, JSON.stringify(policy, null, 2), 'utf-8');
-    console.log(`✅ Created default deny-all policy at ${runtimeConfig.policyPath}`);
+    console.log(`✅ Created default policy at ${runtimeConfig.policyPath}`);
   }
 
   // 4. Initialise audit log

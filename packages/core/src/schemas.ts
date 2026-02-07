@@ -122,6 +122,7 @@ export const CapabilitySchema = z.object({
   action: z.string().min(1), // e.g., 'read', 'propose', 'delete'
   resource: ResourceConstraintSchema,
   fields: z.array(z.string().min(1)).optional(),
+  requiresConfirmation: z.boolean().optional(),
   expiresAt: z.number().int(),
 });
 
@@ -130,6 +131,7 @@ export const CapabilityTokenPayloadSchema = z.object({
   act: z.string().min(1),
   res: ResourceConstraintSchema,
   fld: z.array(z.string().min(1)).optional(),
+  rcf: z.boolean().optional(),
   exp: z.number().int(),
   jti: z.string().min(1),
   pol_ver: z.number().int().optional(),
@@ -143,6 +145,7 @@ export const GrantSchema = z.object({
   action: z.string().min(1),
   resource: ResourceConstraintSchema,
   fields: z.array(z.string().min(1)).optional(),
+  requiresConfirmation: z.boolean().optional(),
   expiresAt: z.number().int().optional(),
 });
 
@@ -246,7 +249,7 @@ export const SkillManifestSchema = z.object({
       input: z.record(z.unknown()).optional(),
       output: z.record(z.unknown()).optional(),
       requiredCapabilities: z.array(z.string().min(1)),
-    }),
+    }).strict(),
   ).optional(), // Make optional as some skills might just be instructions
   requestedCapabilities: z.array(
     z.object({
@@ -254,9 +257,10 @@ export const SkillManifestSchema = z.object({
       action: z.string().min(1),
       resource: ResourceConstraintSchema,
       justification: z.string().min(1),
-    }),
+      requiresConfirmation: z.boolean().optional(),
+    }).strict(),
   ),
-});
+}).strict();
 
 export const SkillContentSchema = z.object({
   instructions: z.string().min(1),
@@ -353,10 +357,14 @@ export type FsResource = z.infer<typeof FsResourceSchema>;
 export type FsResourceConstraint = z.infer<typeof FsResourceConstraintSchema>;
 export type MemoryResource = z.infer<typeof MemoryResourceSchema>;
 export type MemoryResourceConstraint = z.infer<typeof MemoryResourceConstraintSchema>;
+export type SystemResource = z.infer<typeof SystemResourceSchema>;
+export type SystemResourceConstraint = z.infer<typeof SystemResourceConstraintSchema>;
 export type Resource = z.infer<typeof ResourceSchema>;
 export type HttpResource = z.infer<typeof HttpResourceSchema>;
 export type GenericResource = z.infer<typeof GenericResourceSchema>;
 export type ResourceConstraint = z.infer<typeof ResourceConstraintSchema>;
+export type SkillResource = z.infer<typeof SkillResourceSchema>;
+export type SkillResourceConstraint = z.infer<typeof SkillResourceConstraintSchema>;
 export type Session = z.infer<typeof SessionSchema>;
 export type WorkerTemplate = z.infer<typeof WorkerTemplateSchema>;
 export type Capability = z.infer<typeof CapabilitySchema>;
@@ -387,4 +395,3 @@ export type GenericResourceConstraint = z.infer<typeof GenericResourceConstraint
 export type SkillContent = z.infer<typeof SkillContentSchema>;
 export type CliResource = z.infer<typeof CliResourceSchema>;
 export type CliResourceConstraint = z.infer<typeof CliResourceConstraintSchema>;
-

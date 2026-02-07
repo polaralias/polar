@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { api } from '../api.js';
+import { api, type GoalCheckIn as ApiGoalCheckIn } from '../api.js';
 
 // Types from API
 type Goal = {
@@ -44,6 +44,7 @@ type UserPreferences = {
 
 export default function PersonalizationPage() {
     const [prefs, setPrefs] = useState<UserPreferences | null>(null);
+    const [checkIns, setCheckIns] = useState<ApiGoalCheckIn[]>([]);
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -69,8 +70,12 @@ export default function PersonalizationPage() {
         try {
             setLoading(true);
             setError(null);
-            const data = await api.getPreferences();
+            const [data, checkInData] = await Promise.all([
+                api.getPreferences(),
+                api.getGoalCheckIns(),
+            ]);
             setPrefs(data);
+            setCheckIns(checkInData.checkIns);
 
             // Populate form
             setAboutUser(data.customInstructions.aboutUser || '');
@@ -168,6 +173,8 @@ export default function PersonalizationPage() {
     if (loading) {
         return <div className="loading-state">Loading preferences...</div>;
     }
+
+    const checkInByGoalId = new Map(checkIns.map((checkIn) => [checkIn.goalId, checkIn]));
 
     return (
         <div className="intelligence-page">
@@ -355,6 +362,16 @@ export default function PersonalizationPage() {
                             <p className="provider-desc">{goal.description}</p>
                             <div className="status-indicator not-configured" style={{ fontSize: '11px' }}>
                                 Added {new Date(goal.createdAt).toLocaleDateString()}
+                            </div>
+                            <div className="status-indicator" style={{ fontSize: '11px', marginTop: '6px' }}>
+                                {(() => {
+                                    const checkIn = checkInByGoalId.get(goal.id);
+                                    if (!checkIn) return 'Check-in: not scheduled';
+                                    if (checkIn.status === 'sent') {
+                                        return `Check-in sent ${checkIn.sentAt ? new Date(checkIn.sentAt).toLocaleDateString() : ''}`.trim();
+                                    }
+                                    return `Next check-in: ${new Date(checkIn.dueAt).toLocaleDateString()}`;
+                                })()}
                             </div>
                         </div>
                     ))}
