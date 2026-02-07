@@ -13,9 +13,10 @@ export default function PermissionsPage() {
   const [status, setStatus] = useState<string | null>(null);
 
   // New grant state
-  const [subject, setSubject] = useState('main-session');
+  const [subject, setSubject] = useState('user');
   const [action, setAction] = useState('');
-  const [resourceJson, setResourceJson] = useState('{\n  "type": "fs",\n  "path": "/"\n}');
+  const [requiresConfirmation, setRequiresConfirmation] = useState(false);
+  const [resourceJson, setResourceJson] = useState('{\n  "type": "fs",\n  "root": "/"\n}');
 
   // Extract policy from nested response
   const policy = policyData?.policy;
@@ -55,6 +56,7 @@ export default function PermissionsPage() {
         subject,
         action,
         resource,
+        requiresConfirmation,
       };
 
       mutation.mutate({
@@ -79,6 +81,7 @@ export default function PermissionsPage() {
               <tr className="border-b border-border">
                 <th className="p-2">Subject</th>
                 <th className="p-2">Action</th>
+                <th className="p-2">Approval</th>
                 <th className="p-2">Resource</th>
                 <th className="p-2"></th>
               </tr>
@@ -88,6 +91,7 @@ export default function PermissionsPage() {
                 <tr key={grant.id || i} className="border-b border-border/50">
                   <td className="p-2 font-mono text-sm">{grant.subject}</td>
                   <td className="p-2 font-mono text-sm">{grant.action}</td>
+                  <td className="p-2 font-mono text-xs">{grant.requiresConfirmation ? 'Required' : 'No'}</td>
                   <td className="p-2 font-mono text-xs">
                     <pre className="whitespace-pre-wrap">{JSON.stringify(grant.resource)}</pre>
                   </td>
@@ -103,7 +107,7 @@ export default function PermissionsPage() {
               ))}
               {policy.grants.length === 0 && (
                 <tr>
-                  <td colSpan={4} className="p-4 text-center text-muted">No active grants</td>
+                  <td colSpan={5} className="p-4 text-center text-muted">No active grants</td>
                 </tr>
               )}
             </tbody>
@@ -128,6 +132,14 @@ export default function PermissionsPage() {
               onChange={(e) => setAction(e.target.value)}
               placeholder="e.g. fs.writeFile"
             />
+            <label style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <input
+                type="checkbox"
+                checked={requiresConfirmation}
+                onChange={(e) => setRequiresConfirmation(e.target.checked)}
+              />
+              Require approval before execution
+            </label>
           </div>
 
           <div className="flex flex-col gap-2">

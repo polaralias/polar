@@ -10,15 +10,20 @@ import {
   MemoryResource,
   HttpResourceConstraint,
   HttpResource,
+  SystemResourceConstraint,
+  SystemResource,
   GenericResourceConstraint,
   GenericResource,
   CliResourceConstraint,
   CliResource,
+  SkillResourceConstraint,
+  SkillResource,
 } from './schemas.js';
 
 export type PolicyDecision = {
   allowed: boolean;
   reason?: string;
+  requiresConfirmation?: boolean;
   capabilityConstraints?: {
     resource: ResourceConstraint;
     fields?: string[];
@@ -111,6 +116,26 @@ function matchesCliConstraint(constraint: CliResourceConstraint, resource: CliRe
   return true;
 }
 
+function matchesSystemConstraint(
+  constraint: SystemResourceConstraint,
+  resource: SystemResource,
+): boolean {
+  if (!constraint.components || constraint.components.length === 0) {
+    return true;
+  }
+  return resource.component ? constraint.components.includes(resource.component) : false;
+}
+
+function matchesSkillConstraint(
+  constraint: SkillResourceConstraint,
+  resource: SkillResource,
+): boolean {
+  if (!constraint.components || constraint.components.length === 0) {
+    return true;
+  }
+  return constraint.components.includes(resource.id);
+}
+
 export function matchesResourceConstraint(
   constraint: ResourceConstraint,
   resource: Resource,
@@ -137,6 +162,14 @@ export function matchesResourceConstraint(
 
   if (constraint.type === 'cli' && resource.type === 'cli') {
     return matchesCliConstraint(constraint, resource);
+  }
+
+  if (constraint.type === 'system' && resource.type === 'system') {
+    return matchesSystemConstraint(constraint, resource);
+  }
+
+  if (constraint.type === 'skill' && resource.type === 'skill') {
+    return matchesSkillConstraint(constraint, resource);
   }
 
   return false;
@@ -214,6 +247,18 @@ function buildCapabilityConstraints(
       commands: [request.resource.command]
     };
     constraints.resource = cliConstraint;
+  } else if (request.resource.type === 'system') {
+    const systemConstraint: SystemResourceConstraint = {
+      type: 'system',
+      components: request.resource.component ? [request.resource.component] : undefined,
+    };
+    constraints.resource = systemConstraint;
+  } else if (request.resource.type === 'skill') {
+    const skillConstraint: SkillResourceConstraint = {
+      type: 'skill',
+      components: [request.resource.id],
+    };
+    constraints.resource = skillConstraint;
   }
 
   return constraints;
@@ -252,6 +297,7 @@ export function evaluatePolicy(
 
   return {
     allowed: true,
+    requiresConfirmation: matchingGrant.requiresConfirmation === true,
     capabilityConstraints: buildCapabilityConstraints(matchingGrant, request),
   };
 }

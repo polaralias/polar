@@ -1,0 +1,753 @@
+import type { Settings } from "../stores/settings";
+import type { Message } from "../stores/chat";
+import { getModelInfo, getProviderFromModel, PROVIDER_PRESETS, type ProviderConfig } from "../stores/settings";
+
+interface AIMessage {
+  role: "user" | "assistant" | "system";
+  content: string;
+}
+
+interface AIProvider {
+  name: string;
+  sendMessage(
+    messages: AIMessage[],
+    settings: Settings,
+    onStream?: (text: string) => void
+  ): Promise<string>;
+  testConnection(settings: Settings): Promise<string>;
+}
+
+// Get provider config
+function getProviderConfig(providerId: string): ProviderConfig | undefined {
+  return PROVIDER_PRESETS[providerId];
+}
+
+function normalizeModelId(model: string): string {
+  return model.trim().toLowerCase();
+}
+
+function isOpenAIReasoningFamilyModel(model: string): boolean {
+  const lower = normalizeModelId(model);
+  return lower.startsWith("o1")
+    || lower.startsWith("o3")
+    || lower.startsWith("o4")
+    || lower.startsWith("gpt-5")
+    || lower.includes("gpt-5")
+    || lower.startsWith("computer-use")
+    || lower.includes("-o1")
+    || lower.includes("-o3")
+    || lower.includes("-o4")
+    || lower.includes("o1-")
+    || lower.includes("o3-")
+    || lower.includes("o4-");
+}
+
+function supportsCustomTemperature(model: string): boolean {
+  return !isOpenAIReasoningFamilyModel(model);
+}
+
+function googleApiVersionForModel(model: string): "v1alpha" | "v1beta" {
+  const lower = normalizeModelId(model);
+  return lower.startsWith("gemini-3") ? "v1alpha" : "v1beta";
+}
+
+// Anthropic Claude Provider
+class AnthropicProvider implements AIProvider {
+  name = "anthropic";
+
+  async sendMessage(
+    messages: AIMessage[],
+    settings: Settings,
+    onStream?: (text: string) => void
+  ): Promise<string> {
+    const response = await fetch(`${settings.baseUrl}/v1/messages`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": settings.apiKey,
+        "anthropic-version": "2023-06-01",
+        "anthropic-dangerous-direct-browser-access": "true",
+      },
+      body: JSON.stringify({
+        model: settings.model,
+        max_tokens: settings.maxTokens,
+        stream: !!onStream,
+        messages,
+      }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.error?.message || `API error: ${response.status}`);
+    }
+
+    if (onStream) {
+      return this.handleStreamResponse(response, onStream);
+    }
+
+    const data = await response.json();
+    return data.content[0]?.text || "";
+  }
+
+  private async handleStreamResponse(
+    response: Response,
+    onStream: (text: string) => void
+  ): Promise<string> {
+    let fullText = "";
+    const reader = response.body?.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    if (reader) {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+
+        for (const line of lines) {
+          if (line.startsWith("data: ")) {
+            const data = line.slice(6);
+            if (data === "[DONE]") continue;
+            try {
+              const parsed = JSON.parse(data);
+              if (parsed.type === "content_block_delta" && parsed.delta?.text) {
+                fullText += parsed.delta.text;
+                onStream(fullText);
+              }
+            } catch {
+              // Skip invalid JSON
+            }
+          }
+        }
+      }
+    }
+
+    return fullText;
+  }
+
+  async testConnection(settings: Settings): Promise<string> {
+    try {
+      const response = await fetch(`${settings.baseUrl}/v1/messages`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": settings.apiKey,
+          "anthropic-version": "2023-06-01",
+          "anthropic-dangerous-direct-browser-access": "true",
+        },
+        body: JSON.stringify({
+          model: settings.model,
+          max_tokens: 10,
+          messages: [{ role: "user", content: "Hi" }],
+        }),
+      });
+
+      if (response.ok) return "success";
+      const error = await response.json().catch(() => ({}));
+      return `Error: ${error.error?.message || response.status}`;
+    } catch (e) {
+      return `Error: ${e instanceof Error ? e.message : "Unknown error"}`;
+    }
+  }
+}
+
+// Google Gemini Provider
+class GoogleProvider implements AIProvider {
+  name = "google";
+
+  async sendMessage(
+    messages: AIMessage[],
+    settings: Settings,
+    onStream?: (text: string) => void
+  ): Promise<string> {
+    // Convert messages to Gemini format
+    const contents = messages.map(msg => ({
+      role: msg.role === "assistant" ? "model" : "user",
+      parts: [{ text: msg.content }]
+    }));
+
+    const apiVersion = googleApiVersionForModel(settings.model);
+    const url = `${settings.baseUrl}/${apiVersion}/models/${settings.model}:generateContent?key=${settings.apiKey}`;
+
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        contents,
+        generationConfig: {
+          maxOutputTokens: settings.maxTokens,
+          },
+      }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.error?.message || `API error: ${response.status}`);
+    }
+
+    const data = await response.json();
+    const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+
+    if (onStream) {
+      onStream(text);
+    }
+
+    return text;
+  }
+
+  async testConnection(settings: Settings): Promise<string> {
+    try {
+      const apiVersion = googleApiVersionForModel(settings.model);
+      const url = `${settings.baseUrl}/${apiVersion}/models/${settings.model}:generateContent?key=${settings.apiKey}`;
+
+      const response = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          contents: [{ role: "user", parts: [{ text: "Hi" }] }],
+          generationConfig: { maxOutputTokens: 10 },
+        }),
+      });
+
+      if (response.ok) return "success";
+      const error = await response.json().catch(() => ({}));
+      return `Error: ${error.error?.message || response.status}`;
+    } catch (e) {
+      return `Error: ${e instanceof Error ? e.message : "Unknown error"}`;
+    }
+  }
+}
+
+// Minimax Provider
+class MinimaxProvider implements AIProvider {
+  name = "minimax";
+
+  private getApiEndpoint(baseUrl: string): string {
+    const url = baseUrl.replace(/\/$/, "");
+    if (url.endsWith("/v1")) {
+      return `${url}/chat/completions`;
+    }
+    return `${url}/v1/chat/completions`;
+  }
+
+  async sendMessage(
+    messages: AIMessage[],
+    settings: Settings,
+    onStream?: (text: string) => void
+  ): Promise<string> {
+    const response = await fetch(this.getApiEndpoint(settings.baseUrl), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${settings.apiKey}`,
+      },
+      body: JSON.stringify({
+        model: settings.model,
+        max_completion_tokens: settings.maxTokens,
+        ...(settings.temperature !== undefined ? { temperature: settings.temperature } : {}),
+        stream: !!onStream,
+        messages,
+      }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.error?.message || `API error: ${response.status}`);
+    }
+
+    const data = await response.json();
+    const text = data.choices?.[0]?.message?.content || "";
+
+    if (onStream) {
+      onStream(text);
+    }
+
+    return text;
+  }
+
+  async testConnection(settings: Settings): Promise<string> {
+    try {
+      const response = await fetch(this.getApiEndpoint(settings.baseUrl), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${settings.apiKey}`,
+        },
+        body: JSON.stringify({
+          model: settings.model,
+          max_completion_tokens: 10,
+          messages: [{ role: "user", content: "Hi" }],
+        }),
+      });
+
+      if (response.ok) return "success";
+      const error = await response.json().catch(() => ({}));
+      return `Error: ${error.error?.message || response.status}`;
+    } catch (e) {
+      return `Error: ${e instanceof Error ? e.message : "Unknown error"}`;
+    }
+  }
+}
+
+// OpenAI Compatible Provider
+// Supports: Ollama, LM Studio, vLLM, TGI, OpenRouter, Together, Groq, DeepSeek, SiliconFlow, etc.
+class OpenAICompatibleProvider implements AIProvider {
+  name = "openai-compatible";
+  private providerConfig: ProviderConfig;
+
+  constructor(providerId: string) {
+    this.providerConfig = getProviderConfig(providerId) || PROVIDER_PRESETS.custom;
+  }
+
+  private buildHeaders(settings: Settings): Record<string, string> {
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+
+    // Build auth headers based on authType
+    switch (this.providerConfig.authType) {
+      case "bearer":
+        if (settings.apiKey) {
+          headers["Authorization"] = `Bearer ${settings.apiKey}`;
+        }
+        break;
+      case "api-key":
+        if (settings.apiKey) {
+          headers["x-api-key"] = settings.apiKey;
+        }
+        break;
+      case "none":
+        // Local services don't require auth
+        break;
+    }
+
+    return headers;
+  }
+
+  private getApiEndpoint(baseUrl: string): string {
+    // Normalize API endpoint
+    const url = baseUrl.replace(/\/$/, ""); // Remove trailing slash
+
+    // If already contains /v1, use directly
+    if (url.endsWith("/v1")) {
+      return `${url}/chat/completions`;
+    }
+
+    // Otherwise add /v1/chat/completions
+    return `${url}/v1/chat/completions`;
+  }
+
+  async sendMessage(
+    messages: AIMessage[],
+    settings: Settings,
+    onStream?: (text: string) => void
+  ): Promise<string> {
+    const url = this.getApiEndpoint(settings.baseUrl);
+    const headers = this.buildHeaders(settings);
+
+    const payload: Record<string, unknown> = {
+      model: settings.model,
+      max_tokens: settings.maxTokens,
+      stream: !!onStream,
+      messages,
+    };
+    if (settings.temperature !== undefined && supportsCustomTemperature(settings.model)) {
+      payload.temperature = settings.temperature;
+    }
+
+    const response = await fetch(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.error?.message || `API error: ${response.status}`);
+    }
+
+    if (onStream) {
+      return this.handleStreamResponse(response, onStream);
+    }
+
+    const data = await response.json();
+    return data.choices?.[0]?.message?.content || "";
+  }
+
+  private async handleStreamResponse(
+    response: Response,
+    onStream: (text: string) => void
+  ): Promise<string> {
+    let fullText = "";
+    const reader = response.body?.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    if (reader) {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+
+        for (const line of lines) {
+          if (line.startsWith("data: ")) {
+            const data = line.slice(6);
+            if (data === "[DONE]") continue;
+            try {
+              const parsed = JSON.parse(data);
+              const delta = parsed.choices?.[0]?.delta?.content;
+              if (delta) {
+                fullText += delta;
+                onStream(fullText);
+              }
+            } catch {
+              // Skip invalid JSON
+            }
+          }
+        }
+      }
+    }
+
+    return fullText;
+  }
+
+  async testConnection(settings: Settings): Promise<string> {
+    // First check if service is reachable (especially useful for local services)
+    if (this.providerConfig.authType === "none") {
+      const isReachable = await this.checkServiceReachable(settings.baseUrl);
+      if (!isReachable) {
+        return `Error: Cannot connect to ${settings.baseUrl}. Please ensure the service is running.`;
+      }
+    }
+
+    try {
+      const url = this.getApiEndpoint(settings.baseUrl);
+      const headers = this.buildHeaders(settings);
+
+      const response = await fetch(url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          model: settings.model,
+          max_tokens: 10,
+          messages: [{ role: "user", content: "Hi" }],
+        }),
+      });
+
+      if (response.ok) return "success";
+      const error = await response.json().catch(() => ({}));
+      return `Error: ${error.error?.message || response.status}`;
+    } catch (e) {
+      return `Error: ${e instanceof Error ? e.message : "Unknown error"}`;
+    }
+  }
+
+  private async checkServiceReachable(baseUrl: string): Promise<boolean> {
+    try {
+      // Try to access models endpoint (most OpenAI-compatible services support this)
+      const url = baseUrl.replace(/\/$/, "");
+      const response = await fetch(`${url}/v1/models`, {
+        method: "GET",
+        signal: AbortSignal.timeout(5000), // 5 second timeout
+      });
+      return response.ok;
+    } catch {
+      // Try Ollama-specific endpoint
+      try {
+        const url = baseUrl.replace(/\/$/, "").replace("/v1", "");
+        const response = await fetch(`${url}/api/tags`, {
+          method: "GET",
+          signal: AbortSignal.timeout(5000),
+        });
+        return response.ok;
+      } catch {
+        return false;
+      }
+    }
+  }
+
+  // Discover available models (for local services)
+  async discoverModels(baseUrl: string): Promise<string[]> {
+    try {
+      const url = baseUrl.replace(/\/$/, "");
+
+      // Try standard OpenAI endpoint
+      let response = await fetch(`${url}/v1/models`);
+      if (response.ok) {
+        const data = await response.json();
+        return data.data?.map((m: { id: string }) => m.id) || [];
+      }
+
+      // Try Ollama endpoint
+      response = await fetch(`${url.replace("/v1", "")}/api/tags`);
+      if (response.ok) {
+        const data = await response.json();
+        return data.models?.map((m: { name: string }) => m.name) || [];
+      }
+
+      return [];
+    } catch {
+      return [];
+    }
+  }
+}
+
+// OpenAI Responses API Provider
+class OpenAIResponsesProvider implements AIProvider {
+  name = "openai-responses";
+
+  private buildHeaders(settings: Settings): Record<string, string> {
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${settings.apiKey}`,
+    };
+    // Add optional OpenAI organization and project headers
+    if (settings.openaiOrganization) {
+      headers["OpenAI-Organization"] = settings.openaiOrganization;
+    }
+    if (settings.openaiProject) {
+      headers["OpenAI-Project"] = settings.openaiProject;
+    }
+    return headers;
+  }
+
+  async sendMessage(
+    messages: AIMessage[],
+    settings: Settings,
+    onStream?: (text: string) => void
+  ): Promise<string> {
+    // Extract system message as instructions (Responses API uses separate instructions field)
+    const systemMsg = messages.find(m => m.role === "system");
+    const inputMsgs = messages.filter(m => m.role !== "system");
+
+    const body: Record<string, unknown> = {
+      model: settings.model,
+      input: inputMsgs.map(m => ({ role: m.role, content: m.content })),
+      max_output_tokens: settings.maxTokens,
+      stream: !!onStream,
+    };
+
+    // Add instructions if system message exists
+    if (systemMsg) {
+      body.instructions = systemMsg.content;
+    }
+    // GPT-5/codex/computer-use families reject custom temperature in many modes.
+    if (supportsCustomTemperature(settings.model) && settings.temperature !== undefined) {
+      body.temperature = settings.temperature;
+    }
+
+    const response = await fetch(`${settings.baseUrl}/v1/responses`, {
+      method: "POST",
+      headers: this.buildHeaders(settings),
+      body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.error?.message || `API error: ${response.status}`);
+    }
+
+    if (onStream) {
+      return this.handleStreamResponse(response, onStream);
+    }
+
+    const data = await response.json();
+    return this.extractText(data);
+  }
+
+  private extractText(data: Record<string, unknown>): string {
+    // Response format: { output: [{ type: "message", content: [{ type: "output_text", text: "..." }] }] }
+    const output = data.output as Array<Record<string, unknown>> | undefined;
+    if (!output) return "";
+
+    // Find the message type output item
+    const messageItem = output.find((item) => item.type === "message");
+    if (!messageItem) return "";
+
+    const content = messageItem.content as Array<Record<string, unknown>> | undefined;
+    if (!content) return "";
+
+    // Find the output_text content block
+    const textContent = content.find((c) => c.type === "output_text");
+    return (textContent?.text as string) || "";
+  }
+
+  private async handleStreamResponse(
+    response: Response,
+    onStream: (text: string) => void
+  ): Promise<string> {
+    let fullText = "";
+    const reader = response.body?.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    if (reader) {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+
+        for (const line of lines) {
+          if (line.startsWith("data: ")) {
+            const data = line.slice(6);
+            if (data === "[DONE]") continue;
+            try {
+              const parsed = JSON.parse(data);
+              // Responses API streaming: event type "response.output_text.delta"
+              if (parsed.type === "response.output_text.delta" && parsed.delta) {
+                fullText += parsed.delta;
+                onStream(fullText);
+              }
+              // Also handle response.completed for final text
+              if (parsed.type === "response.completed") {
+                const finalText = this.extractText(parsed.response || {});
+                if (finalText && finalText !== fullText) {
+                  fullText = finalText;
+                  onStream(fullText);
+                }
+              }
+            } catch {
+              // Skip invalid JSON
+            }
+          }
+        }
+      }
+    }
+
+    return fullText;
+  }
+
+  async testConnection(settings: Settings): Promise<string> {
+    try {
+      const response = await fetch(`${settings.baseUrl}/v1/responses`, {
+        method: "POST",
+        headers: this.buildHeaders(settings),
+        body: JSON.stringify({
+          model: settings.model,
+          input: [{ role: "user", content: "Hi" }],
+          max_output_tokens: 10,
+        }),
+      });
+
+      if (response.ok) return "success";
+      const error = await response.json().catch(() => ({}));
+      return `Error: ${error.error?.message || response.status}`;
+    } catch (e) {
+      return `Error: ${e instanceof Error ? e.message : "Unknown error"}`;
+    }
+  }
+}
+
+// Provider registry
+const providers: Record<string, AIProvider> = {
+  anthropic: new AnthropicProvider(),
+  google: new GoogleProvider(),
+  minimax: new MinimaxProvider(),
+  "openai-responses": new OpenAIResponsesProvider(),
+};
+
+// OpenAI-compatible service provider IDs
+const openaiCompatibleProviders = [
+  "ollama", "localai",
+  "vllm", "tgi", "sglang",
+  "openrouter", "together", "groq", "deepseek", "siliconflow",
+  "custom"
+];
+
+// Get provider for a model
+function getProvider(modelId: string): AIProvider {
+  const modelInfo = getModelInfo(modelId);
+  const providerName = modelInfo?.provider || getProviderFromModel(modelId);
+
+  // OpenAI provider is Responses-only.
+  if (providerName === "openai") {
+    return providers["openai-responses"];
+  }
+
+  // If it's an OpenAI-compatible service, use OpenAICompatibleProvider
+  if (openaiCompatibleProviders.includes(providerName)) {
+    return new OpenAICompatibleProvider(providerName);
+  }
+
+  return providers[providerName] || providers.anthropic;
+}
+
+// Unified AI client
+export async function sendMessage(
+  messages: Message[],
+  settings: Settings,
+  onStream?: (text: string) => void
+): Promise<string> {
+  const provider = getProvider(settings.model);
+  const aiMessages: AIMessage[] = messages.map((m) => ({
+    role: m.role,
+    content: m.content,
+  }));
+
+  return provider.sendMessage(aiMessages, settings, onStream);
+}
+
+export async function testConnection(settings: Settings): Promise<string> {
+  const provider = getProvider(settings.model);
+  return provider.testConnection(settings);
+}
+
+// Discover available models for local services
+export async function discoverModels(baseUrl: string): Promise<string[]> {
+  const provider = new OpenAICompatibleProvider("custom");
+  return provider.discoverModels(baseUrl);
+}
+
+// Check if local service is running
+export async function checkLocalServiceStatus(baseUrl: string): Promise<{
+  running: boolean;
+  models: string[];
+}> {
+  try {
+    const models = await discoverModels(baseUrl);
+    return {
+      running: models.length > 0 || await checkServiceReachable(baseUrl),
+      models,
+    };
+  } catch {
+    return { running: false, models: [] };
+  }
+}
+
+async function checkServiceReachable(baseUrl: string): Promise<boolean> {
+  try {
+    const url = baseUrl.replace(/\/$/, "");
+    const response = await fetch(`${url}/v1/models`, {
+      method: "GET",
+      signal: AbortSignal.timeout(3000),
+    });
+    return response.ok;
+  } catch {
+    try {
+      const url = baseUrl.replace(/\/$/, "").replace("/v1", "");
+      const response = await fetch(`${url}/api/tags`, {
+        method: "GET",
+        signal: AbortSignal.timeout(3000),
+      });
+      return response.ok;
+    } catch {
+      return false;
+    }
+  }
+}
+
+// Export types and constants for other modules
+export { openaiCompatibleProviders, PROVIDER_PRESETS };

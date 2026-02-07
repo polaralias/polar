@@ -1,0 +1,34 @@
+{
+  "id": "code-helper.summarize-folder",
+  "name": "Code Helper",
+  "version": "1.0.0",
+  "description": "Summarize directories and generate README drafts.",
+  "workerTemplates": [
+    {
+      "id": "summarize_directory",
+      "name": "Summarize Folder",
+      "description": "Summarizes a directory while respecting .gitignore and file-size limits.",
+      "requiredCapabilities": [
+        "fs.workflow"
+      ]
+    },
+    {
+      "id": "generate_readme",
+      "name": "Generate README",
+      "description": "Generates a README draft from a directory summary.",
+      "requiredCapabilities": [
+        "fs.workflow"
+      ]
+    }
+  ],
+  "requestedCapabilities": [
+    {
+      "connector": "fs",
+      "action": "fs.workflow",
+      "resource": {
+        "type": "fs"
+      },
+      "justification": "Need to analyze directory structure and file previews safely."
+    }
+  ]
+}

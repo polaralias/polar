@@ -26,16 +26,27 @@ export async function calculateSkillHash(skillPath: string): Promise<string> {
     const hash = crypto.createHash('sha256');
 
     try {
-        const files = await fs.readdir(skillPath, { withFileTypes: true });
-        const sortedFiles = files
-            .filter(f => f.isFile())
-            .map(f => f.name)
-            .sort();
+        const files: string[] = [];
+        const walk = async (currentDir: string): Promise<void> => {
+            const entries = await fs.readdir(currentDir, { withFileTypes: true });
+            for (const entry of entries) {
+                const absolutePath = path.join(currentDir, entry.name);
+                const relativePath = path.relative(skillPath, absolutePath).replace(/\\/g, '/');
+                if (entry.isDirectory()) {
+                    await walk(absolutePath);
+                } else if (entry.isFile()) {
+                    files.push(relativePath);
+                }
+            }
+        };
+        await walk(skillPath);
+        files.sort();
 
-        for (const fileName of sortedFiles) {
-            const filePath = path.join(skillPath, fileName);
+        for (const relativePath of files) {
+            if (relativePath === 'signature.json') continue;
+            const filePath = path.join(skillPath, relativePath);
             const content = await fs.readFile(filePath);
-            hash.update(fileName);
+            hash.update(relativePath);
             hash.update(content);
         }
 
@@ -64,6 +75,8 @@ export async function verifySkillIntegrity(skill: Skill): Promise<boolean> {
 export async function loadSkillContent(skillId: string): Promise<SkillContent | undefined> {
     const skill = await getSkill(skillId);
     if (!skill || !skill.path) return undefined;
+    if (skill.status !== 'enabled') return undefined;
+    if (skill.provenance?.integrityFailed) return undefined;
 
     const skillMdPath = path.join(skill.path, 'SKILL.md');
     try {
@@ -103,6 +116,7 @@ export async function loadSkills(): Promise<Skill[]> {
 export async function loadSkillsWithVerification(): Promise<Skill[]> {
     const skills = await loadSkills();
     const verifiedSkills: Skill[] = [];
+    let changed = false;
 
     const { isSkillTrustLevelAllowed } = await import('./systemStore.js');
 
@@ -116,6 +130,7 @@ export async function loadSkillsWithVerification(): Promise<Skill[]> {
             const isAllowed = await isSkillTrustLevelAllowed(skill.provenance.trustLevel);
             if (!isAllowed) {
                 console.warn(`Skill ${skill.manifest.id} policy restricted - disabling`);
+                changed = true;
                 verifiedSkills.push({ ...skill, status: 'disabled' } as Skill);
                 continue;
             }
@@ -124,6 +139,7 @@ export async function loadSkillsWithVerification(): Promise<Skill[]> {
         const isValid = await verifySkillIntegrity(skill);
         if (!isValid) {
             console.warn(`Skill ${skill.manifest.id} tampered - disabling`);
+            changed = true;
             verifiedSkills.push({
                 ...skill,
                 status: 'disabled',
@@ -138,6 +154,9 @@ export async function loadSkillsWithVerification(): Promise<Skill[]> {
                 } : undefined
             } as Skill);
         } else {
+            if (skill.provenance && !skill.provenance.integrityCheckedAt) {
+                changed = true;
+            }
             verifiedSkills.push({
                 ...skill,
                 provenance: skill.provenance ? {
@@ -151,6 +170,10 @@ export async function loadSkillsWithVerification(): Promise<Skill[]> {
                 } : undefined
             } as Skill);
         }
+    }
+
+    if (changed) {
+        await saveSkills(verifiedSkills);
     }
 
     return verifiedSkills;
@@ -203,17 +226,39 @@ export async function registerSkill(
         const skills = await loadSkills();
         const existingIndex = skills.findIndex((s) => s.manifest.id === manifest.id);
 
-        let trustLevel: 'trusted' | 'locally_trusted' | 'untrusted' = 'untrusted';
-        if (signature?.signature && signature?.publicKey) {
-            try {
-                const verifier = crypto.createVerify('SHA256');
-                verifier.update(hash);
-                verifier.end();
-                if (verifier.verify(signature.publicKey, signature.signature, 'hex')) {
-                    trustLevel = 'trusted';
+        // Local unsigned installs are treated as locally trusted in developer mode.
+        let trustLevel: 'trusted' | 'locally_trusted' | 'untrusted' = 'locally_trusted';
+        if (typeof signature?.hash === 'string' && signature.hash !== hash) {
+            throw new Error(`Skill archive hash mismatch for ${manifest.id}`);
+        }
+        const hasSignatureMaterial = Boolean(signature?.signature || signature?.publicKey);
+        if (hasSignatureMaterial) {
+            if (!signature?.signature || !signature?.publicKey) {
+                trustLevel = 'untrusted';
+            } else {
+                try {
+                    const verifier = crypto.createVerify('SHA256');
+                    verifier.update(hash);
+                    verifier.end();
+                    const signatureValid = verifier.verify(signature.publicKey, signature.signature, 'hex');
+                    if (!signatureValid) {
+                        trustLevel = 'untrusted';
+                    } else {
+                        const { isPublicKeyTrusted, touchTrustedPublisherUsage } = await import('./trustStore.js');
+                        const trustedPublisher = await isPublicKeyTrusted(signature.publicKey);
+                        if (trustedPublisher) {
+                            trustLevel = 'trusted';
+                            await touchTrustedPublisherUsage(signature.publicKey);
+                        } else {
+                            // Valid cryptographic signature, but publisher key is not in local trust store.
+                            // Keep as locally_trusted so developer mode can proceed while signed-only blocks it.
+                            trustLevel = 'locally_trusted';
+                        }
+                    }
+                } catch (err) {
+                    trustLevel = 'untrusted';
+                    console.warn(`Signature validation failed:`, err);
                 }
-            } catch (err) {
-                console.warn(`Signature validation failed:`, err);
             }
         }
 
@@ -300,7 +345,7 @@ export async function rollbackSkill(skillId: string, targetVersion?: string): Pr
 }
 
 export async function getSkill(id: string): Promise<Skill | undefined> {
-    const skills = await loadSkills();
+    const skills = await loadSkillsWithVerification();
     return skills.find(s => s.manifest.id === id);
 }
 
@@ -315,12 +360,53 @@ export async function updateSkillStatus(id: string, status: Skill['status']): Pr
     });
 }
 
-export async function uninstallSkill(id: string): Promise<void> {
+export async function setEmergencyDisabledForEnabledSkills(): Promise<string[]> {
+    return mutex.runExclusive(async () => {
+        const skills = await loadSkills();
+        const impacted: string[] = [];
+        for (const skill of skills) {
+            if (skill.status === 'enabled') {
+                skill.status = 'emergency_disabled';
+                impacted.push(skill.manifest.id);
+            }
+        }
+        if (impacted.length > 0) {
+            await saveSkills(skills);
+        }
+        return impacted;
+    });
+}
+
+export async function recoverEmergencyDisabledSkills(skillIds?: string[]): Promise<string[]> {
+    return mutex.runExclusive(async () => {
+        const selected = new Set((skillIds || []).filter((id) => id.length > 0));
+        const recoverAll = selected.size === 0;
+
+        const skills = await loadSkills();
+        const recovered: string[] = [];
+        for (const skill of skills) {
+            if (skill.status !== 'emergency_disabled') continue;
+            if (!recoverAll && !selected.has(skill.manifest.id)) continue;
+            skill.status = 'enabled';
+            recovered.push(skill.manifest.id);
+        }
+        if (recovered.length > 0) {
+            await saveSkills(skills);
+        }
+        return recovered;
+    });
+}
+
+export async function uninstallSkill(
+    id: string,
+    options?: { deleteFiles?: boolean },
+): Promise<void> {
     await mutex.runExclusive(async () => {
+        const shouldDeleteFiles = options?.deleteFiles ?? true;
         let skills = await loadSkills();
         const skill = skills.find(s => s.manifest.id === id);
         if (!skill) return;
-        if (skill.path) {
+        if (shouldDeleteFiles && skill.path) {
             await fs.rm(skill.path, { recursive: true, force: true }).catch(() => { });
         }
         skills = skills.filter(s => s.manifest.id !== id);

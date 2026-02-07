@@ -1,0 +1,22 @@
+Extracted files for LLM models/providers, API config, and UI representation
+
+Files:
+src/stores/settings.ts
+src/lib/ai-client.ts
+src/lib/tauri-api.ts
+src/components/Settings.tsx
+src/components/Settings.css
+src/components/ModelSelector.tsx
+src/components/ModelSelector.css
+src/components/Chat.tsx
+src/components/Chat.css
+src/components/AgentMain.tsx
+src/components/AgentMain.css
+src-tauri/src/database.rs
+src-tauri/src/llm_client.rs
+src-tauri/src/commands.rs
+src-tauri/src/agent/agent_loop.rs
+src-tauri/src/browser/mod.rs
+src-tauri/src/tools/browser.rs
+src-tauri/src/claude.rs
+browser-use-sidecar/main.py

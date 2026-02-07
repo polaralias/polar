@@ -1,185 +1,233 @@
 /**
  * OpenAI Provider Adapter
- * Direct access to OpenAI models (GPT-4o, GPT-4o-mini, o1, etc.)
+ * Uses the Responses API for GPT-5 and modern OpenAI models.
  */
 
 import type { LLMProviderAdapter } from './base.js';
 import { createHeaders } from './base.js';
-import type { LLMRequest, LLMResponse, LLMConfig } from '../types.js';
+import type { LLMConfig, LLMRequest, LLMResponse } from '../types.js';
 import { LLMError, LLM_PROVIDER_ENDPOINTS } from '../types.js';
 
-interface OpenAIMessage {
-    role: 'system' | 'user' | 'assistant' | 'tool';
+interface OpenAIResponsesInput {
+    role: 'user' | 'assistant';
     content: string;
-    name?: string;
-    tool_call_id?: string;
 }
 
-interface OpenAITool {
+interface OpenAIResponsesTool {
     type: 'function';
-    function: {
-        name: string;
-        description: string;
-        parameters: Record<string, unknown>;
-    };
+    name: string;
+    description: string;
+    parameters: Record<string, unknown>;
 }
 
-interface OpenAIRequest {
+interface OpenAIResponsesRequest {
     model: string;
-    messages: OpenAIMessage[];
+    input: OpenAIResponsesInput[];
+    instructions?: string;
+    max_output_tokens?: number;
     temperature?: number;
-    max_completion_tokens?: number; // Preferred for GPT-5 family (per provider-alignment.md)
-    max_tokens?: number; // Legacy fallback for older models
     top_p?: number;
     stop?: string[];
-    tools?: OpenAITool[];
-    tool_choice?: 'auto' | 'none' | { type: 'function'; function: { name: string } };
-    reasoning_effort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'; // GPT-5.2 reasoning control
+    tools?: OpenAIResponsesTool[];
 }
 
-interface OpenAIToolCall {
-    id: string;
-    type: 'function';
-    function: {
-        name: string;
-        arguments: string;
-    };
+interface OpenAIOutputTextItem {
+    type: 'output_text';
+    text: string;
 }
 
-interface OpenAIResponse {
-    id: string;
-    object: string;
-    created: number;
-    model: string;
-    choices: Array<{
-        index: number;
-        message: {
-            role: 'assistant';
-            content: string | null;
-            tool_calls?: OpenAIToolCall[];
-        };
-        finish_reason: 'stop' | 'length' | 'tool_calls' | 'content_filter';
-    }>;
+interface OpenAIFunctionCallItem {
+    type: 'function_call';
+    call_id?: string;
+    name: string;
+    arguments?: string;
+}
+
+interface OpenAIMessageOutputItem {
+    type: 'message';
+    content?: Array<OpenAIOutputTextItem | { type: string; text?: string }>;
+}
+
+type OpenAIOutputItem = OpenAIMessageOutputItem | OpenAIFunctionCallItem | { type: string };
+
+interface OpenAIResponsesResponse {
+    model?: string;
+    output?: OpenAIOutputItem[];
     usage?: {
-        prompt_tokens: number;
-        completion_tokens: number;
-        total_tokens: number;
+        input_tokens?: number;
+        output_tokens?: number;
+        total_tokens?: number;
     };
+}
+
+function isReasoningFamilyModel(model: string): boolean {
+    const lower = model.trim().toLowerCase();
+    return (
+        lower.startsWith('o1') ||
+        lower.startsWith('o3') ||
+        lower.startsWith('o4') ||
+        lower.startsWith('gpt-5') ||
+        lower.includes('gpt-5') ||
+        lower.startsWith('computer-use') ||
+        lower.includes('-o1') ||
+        lower.includes('-o3') ||
+        lower.includes('-o4') ||
+        lower.includes('o1-') ||
+        lower.includes('o3-') ||
+        lower.includes('o4-')
+    );
+}
+
+function supportsCustomTemperature(model: string): boolean {
+    return !isReasoningFamilyModel(model);
 }
 
 export class OpenAIProvider implements LLMProviderAdapter {
     readonly name = 'openai';
-    private readonly endpoint = LLM_PROVIDER_ENDPOINTS.openai;
+    private readonly baseEndpoint = LLM_PROVIDER_ENDPOINTS.openai;
+
+    private endpoint(path: '/v1/responses' | '/v1/models'): string {
+        const base = this.baseEndpoint.replace(/\/+$/, '');
+        return `${base}${path}`;
+    }
 
     async chat(request: LLMRequest, apiKey: string, config: LLMConfig): Promise<LLMResponse> {
         const modelId = request.modelOverride || config.modelId;
 
-        // Map messages, only including name when defined
-        const messages: OpenAIMessage[] = request.messages.map(msg => {
-            const mapped: OpenAIMessage = {
-                role: msg.role,
-                content: msg.content,
-            };
-            if (msg.name) {
-                mapped.name = msg.name;
-            }
-            return mapped;
-        });
+        let instructions: string | undefined;
+        const input: OpenAIResponsesInput[] = [];
 
-        const openAIRequest: OpenAIRequest = {
-            model: modelId,
-            messages,
-        };
-
-        // Determine if this is a GPT-5 family model (uses max_completion_tokens)
-        const isGPT5Family = modelId.startsWith('gpt-5') || modelId.startsWith('chatgpt-5');
-
-        // Conditionally add optional properties
-        // Gate temperature/topP based on model - reasoning models may not support them
-        const isReasoningModel = modelId.includes('o1') || modelId.includes('-pro');
-        if (!isReasoningModel) {
-            if (request.temperature !== undefined || config.parameters.temperature !== undefined) {
-                openAIRequest.temperature = request.temperature ?? config.parameters.temperature;
+        for (const message of request.messages) {
+            if (message.role === 'system') {
+                instructions = instructions
+                    ? `${instructions}\n\n${message.content}`
+                    : message.content;
+                continue;
             }
-            if (config.parameters.topP !== undefined) {
-                openAIRequest.top_p = config.parameters.topP;
+
+            if (message.role === 'tool') {
+                input.push({
+                    role: 'user',
+                    content: `Tool result: ${message.content}`,
+                });
+                continue;
             }
+
+            input.push({
+                role: message.role === 'assistant' ? 'assistant' : 'user',
+                content: message.content,
+            });
         }
 
-        // Use max_completion_tokens for GPT-5 family (per provider-alignment.md)
+        if (input.length === 0) {
+            input.push({ role: 'user', content: 'Hello' });
+        }
+
+        const payload: OpenAIResponsesRequest = {
+            model: modelId,
+            input,
+        };
+
+        if (instructions) {
+            payload.instructions = instructions;
+        }
+
         const maxTokens = request.maxTokens ?? config.parameters.maxTokens;
         if (maxTokens !== undefined) {
-            if (isGPT5Family) {
-                openAIRequest.max_completion_tokens = maxTokens;
-            } else {
-                openAIRequest.max_tokens = maxTokens;
-            }
+            payload.max_output_tokens = maxTokens;
+        }
+
+        const temperature = request.temperature ?? config.parameters.temperature;
+        if (temperature !== undefined && supportsCustomTemperature(modelId)) {
+            payload.temperature = temperature;
+        }
+
+        if (config.parameters.topP !== undefined) {
+            payload.top_p = config.parameters.topP;
         }
 
         if (request.stopSequences && request.stopSequences.length > 0) {
-            openAIRequest.stop = request.stopSequences;
+            payload.stop = request.stopSequences;
         }
 
-        // Add tools if provided
         if (request.tools && request.tools.length > 0) {
-            openAIRequest.tools = request.tools.map(tool => ({
-                type: 'function' as const,
-                function: {
-                    name: tool.name,
-                    description: tool.description,
-                    parameters: tool.parameters,
-                },
+            payload.tools = request.tools.map(tool => ({
+                type: 'function',
+                name: tool.name,
+                description: tool.description,
+                parameters: tool.parameters,
             }));
-            openAIRequest.tool_choice = 'auto';
         }
 
         try {
-            const response = await fetch(this.endpoint, {
+            const response = await fetch(this.endpoint('/v1/responses'), {
                 method: 'POST',
                 headers: createHeaders(apiKey),
-                body: JSON.stringify(openAIRequest),
+                body: JSON.stringify(payload),
             });
 
             if (!response.ok) {
                 const errorBody = await response.text();
-                console.error(`OpenAI error [${response.status}]: ${errorBody}`);
                 throw new LLMError(
-                    `OpenAI API error: ${response.statusText}`,
+                    `OpenAI API error: ${response.status} ${response.statusText} - ${errorBody}`,
                     'openai',
                     response.status,
                     response.status >= 500 || response.status === 429,
                 );
             }
 
-            const data = (await response.json()) as OpenAIResponse;
-            const choice = data.choices[0];
+            const data = (await response.json()) as OpenAIResponsesResponse;
 
-            if (!choice) {
-                throw new LLMError('No response from OpenAI', 'openai');
+            let textContent = '';
+            const toolCalls: Array<{ id: string; name: string; arguments: Record<string, unknown> }> = [];
+
+            for (const outputItem of data.output ?? []) {
+                if (outputItem.type === 'message' && 'content' in outputItem) {
+                    for (const contentItem of outputItem.content ?? []) {
+                        if (contentItem.type === 'output_text' && typeof contentItem.text === 'string') {
+                            textContent += contentItem.text;
+                        }
+                    }
+                    continue;
+                }
+
+                if (outputItem.type === 'function_call' && 'name' in outputItem) {
+                    let parsedArgs: Record<string, unknown> = {};
+                    const serializedArgs = 'arguments' in outputItem ? outputItem.arguments : undefined;
+                    if (serializedArgs) {
+                        try {
+                            parsedArgs = JSON.parse(serializedArgs);
+                        } catch {
+                            parsedArgs = {};
+                        }
+                    }
+                    toolCalls.push({
+                        id: ('call_id' in outputItem ? outputItem.call_id : undefined) || `openai-tool-${toolCalls.length + 1}`,
+                        name: outputItem.name,
+                        arguments: parsedArgs,
+                    });
+                }
             }
 
-            // Parse tool calls if present
-            const toolCalls = choice.message.tool_calls?.map(tc => ({
-                id: tc.id,
-                name: tc.function.name,
-                arguments: JSON.parse(tc.function.arguments),
-            }));
-
             return {
-                content: choice.message.content,
-                toolCalls,
-                finishReason: choice.finish_reason,
-                usage: data.usage ? {
-                    promptTokens: data.usage.prompt_tokens,
-                    completionTokens: data.usage.completion_tokens,
-                    totalTokens: data.usage.total_tokens,
-                } : undefined,
-                model: data.model,
+                content: textContent || null,
+                toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+                finishReason: toolCalls.length > 0 ? 'tool_calls' : 'stop',
+                usage: data.usage
+                    ? {
+                        promptTokens: data.usage.input_tokens ?? 0,
+                        completionTokens: data.usage.output_tokens ?? 0,
+                        totalTokens: data.usage.total_tokens
+                            ?? ((data.usage.input_tokens ?? 0) + (data.usage.output_tokens ?? 0)),
+                    }
+                    : undefined,
+                model: data.model || modelId,
             };
         } catch (error) {
-            if (error instanceof LLMError) throw error;
+            if (error instanceof LLMError) {
+                throw error;
+            }
 
-            console.error(`OpenAI request failed:`, error);
             throw new LLMError(
                 `OpenAI request failed: ${(error as Error).message}`,
                 'openai',
@@ -190,10 +238,12 @@ export class OpenAIProvider implements LLMProviderAdapter {
     }
 
     async isAvailable(apiKey: string | undefined): Promise<boolean> {
-        if (!apiKey) return false;
+        if (!apiKey) {
+            return false;
+        }
 
         try {
-            const response = await fetch('https://api.openai.com/v1/models', {
+            const response = await fetch(this.endpoint('/v1/models'), {
                 method: 'GET',
                 headers: createHeaders(apiKey),
             });
@@ -205,24 +255,27 @@ export class OpenAIProvider implements LLMProviderAdapter {
 
     async listModels(apiKey: string): Promise<string[]> {
         try {
-            const response = await fetch('https://api.openai.com/v1/models', {
+            const response = await fetch(this.endpoint('/v1/models'), {
                 method: 'GET',
                 headers: createHeaders(apiKey),
             });
 
             if (!response.ok) {
-                console.warn(`Failed to list OpenAI models: ${response.status}`);
                 return [];
             }
 
             const data = (await response.json()) as { data?: Array<{ id: string }> };
-            // Filter to only chat models
-            const chatModels = data.data?.filter(m =>
-                m.id.startsWith('gpt-') || m.id.startsWith('o1') || m.id.startsWith('chatgpt')
-            ) ?? [];
-            return chatModels.map(m => m.id);
-        } catch (error) {
-            console.warn(`Failed to list OpenAI models:`, error);
+            return (data.data ?? [])
+                .map(model => model.id)
+                .filter(id =>
+                    id.startsWith('gpt-')
+                    || id.startsWith('o1')
+                    || id.startsWith('o3')
+                    || id.startsWith('o4')
+                    || id.startsWith('chatgpt')
+                    || id.startsWith('computer-use'),
+                );
+        } catch {
             return [];
         }
     }

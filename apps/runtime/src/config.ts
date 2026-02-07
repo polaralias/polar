@@ -33,6 +33,8 @@ export const runtimeConfig = {
   maxAgentSpawnDepth: Number(process.env.MAX_AGENT_SPAWN_DEPTH ?? 5), // Prevent runaway recursion
   maxAgentsPerSession: Number(process.env.MAX_AGENTS_PER_SESSION ?? 20), // Prevent session overload
   auditRetentionDays: Number(process.env.AUDIT_RETENTION_DAYS ?? 30), // Default 30 days
+  goalCheckInMonths: Number(process.env.GOAL_CHECKIN_MONTHS ?? 6), // Long-horizon follow-up cadence
+  goalCheckInPollMs: Number(process.env.GOAL_CHECKIN_POLL_MS ?? 60_000), // Dispatch poll interval
 };
 
 export function resolveFsPath(inputPath: string): string {

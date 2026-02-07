@@ -16,6 +16,7 @@ export async function mintCapabilityToken(
     act: capability.action,
     res: capability.resource,
     fld: capability.fields,
+    rcf: capability.requiresConfirmation,
     pol_ver: policyVersion,
   };
 
@@ -40,6 +41,7 @@ export async function verifyCapabilityToken(
     act: payload.act,
     res: payload.res,
     fld: payload.fld,
+    rcf: payload.rcf,
     exp: payload.exp,
     jti: payload.jti,
     pol_ver: payload.pol_ver,

@@ -14,28 +14,50 @@ import { z } from 'zod';
 // Provider Definitions
 // =============================================================================
 
-export const LLMProviderSchema = z.enum([
+export const LLM_PROVIDERS = [
     'openrouter',
-    'anthropic',
-    'ollama',
     'openai',
-    'azure-openai',
-    'bedrock',
-    'mistral',
+    'anthropic',
     'gemini',
-]);
+    'minimax',
+    'mistral',
+    'bedrock',
+    'azure-openai',
+    'together',
+    'groq',
+    'deepseek',
+    'siliconflow',
+    'ollama',
+    'lm-studio',
+    'localai',
+    'vllm',
+    'tgi',
+    'sglang',
+] as const;
+
+export const LLMProviderSchema = z.enum(LLM_PROVIDERS);
 export type LLMProvider = z.infer<typeof LLMProviderSchema>;
 
 // Provider display names for UI
 export const LLM_PROVIDER_NAMES: Record<LLMProvider, string> = {
     openrouter: 'OpenRouter',
-    anthropic: 'Anthropic (Claude)',
-    ollama: 'Ollama (Local)',
     openai: 'OpenAI',
-    'azure-openai': 'Azure OpenAI',
-    bedrock: 'Amazon Bedrock',
-    mistral: 'Mistral AI',
+    anthropic: 'Anthropic (Claude)',
     gemini: 'Google Gemini',
+    minimax: 'MiniMax',
+    mistral: 'Mistral AI',
+    bedrock: 'Amazon Bedrock',
+    'azure-openai': 'Azure OpenAI',
+    together: 'Together AI',
+    groq: 'Groq',
+    deepseek: 'DeepSeek',
+    siliconflow: 'SiliconFlow',
+    ollama: 'Ollama',
+    'lm-studio': 'LM Studio',
+    localai: 'LocalAI',
+    vllm: 'vLLM',
+    tgi: 'Text Generation Inference',
+    sglang: 'SGLang',
 };
 
 // =============================================================================
@@ -163,23 +185,22 @@ export type LLMConfig = z.infer<typeof LLMConfigSchema>;
 
 export const DEFAULT_LLM_CONFIG: LLMConfig = {
     provider: 'openrouter',
-    modelId: 'anthropic/claude-sonnet-4.5',
+    modelId: 'anthropic/claude-sonnet-4-5',
     parameters: {
         temperature: 0.7,
         maxTokens: 4096,
     },
     tierModels: {
         // Default tier assignments using OpenRouter model format
-        // Updated to align with provider-alignment.md
         cheap: 'openrouter:openai/gpt-5-nano',
-        fast: 'openrouter:anthropic/claude-haiku-4.5',
-        reasoning: 'openrouter:anthropic/claude-sonnet-4.5',
-        writing: 'openrouter:anthropic/claude-sonnet-4.5', // Claude excels at writing
+        fast: 'openrouter:anthropic/claude-haiku-4-5',
+        reasoning: 'openrouter:openai/gpt-5.2',
+        writing: 'openrouter:anthropic/claude-sonnet-4-5',
     },
-    // Legacy support
+    // Legacy compatibility
     subAgentModels: {
-        fast: 'openai/gpt-5-mini',
-        reasoning: 'anthropic/claude-sonnet-4.5',
+        fast: 'gpt-5-mini',
+        reasoning: 'gpt-5.2',
     },
 };
 
@@ -312,15 +333,67 @@ export class LLMError extends Error {
  * Credential keys for each provider
  * These are the keys used in the secrets store
  */
+export const LLM_PROVIDER_CREDENTIAL_TYPE: Record<LLMProvider, 'apiKey' | 'baseUrl' | 'json'> = {
+    openrouter: 'apiKey',
+    openai: 'apiKey',
+    anthropic: 'apiKey',
+    gemini: 'apiKey',
+    minimax: 'apiKey',
+    mistral: 'apiKey',
+    bedrock: 'json',
+    'azure-openai': 'json',
+    together: 'apiKey',
+    groq: 'apiKey',
+    deepseek: 'apiKey',
+    siliconflow: 'apiKey',
+    ollama: 'baseUrl',
+    'lm-studio': 'baseUrl',
+    localai: 'baseUrl',
+    vllm: 'baseUrl',
+    tgi: 'baseUrl',
+    sglang: 'baseUrl',
+};
+
+export const LLM_PROVIDER_REQUIRES_CREDENTIAL: Record<LLMProvider, boolean> = {
+    openrouter: true,
+    openai: true,
+    anthropic: true,
+    gemini: true,
+    minimax: true,
+    mistral: true,
+    bedrock: true,
+    'azure-openai': true,
+    together: true,
+    groq: true,
+    deepseek: true,
+    siliconflow: true,
+    ollama: false,
+    'lm-studio': false,
+    localai: false,
+    vllm: false,
+    tgi: false,
+    sglang: false,
+};
+
 export const LLM_CREDENTIAL_KEYS: Record<LLMProvider, string> = {
     openrouter: 'LLM_OPENROUTER_API_KEY',
-    anthropic: 'LLM_ANTHROPIC_API_KEY',
-    ollama: 'LLM_OLLAMA_BASE_URL', // Ollama uses base URL, not API key
     openai: 'LLM_OPENAI_API_KEY',
-    'azure-openai': 'LLM_AZURE_OPENAI_CONFIG', // JSON with endpoint, key, apiVersion
-    bedrock: 'LLM_BEDROCK_CONFIG', // JSON with AWS credentials
-    mistral: 'LLM_MISTRAL_API_KEY',
+    anthropic: 'LLM_ANTHROPIC_API_KEY',
     gemini: 'LLM_GEMINI_API_KEY',
+    minimax: 'LLM_MINIMAX_API_KEY',
+    mistral: 'LLM_MISTRAL_API_KEY',
+    bedrock: 'LLM_BEDROCK_CONFIG',
+    'azure-openai': 'LLM_AZURE_OPENAI_CONFIG',
+    together: 'LLM_TOGETHER_API_KEY',
+    groq: 'LLM_GROQ_API_KEY',
+    deepseek: 'LLM_DEEPSEEK_API_KEY',
+    siliconflow: 'LLM_SILICONFLOW_API_KEY',
+    ollama: 'LLM_OLLAMA_BASE_URL',
+    'lm-studio': 'LLM_LM_STUDIO_BASE_URL',
+    localai: 'LLM_LOCALAI_BASE_URL',
+    vllm: 'LLM_VLLM_BASE_URL',
+    tgi: 'LLM_TGI_BASE_URL',
+    sglang: 'LLM_SGLANG_BASE_URL',
 };
 
 /**
@@ -328,13 +401,23 @@ export const LLM_CREDENTIAL_KEYS: Record<LLMProvider, string> = {
  */
 export const LLM_PROVIDER_ENDPOINTS: Record<LLMProvider, string> = {
     openrouter: 'https://openrouter.ai/api/v1/chat/completions',
+    openai: 'https://api.openai.com',
     anthropic: 'https://api.anthropic.com/v1/messages',
-    ollama: 'http://localhost:11434/api/chat',
-    openai: 'https://api.openai.com/v1/chat/completions',
-    'azure-openai': '', // Dynamic based on config
-    bedrock: '', // Dynamic based on region
+    gemini: 'https://generativelanguage.googleapis.com',
+    minimax: 'https://api.minimaxi.com/v1',
     mistral: 'https://api.mistral.ai/v1/chat/completions',
-    gemini: 'https://generativelanguage.googleapis.com/v1beta/models',
+    bedrock: '',
+    'azure-openai': '',
+    together: 'https://api.together.xyz/v1',
+    groq: 'https://api.groq.com/openai/v1',
+    deepseek: 'https://api.deepseek.com',
+    siliconflow: 'https://api.siliconflow.com/v1',
+    ollama: 'http://localhost:11434',
+    'lm-studio': 'http://localhost:1234',
+    localai: 'http://localhost:8080',
+    vllm: 'http://localhost:8000',
+    tgi: 'http://localhost:8080',
+    sglang: 'http://localhost:30000',
 };
 
 /**
@@ -343,35 +426,37 @@ export const LLM_PROVIDER_ENDPOINTS: Record<LLMProvider, string> = {
  */
 export const SUGGESTED_TIER_MODELS: Record<LLMProvider, Partial<Record<ModelTier, string[]>>> = {
     openrouter: {
-        cheap: ['openai/gpt-5-nano', 'google/gemini-3-flash-preview'],
-        fast: ['anthropic/claude-haiku-4.5', 'openai/gpt-5-mini'],
-        reasoning: ['anthropic/claude-sonnet-4.5', 'openai/gpt-5.2', 'anthropic/claude-opus-4.5'],
-        writing: ['anthropic/claude-sonnet-4.5', 'openai/gpt-5.2', 'google/gemini-3-pro-preview'],
+        cheap: ['openai/gpt-5-nano', 'anthropic/claude-haiku-4-5', 'google/gemini-3-flash-preview-09-2026'],
+        fast: ['openai/gpt-5-mini', 'anthropic/claude-sonnet-4-5'],
+        reasoning: ['openai/gpt-5.2', 'anthropic/claude-opus-4-6', 'google/gemini-3-pro-preview-09-2026'],
+        writing: ['anthropic/claude-sonnet-4-5', 'anthropic/claude-opus-4-6'],
     },
     openai: {
-        // GPT-5 family per provider-alignment.md
         cheap: ['gpt-5-nano'],
         fast: ['gpt-5-mini'],
-        reasoning: ['gpt-5.2', 'gpt-5.2-pro', 'gpt-5.1'],
+        reasoning: ['gpt-5.2', 'gpt-5.3-codex', 'gpt-5.2-codex', 'gpt-5.1-codex-max'],
         writing: ['gpt-5.2', 'gpt-5.1'],
     },
     anthropic: {
-        // Claude 4.5 family per provider-alignment.md
-        cheap: ['claude-haiku-4.5'],
-        fast: ['claude-haiku-4.5'],
-        reasoning: ['claude-sonnet-4.5', 'claude-opus-4.5'],
-        writing: ['claude-sonnet-4.5', 'claude-opus-4.5'], // Claude excels at writing
+        cheap: ['claude-haiku-4-5'],
+        fast: ['claude-sonnet-4-5'],
+        reasoning: ['claude-opus-4-6', 'claude-sonnet-4-5'],
+        writing: ['claude-sonnet-4-5', 'claude-opus-4-6'],
     },
     gemini: {
-        // Gemini 3 family per provider-alignment.md
-        cheap: ['gemini-3-flash-preview'],
-        fast: ['gemini-3-flash-preview'],
-        reasoning: ['gemini-3-pro-preview'],
-        writing: ['gemini-3-pro-preview'],
+        cheap: ['gemini-3-flash-preview-09-2026', 'gemini-2.5-flash'],
+        fast: ['gemini-3-flash-preview-09-2026'],
+        reasoning: ['gemini-3-pro-preview-09-2026', 'gemini-2.5-pro'],
+        writing: ['gemini-3-pro-preview-09-2026'],
+    },
+    minimax: {
+        cheap: ['M2'],
+        fast: ['M2'],
+        reasoning: ['M2-Pro', 'M2'],
+        writing: ['M2-Pro'],
     },
     mistral: {
-        // Magistral series for reasoning per provider-alignment.md
-        cheap: ['open-mistral-7b', 'open-mixtral-8x7b'],
+        cheap: ['mistral-small-latest'],
         fast: ['mistral-small-latest'],
         reasoning: ['magistral-medium-2506', 'magistral-small-2506', 'mistral-large-latest'],
         writing: ['mistral-large-latest'],
@@ -383,16 +468,69 @@ export const SUGGESTED_TIER_MODELS: Record<LLMProvider, Partial<Record<ModelTier
         writing: ['anthropic.claude-3-5-sonnet-20241022-v2:0', 'amazon.nova-pro-v1:0'],
     },
     'azure-openai': {
-        // Azure uses deployment names, so these are suggestions
         cheap: ['gpt-5-nano'],
         fast: ['gpt-5-mini'],
         reasoning: ['gpt-5.2', 'gpt-5.1'],
         writing: ['gpt-5.2'],
     },
+    together: {
+        cheap: ['Qwen/Qwen2.5-72B-Instruct-Turbo'],
+        fast: ['meta-llama/Llama-3.3-70B-Instruct-Turbo'],
+        reasoning: ['meta-llama/Llama-3.3-70B-Instruct-Turbo'],
+        writing: ['Qwen/Qwen2.5-72B-Instruct-Turbo'],
+    },
+    groq: {
+        cheap: ['mixtral-8x7b-32768'],
+        fast: ['llama-3.3-70b-versatile'],
+        reasoning: ['openai/gpt-oss-120b'],
+        writing: ['openai/gpt-oss-120b'],
+    },
+    deepseek: {
+        cheap: ['deepseek-chat'],
+        fast: ['deepseek-chat'],
+        reasoning: ['deepseek-reasoner'],
+        writing: ['deepseek-chat'],
+    },
+    siliconflow: {
+        cheap: ['Qwen/Qwen2.5-72B-Instruct'],
+        fast: ['Qwen/Qwen2.5-72B-Instruct'],
+        reasoning: ['deepseek-ai/DeepSeek-V3'],
+        writing: ['deepseek-ai/DeepSeek-V3'],
+    },
     ollama: {
-        cheap: ['llama3.2:1b', 'phi3:mini'],
-        fast: ['llama3.2:3b', 'mistral:7b'],
-        reasoning: ['llama3.2:90b', 'mixtral:8x7b'],
-        writing: ['llama3.2:90b', 'mixtral:8x7b'],
+        cheap: ['phi3:latest', 'llama3.3:latest'],
+        fast: ['qwen2.5:latest', 'mistral:latest'],
+        reasoning: ['qwen2.5:32b', 'deepseek-r1:latest'],
+        writing: ['llama3.3:70b', 'codellama:latest'],
+    },
+    'lm-studio': {
+        cheap: ['phi3:latest'],
+        fast: ['qwen2.5:latest'],
+        reasoning: ['qwen2.5:32b'],
+        writing: ['llama3.3:latest'],
+    },
+    localai: {
+        cheap: ['phi3:latest'],
+        fast: ['mistral:latest'],
+        reasoning: ['deepseek-r1:latest'],
+        writing: ['codellama:latest'],
+    },
+    vllm: {
+        cheap: ['meta-llama/Llama-3.2-3B-Instruct'],
+        fast: ['meta-llama/Llama-3.3-70B-Instruct'],
+        reasoning: ['deepseek-ai/DeepSeek-V3'],
+        writing: ['Qwen/Qwen2.5-72B-Instruct'],
+    },
+    tgi: {
+        cheap: ['microsoft/Phi-3-mini-4k-instruct'],
+        fast: ['mistralai/Mistral-7B-Instruct-v0.3'],
+        reasoning: ['Qwen/Qwen2.5-72B-Instruct'],
+        writing: ['Qwen/Qwen2.5-72B-Instruct'],
+    },
+    sglang: {
+        cheap: ['microsoft/Phi-3-mini-4k-instruct'],
+        fast: ['meta-llama/Llama-3.2-8B-Instruct'],
+        reasoning: ['deepseek-ai/DeepSeek-R1'],
+        writing: ['Qwen/Qwen2.5-72B-Instruct'],
     },
 };

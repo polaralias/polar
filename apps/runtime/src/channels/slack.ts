@@ -2,27 +2,16 @@
 import { ChannelAdapter, InboundMessage } from './adapter.js';
 import { ChannelConfig } from '../channelStore.js';
 
-/**
- * Stub implementation of Slack Adapter for Phase 2.
- * This satisfies the requirement of having a range of channels available.
- * 
- * In a real implementation effectively:
- * - Uses @slack/bolt or @slack/web-api
- * - Uses Socket Mode (via WebSocket) or Events API (via Webhook) for inbound
- * - Uses Web API chat.postMessage for outbound
- */
 export class SlackAdapter implements ChannelAdapter {
     id: string;
     platform: 'slack' = 'slack';
     private token: string;
-    private appToken: string | undefined;
     private messageHandler?: (msg: InboundMessage) => Promise<void>;
     private connected: boolean = false;
 
     constructor(config: ChannelConfig) {
         this.id = config.id;
         this.token = config.credentials?.['botToken'] || '';
-        this.appToken = config.credentials?.['appToken']; // Required for Socket Mode
 
         if (!this.token) {
             console.warn(`Slack adapter ${this.id} initialized without 'botToken'. It will not function.`);
@@ -32,10 +21,7 @@ export class SlackAdapter implements ChannelAdapter {
     async connect(): Promise<void> {
         if (this.connected) return;
         this.connected = true;
-        console.log(`Slack Adapter ${this.id} connected (STUB).`);
-
-        // STUB: In a real implementation, this would start the SocketModeClient
-        // For Phase 2 validation, we can simulate a connection.
+        console.log(`Slack Adapter ${this.id} connected.`);
     }
 
     async disconnect(): Promise<void> {
@@ -47,6 +33,17 @@ export class SlackAdapter implements ChannelAdapter {
         this.messageHandler = handler;
     }
 
+    private parseConversationTarget(conversationId: string): { channel: string; threadTs?: string } {
+        const marker = '::thread::';
+        const idx = conversationId.indexOf(marker);
+        if (idx >= 0) {
+            return {
+                channel: conversationId.slice(0, idx),
+                threadTs: conversationId.slice(idx + marker.length),
+            };
+        }
+        return { channel: conversationId };
+    }
 
     async send(conversationId: string, text: string): Promise<void> {
         if (!this.token) {
@@ -54,7 +51,8 @@ export class SlackAdapter implements ChannelAdapter {
             return;
         }
 
-        console.log(`[Slack] Sending to ${conversationId}: "${text}"`);
+        const target = this.parseConversationTarget(conversationId);
+        console.log(`[Slack] Sending to ${target.channel}${target.threadTs ? ` (thread ${target.threadTs})` : ''}: "${text}"`);
 
         try {
             const response = await fetch('https://slack.com/api/chat.postMessage', {
@@ -64,8 +62,9 @@ export class SlackAdapter implements ChannelAdapter {
                     'Content-Type': 'application/json'
                 },
                 body: JSON.stringify({
-                    channel: conversationId,
-                    text: text
+                    channel: target.channel,
+                    text: text,
+                    ...(target.threadTs ? { thread_ts: target.threadTs } : {}),
                 })
             });
             const data = await response.json() as any;
@@ -77,21 +76,84 @@ export class SlackAdapter implements ChannelAdapter {
         }
     }
 
-    // Helper to simulate receiving a message (useful for testing/stubbing)
-    async simulateIncomingMessage(senderId: string, text: string, conversationId: string) {
-        if (!this.messageHandler) return;
-
-        const msg: InboundMessage = {
-            id: `msg_${Date.now()}`,
-            channelId: this.id,
-            senderId,
-            senderName: `User-${senderId}`,
-            conversationId,
-            content: text,
-            timestamp: new Date().toISOString()
+    async handleWebhookEvent(payload: unknown): Promise<{
+        ok: boolean;
+        challenge?: string;
+        ignored?: boolean;
+        reason?: string;
+    }> {
+        const body = payload as {
+            type?: string;
+            challenge?: string;
+            event?: Record<string, unknown>;
         };
 
-        await this.messageHandler(msg);
+        if (body?.type === 'url_verification') {
+            return {
+                ok: true,
+                challenge: typeof body.challenge === 'string' ? body.challenge : '',
+            };
+        }
+
+        if (body?.type !== 'event_callback') {
+            return { ok: true, ignored: true, reason: 'Unsupported event type' };
+        }
+
+        const event = body.event as {
+            type?: string;
+            user?: string;
+            channel?: string;
+            text?: string;
+            ts?: string;
+            thread_ts?: string;
+            subtype?: string;
+            bot_id?: string;
+            files?: Array<{ mimetype?: string; url_private?: string }>;
+        };
+
+        if (event?.type !== 'message') {
+            return { ok: true, ignored: true, reason: 'Non-message event' };
+        }
+        if (event.subtype || event.bot_id) {
+            return { ok: true, ignored: true, reason: 'Message subtype/bot event ignored' };
+        }
+        if (!event.user || !event.channel) {
+            return { ok: true, ignored: true, reason: 'Missing user or channel' };
+        }
+        if (!this.messageHandler) {
+            return { ok: false, reason: 'No message handler registered' };
+        }
+
+        const conversationId = event.thread_ts
+            ? `${event.channel}::thread::${event.thread_ts}`
+            : event.channel;
+
+        const attachments: InboundMessage['attachments'] = [];
+        if (Array.isArray(event.files)) {
+            for (const file of event.files) {
+                const mimeType = file.mimetype || 'application/octet-stream';
+                const type = mimeType.startsWith('image/') ? 'image' : 'document';
+                attachments.push({
+                    type,
+                    url: file.url_private || '',
+                    mimeType,
+                });
+            }
+        }
+
+        const timestampMs = event.ts ? Number.parseFloat(event.ts) * 1000 : Date.now();
+        const message: InboundMessage = {
+            id: event.ts || `slack-${Date.now()}`,
+            channelId: this.id,
+            senderId: event.user,
+            conversationId,
+            content: event.text || '',
+            ...(attachments.length > 0 ? { attachments } : {}),
+            timestamp: new Date(Number.isFinite(timestampMs) ? timestampMs : Date.now()).toISOString(),
+        };
+
+        await this.messageHandler(message);
+        return { ok: true };
     }
 }
 

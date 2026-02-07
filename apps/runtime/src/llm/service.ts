@@ -13,7 +13,8 @@ import crypto from 'node:crypto';
 import { getSecret } from '../secretsService.js';
 import { appendAudit } from '../audit.js';
 import { loadLLMConfig, saveLLMConfig } from './configStore.js';
-import { getProvider, redactApiKey } from './providers/index.js';
+import { getProvider, hasProvider, redactApiKey } from './providers/index.js';
+import { getModelInfo, getModelsForProvider } from './modelRegistry.js';
 import {
     LLMConfig,
     LLMRequest,
@@ -21,6 +22,7 @@ import {
     LLMError,
     LLMProvider,
     LLM_CREDENTIAL_KEYS,
+    LLM_PROVIDER_REQUIRES_CREDENTIAL,
     ModelHint,
     ModelTier,
 } from './types.js';
@@ -87,6 +89,10 @@ export class LLMService {
     private async getCredentialForProvider(provider: LLMProvider): Promise<string | undefined> {
         const key = LLM_CREDENTIAL_KEYS[provider];
         return getSecret(key);
+    }
+
+    private providerNeedsCredential(provider: LLMProvider): boolean {
+        return LLM_PROVIDER_REQUIRES_CREDENTIAL[provider];
     }
 
     /**
@@ -166,14 +172,14 @@ export class LLMService {
 
         // Get credential for the resolved provider
         const credential = await this.getCredentialForProvider(provider);
-        if (!credential) {
+        if (!credential && this.providerNeedsCredential(provider)) {
             throw new LLMError(
                 `No API key configured for provider: ${provider}. Please set the key in Settings > Intelligence.`,
                 provider,
             );
         }
 
-        return { provider, model, credential };
+        return { provider, model, credential: credential ?? '' };
     }
 
     /**
@@ -199,13 +205,15 @@ export class LLMService {
         }
 
         // Check global tier models (format: "provider:model")
-        const globalTierModel = config.tierModels?.[tier as 'cheap' | 'fast' | 'reasoning'];
-        if (globalTierModel) {
-            const [tierProvider, tierModel] = this.parseTierModelString(globalTierModel);
-            return {
-                provider: tierProvider || currentProvider,
-                model: tierModel,
-            };
+        if (tier !== 'specialized') {
+            const globalTierModel = config.tierModels?.[tier];
+            if (globalTierModel) {
+                const [tierProvider, tierModel] = this.parseTierModelString(globalTierModel);
+                return {
+                    provider: tierProvider || currentProvider,
+                    model: tierModel,
+                };
+            }
         }
 
         // Legacy subAgentModels support
@@ -230,7 +238,8 @@ export class LLMService {
         if (colonIndex === -1) {
             return [null, tierString];
         }
-        const provider = tierString.substring(0, colonIndex) as LLMProvider;
+        const providerSegment = tierString.substring(0, colonIndex);
+        const provider = hasProvider(providerSegment) ? providerSegment : null;
         const model = tierString.substring(colonIndex + 1);
         return [provider, model];
     }
@@ -356,8 +365,9 @@ export class LLMService {
     async isConfigured(): Promise<{ configured: boolean; provider: string; model: string; error?: string }> {
         const config = await loadLLMConfig();
         const credential = await this.getCredential(config);
+        const credentialRequired = this.providerNeedsCredential(config.provider);
 
-        if (!credential) {
+        if (!credential && credentialRequired) {
             return {
                 configured: false,
                 provider: config.provider,
@@ -389,25 +399,25 @@ export class LLMService {
      * Check the status of all configured providers
      */
     async getProviderStatuses(): Promise<Record<LLMProvider, { available: boolean; hasCredential: boolean }>> {
-        const config = await loadLLMConfig();
         const providers = Object.keys(LLM_CREDENTIAL_KEYS) as LLMProvider[];
         const statuses: Record<string, { available: boolean; hasCredential: boolean }> = {};
 
         for (const providerName of providers) {
             const credential = await this.getCredentialForProvider(providerName);
+            const hasCredential = this.providerNeedsCredential(providerName) ? !!credential : true;
             let available = false;
 
-            if (credential) {
-                try {
-                    const provider = getProvider(providerName);
+            try {
+                const provider = getProvider(providerName);
+                if (credential || !this.providerNeedsCredential(providerName)) {
                     available = await provider.isAvailable(credential);
-                } catch {
-                    available = false;
                 }
+            } catch {
+                available = false;
             }
 
             statuses[providerName] = {
-                hasCredential: !!credential,
+                hasCredential,
                 available,
             };
         }
@@ -420,39 +430,86 @@ export class LLMService {
      */
     async listModelsForProvider(providerName: LLMProvider): Promise<string[]> {
         const credential = await this.getCredentialForProvider(providerName);
+        const requiresCredential = this.providerNeedsCredential(providerName);
+        const fallback = getModelsForProvider(providerName).map(model => model.id);
 
-        if (!credential) {
-            return [];
+        if (!credential && requiresCredential) {
+            return fallback;
         }
 
         const provider = getProvider(providerName);
         if (provider.listModels) {
-            return provider.listModels(credential);
+            const listed = await provider.listModels(credential ?? '');
+            if (listed.length > 0) {
+                return listed;
+            }
         }
 
-        return [];
+        return fallback;
     }
 
     /**
      * List available models for a specific provider or the current default
      */
-    async listModels(providerName?: string): Promise<Array<{ id: string; name: string }>> {
+    async listModels(providerName?: string): Promise<Array<{
+        id: string;
+        name: string;
+        provider: LLMProvider;
+        tier?: 'flagship' | 'balanced' | 'efficient';
+        tags?: string[];
+    }>> {
         const config = await loadLLMConfig();
-        const targetProvider = (providerName || config.provider) as LLMProvider;
+        const targetProvider = providerName && hasProvider(providerName)
+            ? providerName
+            : config.provider;
+
+        const toModelOption = (input: {
+            id: string;
+            name: string;
+            provider: LLMProvider;
+            tier: 'flagship' | 'balanced' | 'efficient' | undefined;
+            tags: readonly string[] | undefined;
+        }) => ({
+            id: input.id,
+            name: input.name,
+            provider: input.provider,
+            ...(input.tier ? { tier: input.tier } : {}),
+            ...(input.tags && input.tags.length > 0 ? { tags: [...input.tags] } : {}),
+        });
+
+        const fallbackRegistry = getModelsForProvider(targetProvider);
+        const fallbackModels = fallbackRegistry.map(model => toModelOption({
+            id: model.id,
+            name: model.displayName,
+            provider: model.provider,
+            tier: model.tier,
+            tags: model.tags,
+        }));
 
         const credential = await this.getCredentialForProvider(targetProvider);
-
-        if (!credential) {
-            return [];
+        if (!credential && this.providerNeedsCredential(targetProvider)) {
+            return fallbackModels;
         }
 
         const provider = getProvider(targetProvider);
         if (provider.listModels) {
-            const modelIds = await provider.listModels(credential);
-            return modelIds.map(id => ({ id, name: id }));
+            const modelIds = await provider.listModels(credential ?? '');
+            if (modelIds.length > 0) {
+                const uniqueIds = Array.from(new Set(modelIds));
+                return uniqueIds.map(id => {
+                    const info = getModelInfo(id);
+                    return toModelOption({
+                        id,
+                        name: info?.displayName ?? id,
+                        provider: targetProvider,
+                        tier: info?.tier,
+                        tags: info?.tags,
+                    });
+                });
+            }
         }
 
-        return [];
+        return fallbackModels;
     }
 
     /**
@@ -467,7 +524,9 @@ export class LLMService {
 
         for (const providerName of providers) {
             const credential = await this.getCredentialForProvider(providerName);
-            providerCredentials[providerName] = !!credential;
+            providerCredentials[providerName] = this.providerNeedsCredential(providerName)
+                ? !!credential
+                : true;
         }
 
         return {

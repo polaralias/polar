@@ -3,6 +3,9 @@
 ## Goal
 Establish the "Core Compass" of the agent: the Large Language Model integration layer. This stage handles secure connection to providers, but more importantly, it defines the **Main Agent's Personality and Constraints**.
 
+## Implementation Status (as of February 7, 2026)
+**Status**: Complete
+
 ## 1. LLM Provider Abstraction
 Implement a vendor-agnostic `LLMService` that decouples the application logic from specific model providers.
 
@@ -159,7 +162,16 @@ Classifies user intent for task-based provider routing.
 - [x] Model tier pinning system (cheap, fast, reasoning, specialized).
 - [x] Multi-provider support with task-based routing.
 - [x] REST API endpoints for LLM configuration management.
-- [ ] UI Integration (Settings > Intelligence page).
+- [x] UI Integration (Settings > Intelligence page).
+
+## Planner Integration Closure
+- `POST /llm/chat` now routes through the same planner execution path as `POST /sessions/:id/messages`.
+- Planner tool calls (`worker.spawn`, `memory.query`, `memory.propose`, `policy.check`) are executed end-to-end with audited outcomes and tool-result follow-up response generation.
+
+## Validation Snapshot
+- `pnpm --filter @polar/runtime build` ✅
+- `pnpm --filter @polar/ui build` ✅
+- `pnpm --filter @polar/runtime test` ✅
 
 ## Implementation Summary
 
@@ -179,6 +191,7 @@ Classifies user intent for task-based provider routing.
 - `apps/runtime/src/llm/contextManager.ts` - Prompt assembly with Planner architecture
 - `apps/runtime/src/llm/subAgents.ts` - All sub-agents with tier pinning
 - `apps/runtime/src/llm/index.ts` - Barrel exports
+- `apps/ui/src/pages/IntelligencePage.tsx` - Intelligence settings UI
 
 ### API Endpoints Added
 - `GET /llm/config` - Get current LLM configuration (includes all provider credentials status)

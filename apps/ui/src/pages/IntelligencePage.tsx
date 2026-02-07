@@ -1,8 +1,26 @@
-import { useState, useEffect } from 'react';
-import { api } from '../api.js';
+import { useEffect, useMemo, useState } from 'react';
+import { api, type LLMModelOption } from '../api.js';
 
-// Types matching the runtime LLM module
-type LLMProvider = 'openrouter' | 'anthropic' | 'ollama' | 'openai' | 'azure-openai' | 'bedrock' | 'mistral';
+type LLMProvider =
+    | 'openrouter'
+    | 'openai'
+    | 'anthropic'
+    | 'gemini'
+    | 'minimax'
+    | 'mistral'
+    | 'bedrock'
+    | 'azure-openai'
+    | 'together'
+    | 'groq'
+    | 'deepseek'
+    | 'siliconflow'
+    | 'ollama'
+    | 'lm-studio'
+    | 'localai'
+    | 'vllm'
+    | 'tgi'
+    | 'sglang';
+
 type ModelTier = 'cheap' | 'fast' | 'writing' | 'reasoning';
 
 interface LLMConfig {
@@ -20,7 +38,7 @@ interface LLMConfig {
         reasoning?: string | undefined;
     } | undefined;
     hasCredential: boolean;
-    providerCredentials: Record<LLMProvider, boolean>;
+    providerCredentials: Record<string, boolean>;
 }
 
 interface ProviderStatus {
@@ -28,43 +46,135 @@ interface ProviderStatus {
     hasCredential: boolean;
 }
 
-const PROVIDER_INFO: Record<LLMProvider, { name: string; description: string; needsJson?: boolean }> = {
-    openrouter: { name: 'OpenRouter', description: 'Access multiple models through one API' },
-    openai: { name: 'OpenAI', description: 'GPT-4o, GPT-4o-mini, o1 models' },
-    anthropic: { name: 'Anthropic', description: 'Claude 3.5 Sonnet, Opus, Haiku' },
-    mistral: { name: 'Mistral AI', description: 'Mistral Large, Small, Codestral' },
-    bedrock: { name: 'Amazon Bedrock', description: 'Nova, Claude, Titan on AWS', needsJson: true },
-    'azure-openai': { name: 'Azure OpenAI', description: 'Enterprise Azure-hosted models', needsJson: true },
-    ollama: { name: 'Ollama', description: 'Local models (Llama, Mistral, etc.)' },
+type CredentialType = 'apiKey' | 'baseUrl' | 'json';
+
+const PROVIDERS: LLMProvider[] = [
+    'openrouter',
+    'openai',
+    'anthropic',
+    'gemini',
+    'minimax',
+    'mistral',
+    'bedrock',
+    'azure-openai',
+    'together',
+    'groq',
+    'deepseek',
+    'siliconflow',
+    'ollama',
+    'lm-studio',
+    'localai',
+    'vllm',
+    'tgi',
+    'sglang',
+];
+
+const PROVIDER_INFO: Record<LLMProvider, {
+    name: string;
+    description: string;
+    credentialType: CredentialType;
+}> = {
+    openrouter: { name: 'OpenRouter', description: 'Multi-model cloud routing', credentialType: 'apiKey' },
+    openai: { name: 'OpenAI', description: 'Responses API for GPT-5 and Codex', credentialType: 'apiKey' },
+    anthropic: { name: 'Anthropic', description: 'Claude models', credentialType: 'apiKey' },
+    gemini: { name: 'Google Gemini', description: 'Gemini 3 and 2.5 families', credentialType: 'apiKey' },
+    minimax: { name: 'MiniMax', description: 'MiniMax M2 series', credentialType: 'apiKey' },
+    mistral: { name: 'Mistral', description: 'Mistral and Codestral models', credentialType: 'apiKey' },
+    bedrock: { name: 'Amazon Bedrock', description: 'AWS-hosted model access', credentialType: 'json' },
+    'azure-openai': { name: 'Azure OpenAI', description: 'Azure-hosted OpenAI deployments', credentialType: 'json' },
+    together: { name: 'Together AI', description: 'Open-source model cloud', credentialType: 'apiKey' },
+    groq: { name: 'Groq', description: 'Low-latency inference cloud', credentialType: 'apiKey' },
+    deepseek: { name: 'DeepSeek', description: 'DeepSeek official API', credentialType: 'apiKey' },
+    siliconflow: { name: 'SiliconFlow', description: 'Open model inference cloud', credentialType: 'apiKey' },
+    ollama: { name: 'Ollama', description: 'Local model runtime', credentialType: 'baseUrl' },
+    'lm-studio': { name: 'LM Studio', description: 'Local OpenAI-compatible endpoint', credentialType: 'baseUrl' },
+    localai: { name: 'LocalAI', description: 'Local OpenAI-compatible endpoint', credentialType: 'baseUrl' },
+    vllm: { name: 'vLLM', description: 'Self-hosted OpenAI-compatible endpoint', credentialType: 'baseUrl' },
+    tgi: { name: 'TGI', description: 'Hugging Face Text Generation Inference', credentialType: 'baseUrl' },
+    sglang: { name: 'SGLang', description: 'Structured generation endpoint', credentialType: 'baseUrl' },
+};
+
+const FALLBACK_MODELS: Record<LLMProvider, string[]> = {
+    openrouter: ['anthropic/claude-sonnet-4-5', 'openai/gpt-5.2', 'deepseek/deepseek-r1'],
+    openai: ['gpt-5.2', 'gpt-5-mini', 'gpt-5-nano', 'gpt-5.3-codex', 'computer-use-preview'],
+    anthropic: ['claude-opus-4-6', 'claude-sonnet-4-5', 'claude-haiku-4-5'],
+    gemini: ['gemini-3-pro-preview-09-2026', 'gemini-3-flash-preview-09-2026', 'gemini-2.5-pro'],
+    minimax: ['M2', 'M2-Pro'],
+    mistral: ['mistral-large-latest', 'mistral-small-latest', 'codestral-latest'],
+    bedrock: ['amazon.nova-pro-v1:0', 'amazon.nova-lite-v1:0', 'anthropic.claude-3-5-sonnet-20241022-v2:0'],
+    'azure-openai': ['gpt-5.2', 'gpt-5-mini', 'gpt-5-nano'],
+    together: ['meta-llama/Llama-3.3-70B-Instruct-Turbo', 'Qwen/Qwen2.5-72B-Instruct-Turbo'],
+    groq: ['openai/gpt-oss-120b', 'llama-3.3-70b-versatile', 'mixtral-8x7b-32768'],
+    deepseek: ['deepseek-chat', 'deepseek-reasoner'],
+    siliconflow: ['Qwen/Qwen2.5-72B-Instruct', 'deepseek-ai/DeepSeek-V3'],
+    ollama: ['llama3.3:latest', 'qwen2.5:latest', 'deepseek-r1:latest'],
+    'lm-studio': [],
+    localai: [],
+    vllm: [],
+    tgi: [],
+    sglang: [],
 };
 
 const TIER_INFO: Record<ModelTier, { label: string; description: string; icon: string }> = {
-    cheap: { label: 'Economy', description: 'Simple tasks (classification, extraction)', icon: '💰' },
-    fast: { label: 'Fast', description: 'Quick responses with moderate quality', icon: '⚡' },
-    writing: { label: 'Writing', description: 'Content creation (emails, docs, posts)', icon: '✍️' },
+    cheap: { label: 'Cheap / Router', description: 'Lowest-cost routing and classification', icon: '💰' },
+    fast: { label: 'Fast', description: 'Quick responses for standard tasks', icon: '⚡' },
+    writing: { label: 'Writing', description: 'Long-form drafting and editing', icon: '✍️' },
     reasoning: { label: 'Reasoning', description: 'Complex analysis and planning', icon: '🧠' },
 };
 
-const SUGGESTED_MODELS: Record<LLMProvider, string[]> = {
-    openrouter: ['anthropic/claude-3.5-sonnet', 'openai/gpt-4o', 'openai/gpt-4o-mini', 'google/gemini-pro-1.5'],
-    openai: ['gpt-4o', 'gpt-4o-mini', 'o1-mini', 'gpt-3.5-turbo'],
-    anthropic: ['claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022', 'claude-3-opus-20240229'],
-    mistral: ['mistral-large-latest', 'mistral-small-latest', 'codestral-latest'],
-    bedrock: ['amazon.nova-pro-v1:0', 'anthropic.claude-3-5-sonnet-20241022-v2:0', 'amazon.nova-lite-v1:0'],
-    'azure-openai': ['gpt-4o', 'gpt-4o-mini'],
-    ollama: ['llama3.2:3b', 'mistral:7b', 'codellama:7b'],
-};
+function fallbackModelOptions(provider: LLMProvider): LLMModelOption[] {
+    return FALLBACK_MODELS[provider].map(id => ({
+        id,
+        name: id,
+        provider,
+    }));
+}
+
+function dedupeModels(models: LLMModelOption[]): LLMModelOption[] {
+    const seen = new Set<string>();
+    const deduped: LLMModelOption[] = [];
+
+    for (const model of models) {
+        if (seen.has(model.id)) {
+            continue;
+        }
+        seen.add(model.id);
+        deduped.push(model);
+    }
+
+    return deduped;
+}
+
+function credentialPlaceholder(provider: LLMProvider): string {
+    if (provider === 'bedrock') {
+        return '{"accessKeyId":"...","secretAccessKey":"...","region":"us-east-1"}';
+    }
+    if (provider === 'azure-openai') {
+        return '{"endpoint":"https://...","apiKey":"...","apiVersion":"2024-02-15-preview","deploymentId":"..."}';
+    }
+    if (PROVIDER_INFO[provider].credentialType === 'baseUrl') {
+        return 'Base URL (e.g., http://localhost:11434)';
+    }
+    return 'API Key';
+}
+
+function modelDisplayLabel(model: LLMModelOption): string {
+    const tags = model.tags ?? [];
+    if (tags.includes('cheap')) {
+        return `${model.name} (Cheap)`;
+    }
+    return model.name;
+}
 
 export default function IntelligencePage() {
     const [config, setConfig] = useState<LLMConfig | null>(null);
     const [providerStatuses, setProviderStatuses] = useState<Record<LLMProvider, ProviderStatus> | null>(null);
-    const [availableModels, setAvailableModels] = useState<string[]>([]);
+    const [availableModels, setAvailableModels] = useState<LLMModelOption[]>([]);
     const [error, setError] = useState<string | null>(null);
     const [success, setSuccess] = useState<string | null>(null);
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
 
-    // Form state
     const [selectedProvider, setSelectedProvider] = useState<LLMProvider>('openrouter');
     const [selectedModel, setSelectedModel] = useState('');
     const [temperature, setTemperature] = useState(0.7);
@@ -76,17 +186,27 @@ export default function IntelligencePage() {
         reasoning: '',
     });
 
-    // API Key management
-    const [apiKeyInput, setApiKeyInput] = useState('');
-    const [savingKey, setSavingKey] = useState(false);
-    const [showKeySection, setShowKeySection] = useState<LLMProvider | null>(null);
+    const [credentialInput, setCredentialInput] = useState('');
+    const [savingCredential, setSavingCredential] = useState(false);
+    const [showCredentialSection, setShowCredentialSection] = useState<LLMProvider | null>(null);
 
-    // Load configuration
+    const modelGroups = useMemo(() => {
+        const recommended = availableModels.filter(model => model.tags?.includes('recommended'));
+        const agentic = availableModels.filter(model => model.tags?.includes('agentic'));
+        const reasoning = availableModels.filter(model =>
+            model.tags?.includes('reasoning')
+            && !model.tags?.includes('agentic')
+            && !model.tags?.includes('recommended'),
+        );
+        const highlighted = new Set<string>([...recommended, ...agentic, ...reasoning].map(model => model.id));
+        const other = availableModels.filter(model => !highlighted.has(model.id));
+        return { recommended, agentic, reasoning, other };
+    }, [availableModels]);
+
     const loadConfig = async () => {
         try {
             setLoading(true);
             const data = await api.getLLMConfig();
-            // Cast provider to LLMProvider type
             const providerValue = data.provider as LLMProvider;
             const configData: LLMConfig = {
                 provider: providerValue,
@@ -94,7 +214,7 @@ export default function IntelligencePage() {
                 parameters: data.parameters,
                 tierModels: data.tierModels,
                 hasCredential: data.hasCredential,
-                providerCredentials: data.providerCredentials as Record<LLMProvider, boolean>,
+                providerCredentials: data.providerCredentials,
             };
             setConfig(configData);
             setSelectedProvider(providerValue);
@@ -116,43 +236,40 @@ export default function IntelligencePage() {
         }
     };
 
-    // Load provider statuses
     const loadStatuses = async () => {
         try {
             const statuses = await api.getLLMProviderStatuses();
-            setProviderStatuses(statuses);
+            setProviderStatuses(statuses as Record<LLMProvider, ProviderStatus>);
         } catch (err) {
             console.error('Failed to load provider statuses:', err);
         }
     };
 
-    // Load available models when provider changes
     const loadModels = async (provider: LLMProvider) => {
         try {
             const models = await api.getLLMModels(provider);
-            setAvailableModels(models.length > 0 ? models : SUGGESTED_MODELS[provider]);
+            const fallback = fallbackModelOptions(provider);
+            setAvailableModels(dedupeModels(models.length > 0 ? models : fallback));
         } catch {
-            setAvailableModels(SUGGESTED_MODELS[provider]);
+            setAvailableModels(dedupeModels(fallbackModelOptions(provider)));
         }
     };
 
     useEffect(() => {
-        loadConfig();
-        loadStatuses();
+        void loadConfig();
+        void loadStatuses();
     }, []);
 
     useEffect(() => {
-        loadModels(selectedProvider);
+        void loadModels(selectedProvider);
     }, [selectedProvider]);
 
-    // Save configuration
     const handleSaveConfig = async () => {
         setSaving(true);
         setError(null);
         setSuccess(null);
 
         try {
-            // Build update payload without undefined values
             const tierModelsPayload: { cheap?: string; fast?: string; writing?: string; reasoning?: string } = {};
             if (tierModels.cheap) tierModelsPayload.cheap = tierModels.cheap;
             if (tierModels.fast) tierModelsPayload.fast = tierModels.fast;
@@ -168,8 +285,9 @@ export default function IntelligencePage() {
                 parameters: parametersPayload,
                 tierModels: Object.keys(tierModelsPayload).length > 0 ? tierModelsPayload : undefined,
             });
-            setSuccess('Configuration saved successfully!');
-            loadConfig();
+
+            setSuccess('Configuration saved successfully.');
+            void loadConfig();
             setTimeout(() => setSuccess(null), 3000);
         } catch (err) {
             setError((err as Error).message);
@@ -178,37 +296,35 @@ export default function IntelligencePage() {
         }
     };
 
-    // Save API key
-    const handleSaveApiKey = async (provider: LLMProvider) => {
-        if (!apiKeyInput.trim()) return;
+    const handleSaveCredential = async (provider: LLMProvider) => {
+        if (!credentialInput.trim()) return;
 
-        setSavingKey(true);
+        setSavingCredential(true);
         setError(null);
 
         try {
-            await api.setLLMCredential(provider, apiKeyInput);
-            setApiKeyInput('');
-            setShowKeySection(null);
-            setSuccess(`API key for ${PROVIDER_INFO[provider].name} saved!`);
-            loadStatuses();
-            loadConfig();
+            await api.setLLMCredential(provider, credentialInput);
+            setCredentialInput('');
+            setShowCredentialSection(null);
+            setSuccess(`${PROVIDER_INFO[provider].name} credential saved.`);
+            void loadStatuses();
+            void loadConfig();
             setTimeout(() => setSuccess(null), 3000);
         } catch (err) {
             setError((err as Error).message);
         } finally {
-            setSavingKey(false);
+            setSavingCredential(false);
         }
     };
 
-    // Delete API key
-    const handleDeleteApiKey = async (provider: LLMProvider) => {
-        if (!confirm(`Remove API key for ${PROVIDER_INFO[provider].name}?`)) return;
+    const handleDeleteCredential = async (provider: LLMProvider) => {
+        if (!confirm(`Remove saved credential for ${PROVIDER_INFO[provider].name}?`)) return;
 
         try {
             await api.deleteLLMCredential(provider);
-            setSuccess(`API key for ${PROVIDER_INFO[provider].name} removed.`);
-            loadStatuses();
-            loadConfig();
+            setSuccess(`${PROVIDER_INFO[provider].name} credential removed.`);
+            void loadStatuses();
+            void loadConfig();
             setTimeout(() => setSuccess(null), 3000);
         } catch (err) {
             setError((err as Error).message);
@@ -227,17 +343,16 @@ export default function IntelligencePage() {
         <div className="page intelligence-page">
             <header className="page-header">
                 <h2>🧠 Intelligence Settings</h2>
-                <p>Configure AI providers, models, and tier assignments for optimal performance and cost.</p>
+                <p>Configure providers, model stacks, and tier routing.</p>
             </header>
 
             {error && <div className="error-banner">{error}</div>}
             {success && <div className="success-banner">{success}</div>}
 
-            {/* Status Overview */}
             <div className="card status-card">
                 <h3>Provider Status</h3>
                 <div className="provider-status-grid">
-                    {(Object.keys(PROVIDER_INFO) as LLMProvider[]).map(provider => {
+                    {PROVIDERS.map(provider => {
                         const status = providerStatuses?.[provider];
                         const info = PROVIDER_INFO[provider];
                         const isActive = config?.provider === provider;
@@ -253,26 +368,20 @@ export default function IntelligencePage() {
                                 </div>
                                 <p className="provider-desc">{info.description}</p>
                                 <div className="provider-status-footer">
-                                    {status?.hasCredential ? (
-                                        <span className="status-indicator configured">
-                                            ✓ Configured
-                                        </span>
-                                    ) : (
-                                        <span className="status-indicator not-configured">
-                                            ○ No API Key
-                                        </span>
-                                    )}
+                                    <span className={`status-indicator ${status?.hasCredential ? 'configured' : 'not-configured'}`}>
+                                        {status?.hasCredential ? '✓ Configured' : '○ Not configured'}
+                                    </span>
                                     {status?.hasCredential ? (
                                         <div className="key-actions">
                                             <button
                                                 className="btn-small"
-                                                onClick={() => setShowKeySection(showKeySection === provider ? null : provider)}
+                                                onClick={() => setShowCredentialSection(showCredentialSection === provider ? null : provider)}
                                             >
-                                                Update Key
+                                                Update
                                             </button>
                                             <button
                                                 className="btn-small danger"
-                                                onClick={() => handleDeleteApiKey(provider)}
+                                                onClick={() => handleDeleteCredential(provider)}
                                             >
                                                 Remove
                                             </button>
@@ -280,44 +389,44 @@ export default function IntelligencePage() {
                                     ) : (
                                         <button
                                             className="btn-small primary"
-                                            onClick={() => setShowKeySection(showKeySection === provider ? null : provider)}
+                                            onClick={() => setShowCredentialSection(showCredentialSection === provider ? null : provider)}
                                         >
-                                            Add Key
+                                            Add
                                         </button>
                                     )}
                                 </div>
 
-                                {showKeySection === provider && (
+                                {showCredentialSection === provider && (
                                     <div className="api-key-input-section">
-                                        {info.needsJson ? (
+                                        {info.credentialType === 'json' ? (
                                             <textarea
-                                                placeholder={provider === 'bedrock'
-                                                    ? '{"accessKeyId": "...", "secretAccessKey": "...", "region": "us-east-1"}'
-                                                    : '{"endpoint": "https://...", "apiKey": "...", "apiVersion": "2024-02-15-preview"}'
-                                                }
-                                                value={apiKeyInput}
-                                                onChange={(e) => setApiKeyInput(e.target.value)}
+                                                placeholder={credentialPlaceholder(provider)}
+                                                value={credentialInput}
+                                                onChange={event => setCredentialInput(event.target.value)}
                                                 rows={4}
                                             />
                                         ) : (
                                             <input
-                                                type="password"
-                                                placeholder={provider === 'ollama' ? 'Base URL (e.g., http://localhost:11434)' : 'API Key'}
-                                                value={apiKeyInput}
-                                                onChange={(e) => setApiKeyInput(e.target.value)}
+                                                type={info.credentialType === 'apiKey' ? 'password' : 'text'}
+                                                placeholder={credentialPlaceholder(provider)}
+                                                value={credentialInput}
+                                                onChange={event => setCredentialInput(event.target.value)}
                                             />
                                         )}
                                         <div className="key-input-actions">
                                             <button
                                                 className="btn-small primary"
-                                                onClick={() => handleSaveApiKey(provider)}
-                                                disabled={savingKey || !apiKeyInput.trim()}
+                                                onClick={() => handleSaveCredential(provider)}
+                                                disabled={savingCredential || !credentialInput.trim()}
                                             >
-                                                {savingKey ? 'Saving...' : 'Save'}
+                                                {savingCredential ? 'Saving...' : 'Save'}
                                             </button>
                                             <button
                                                 className="btn-small"
-                                                onClick={() => { setShowKeySection(null); setApiKeyInput(''); }}
+                                                onClick={() => {
+                                                    setShowCredentialSection(null);
+                                                    setCredentialInput('');
+                                                }}
                                             >
                                                 Cancel
                                             </button>
@@ -330,45 +439,129 @@ export default function IntelligencePage() {
                 </div>
             </div>
 
-            {/* Primary Model Configuration */}
             <div className="card config-card">
                 <h3>Primary Model</h3>
-                <p className="card-description">The main model used for orchestration and complex tasks.</p>
+                <p className="card-description">Set the default provider and model for orchestration tasks.</p>
 
                 <div className="config-form">
                     <div className="form-group">
                         <label>Provider</label>
                         <select
                             value={selectedProvider}
-                            onChange={(e) => {
-                                setSelectedProvider(e.target.value as LLMProvider);
+                            onChange={event => {
+                                setSelectedProvider(event.target.value as LLMProvider);
                                 setSelectedModel('');
                             }}
                         >
-                            {(Object.keys(PROVIDER_INFO) as LLMProvider[]).map(provider => (
+                            {PROVIDERS.map(provider => (
                                 <option key={provider} value={provider}>
                                     {PROVIDER_INFO[provider].name}
-                                    {!config?.providerCredentials[provider] && ' (No API Key)'}
+                                    {!config?.providerCredentials[provider] ? ' (Not configured)' : ''}
                                 </option>
                             ))}
                         </select>
                     </div>
 
+                    {modelGroups.recommended.length > 0 && (
+                        <div className="model-stack">
+                            <h4>Recommended</h4>
+                            <div className="model-stack-grid">
+                                {modelGroups.recommended.map(model => (
+                                    <button
+                                        key={model.id}
+                                        type="button"
+                                        className={`model-chip ${selectedModel === model.id ? 'selected' : ''}`}
+                                        onClick={() => setSelectedModel(model.id)}
+                                    >
+                                        {modelDisplayLabel(model)}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
+                    {modelGroups.agentic.length > 0 && (
+                        <div className="model-stack">
+                            <h4>Agentic</h4>
+                            <div className="model-stack-grid">
+                                {modelGroups.agentic.map(model => (
+                                    <button
+                                        key={model.id}
+                                        type="button"
+                                        className={`model-chip ${selectedModel === model.id ? 'selected' : ''}`}
+                                        onClick={() => setSelectedModel(model.id)}
+                                    >
+                                        {modelDisplayLabel(model)}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
+                    {modelGroups.reasoning.length > 0 && (
+                        <div className="model-stack">
+                            <h4>Reasoning</h4>
+                            <div className="model-stack-grid">
+                                {modelGroups.reasoning.map(model => (
+                                    <button
+                                        key={model.id}
+                                        type="button"
+                                        className={`model-chip ${selectedModel === model.id ? 'selected' : ''}`}
+                                        onClick={() => setSelectedModel(model.id)}
+                                    >
+                                        {modelDisplayLabel(model)}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
                     <div className="form-group">
                         <label>Model</label>
                         <select
                             value={selectedModel}
-                            onChange={(e) => setSelectedModel(e.target.value)}
+                            onChange={event => setSelectedModel(event.target.value)}
                         >
                             <option value="">Select a model...</option>
-                            {availableModels.map(model => (
-                                <option key={model} value={model}>{model}</option>
-                            ))}
+                            {modelGroups.other.length > 0 && (
+                                <optgroup label="All models">
+                                    {modelGroups.other.map(model => (
+                                        <option key={model.id} value={model.id}>
+                                            {modelDisplayLabel(model)}
+                                        </option>
+                                    ))}
+                                </optgroup>
+                            )}
+                            {modelGroups.recommended.length > 0 && (
+                                <optgroup label="Recommended">
+                                    {modelGroups.recommended.map(model => (
+                                        <option key={model.id} value={model.id}>
+                                            {modelDisplayLabel(model)}
+                                        </option>
+                                    ))}
+                                </optgroup>
+                            )}
+                            {modelGroups.agentic.length > 0 && (
+                                <optgroup label="Agentic">
+                                    {modelGroups.agentic.map(model => (
+                                        <option key={model.id} value={model.id}>
+                                            {modelDisplayLabel(model)}
+                                        </option>
+                                    ))}
+                                </optgroup>
+                            )}
+                            {modelGroups.reasoning.length > 0 && (
+                                <optgroup label="Reasoning">
+                                    {modelGroups.reasoning.map(model => (
+                                        <option key={model.id} value={model.id}>
+                                            {modelDisplayLabel(model)}
+                                        </option>
+                                    ))}
+                                </optgroup>
+                            )}
                         </select>
                         <span className="form-hint">
-                            {availableModels.length > 0
-                                ? 'Models retrieved from provider API'
-                                : 'Enter a custom model name or configure API key to fetch available models'}
+                            Recommended, agentic, and reasoning stacks are highlighted based on the model catalog.
                         </span>
                     </div>
 
@@ -382,11 +575,10 @@ export default function IntelligencePage() {
                                     max="2"
                                     step="0.1"
                                     value={temperature}
-                                    onChange={(e) => setTemperature(parseFloat(e.target.value))}
+                                    onChange={event => setTemperature(parseFloat(event.target.value))}
                                 />
                                 <span className="slider-value">{temperature.toFixed(1)}</span>
                             </div>
-                            <span className="form-hint">Lower = more focused, Higher = more creative</span>
                         </div>
 
                         <div className="form-group">
@@ -394,25 +586,21 @@ export default function IntelligencePage() {
                             <input
                                 type="number"
                                 value={maxTokens || ''}
-                                onChange={(e) => setMaxTokens(e.target.value ? parseInt(e.target.value) : undefined)}
+                                onChange={event => setMaxTokens(event.target.value ? parseInt(event.target.value, 10) : undefined)}
                                 placeholder="4096"
                                 min="100"
-                                max="128000"
+                                max="1000000"
                             />
-                            <span className="form-hint">Maximum response length</span>
                         </div>
                     </div>
                 </div>
             </div>
 
-            {/* Model Tiers */}
             <div className="card tiers-card">
                 <h3>Model Tiers</h3>
                 <p className="card-description">
-                    Assign models to tiers for automatic selection. Sub-agents and workers use these tiers to optimize cost and quality.
-                    Format: <code>provider:model</code> (e.g., <code>openai:gpt-4o-mini</code>)
+                    Tier routing format is <code>provider:model</code> (example: <code>openai:gpt-5-mini</code>).
                 </p>
-
                 <div className="tiers-grid">
                     {(Object.keys(TIER_INFO) as ModelTier[]).map(tier => (
                         <div key={tier} className="tier-config">
@@ -426,15 +614,14 @@ export default function IntelligencePage() {
                             <input
                                 type="text"
                                 value={tierModels[tier]}
-                                onChange={(e) => setTierModels({ ...tierModels, [tier]: e.target.value })}
-                                placeholder={`e.g., ${tier === 'cheap' ? 'openai:gpt-4o-mini' : tier === 'writing' ? 'anthropic:claude-3-5-sonnet' : 'openrouter:anthropic/claude-3-5-sonnet'}`}
+                                onChange={event => setTierModels({ ...tierModels, [tier]: event.target.value })}
+                                placeholder="provider:model"
                             />
                         </div>
                     ))}
                 </div>
             </div>
 
-            {/* Save Button */}
             <div className="save-section">
                 <button
                     className="btn-primary btn-large"

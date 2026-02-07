@@ -10,6 +10,9 @@ This stage builds on the architectural constraints established in Phase 1:
 ## Goal
 Establish the core **Planner-Worker Protocol**. The Main Agent (Orchestrator) acts as a high-level planner that cannot directly access external tools. To perform actions, it must request the Runtime to spawn specialized, ephemeral **Workers** with restricted capability tokens.
 
+## Implementation Status (as of February 7, 2026)
+**Status**: Complete
+
 ## 1. The `worker.spawn` Tool
 The Main Agent is given exactly one tool to interact with the outside world (besides audit/policy reads): `worker.spawn`.
 
@@ -69,9 +72,9 @@ The security of the platform relies on the **Runtime** enforcing policy at the m
 ### A2A Audit Trail
 *   **Trace ID**: Use a distributed trace ID to link Planner -> Worker.
 *   **UI Representation**:
-    *   The Chat UI renders `worker.spawn` as a distinct "Action Block".
-    *   Users can expand the block to see the Worker's *real* tool usage.
-    *   **Security Insight**: The UI clearly shows *what capabilities* were granted to the worker.
+    *   The Chat UI renders `worker.spawn` and planner tool outcomes as distinct nested "Action Blocks".
+    *   Users can expand blocks to inspect planner arguments, result payloads, worker capability grants, and downstream worker tool actions.
+    *   Worker downstream actions are sourced from audited gateway/runtime events correlated by worker agent id and propagated trace identifiers.
 
 ### Logging
 *   **Events**: Log `worker_spawned` with the list of granted capabilities.
@@ -96,11 +99,17 @@ Phase 1 provides the foundation for worker safety. Phase 2 builds on these contr
 *   **Ephemeral Destruction**: Workers are destroyed on task completion; no state persists.
 
 ## Acceptance Criteria
-- [ ] Main Agent has NO direct tools (fs, http, etc.) — only `worker.spawn`.
-- [ ] Runtime successfully validates `capabilities` list against `PolicyStore`.
-- [ ] Runtime mints a Capability Token that limits the Worker's access.
-- [ ] Gateway rejects Worker tool calls if they exceed the Capability Token scopes.
-- [ ] UI renders the spawning event and the worker's subsequent actions in a nested view.
+- [x] Main Agent has NO direct tools (fs, http, etc.) — only `worker.spawn`.
+- [x] Runtime successfully validates `capabilities` list against `PolicyStore`.
+- [x] Runtime mints a Capability Token that limits the Worker's access.
+- [x] Gateway rejects Worker tool calls if they exceed the Capability Token scopes.
+- [x] Planner chat UI renders expandable action blocks for tool execution and worker spawn metadata (goal/capabilities/model/read-only profile).
+- [x] UI renders the spawning event and worker downstream runtime tool actions in a nested view (via session worker trace endpoint + polling).
+- [x] Runtime planner loop executes `worker.spawn`, `memory.query`, `memory.propose`, and `policy.check` tool calls with audited allow/deny outcomes.
+- [x] Runtime/gateway audit flow propagates trace linkage (`messageId`/`parentEventId`) for worker downstream events.
+
+## Pending Implementation Gaps (as of February 7, 2026)
+- None blocking for Phase 2 Stage 10 completion.
 
 ## Deferred from Phase 1 (Maturity)
 - **Advanced Coordination Logic**: Implement official Supervisor and Pipeline executor logic, allowing for complex multi-worker workflows.

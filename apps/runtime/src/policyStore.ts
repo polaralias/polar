@@ -1,10 +1,20 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
-import { PolicyStore, PolicyStoreSchema, SkillManifest, Grant } from '@polar/core';
+import { PolicyStore, PolicyStoreSchema, SkillManifest, Grant, PolicyRule } from '@polar/core';
 import { runtimeConfig } from './config.js';
 import { Mutex } from 'async-mutex';
 
 const mutex = new Mutex();
+
+function isLegacyDefaultDenyRule(rule: PolicyRule): boolean {
+  return (
+    rule.effect === 'deny' &&
+    (rule.id === 'default-deny' || rule.id === 'default-deny-all') &&
+    !rule.subject &&
+    !rule.action &&
+    !rule.resource
+  );
+}
 
 export async function loadPolicy(): Promise<PolicyStore> {
   try {
@@ -13,19 +23,17 @@ export async function loadPolicy(): Promise<PolicyStore> {
     if (!parsed.success) {
       throw new Error('Invalid policy schema');
     }
-    return parsed.data;
+    return {
+      ...parsed.data,
+      // Migrate away from legacy unconditional deny defaults that block all grants.
+      rules: parsed.data.rules.filter((rule) => !isLegacyDefaultDenyRule(rule)),
+    };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-      // Return a default policy with an explicit Deny-All rule for defense-in-depth
+      // No grants means deny-by-default in evaluatePolicy.
       return {
         grants: [],
-        rules: [
-          {
-            id: 'default-deny-all',
-            effect: 'deny',
-            reason: 'Default deny-all fallback (Defense in Depth)'
-          }
-        ]
+        rules: [],
       };
     }
     throw error;
@@ -44,7 +52,12 @@ export async function savePolicy(policy: PolicyStore): Promise<void> {
   await fs.rename(tempPath, runtimeConfig.policyPath);
 }
 
-export async function grantSkillPermissions(skillId: string, requestedCaps: SkillManifest['requestedCapabilities'], subset?: string[]): Promise<void> {
+export async function grantSkillPermissions(
+  skillId: string,
+  requestedCaps: SkillManifest['requestedCapabilities'],
+  subset?: string[],
+  requiresConfirmationActions?: string[],
+): Promise<void> {
   await mutex.runExclusive(async () => {
     const policy = await loadPolicy();
 
@@ -61,6 +74,13 @@ export async function grantSkillPermissions(skillId: string, requestedCaps: Skil
       capsToGrant = requestedCaps.filter(c => subset.includes(c.action));
     }
 
+    const confirmationSet = new Set(requiresConfirmationActions || []);
+    const requestedActions = new Set(requestedCaps.map(c => c.action));
+    const invalidConfirmation = Array.from(confirmationSet).filter(action => !requestedActions.has(action));
+    if (invalidConfirmation.length > 0) {
+      throw new Error(`Cannot require confirmation for unrequested capabilities: ${invalidConfirmation.join(', ')}`);
+    }
+
     // Remove existing grants for this skill to avoid duplicates/stale grants
     policy.grants = policy.grants.filter(g => g.subject !== skillId);
 
@@ -70,6 +90,7 @@ export async function grantSkillPermissions(skillId: string, requestedCaps: Skil
         subject: skillId,
         action: cap.action,
         resource: cap.resource,
+        requiresConfirmation: confirmationSet.has(cap.action) || cap.requiresConfirmation === true,
       };
       policy.grants.push(grant);
     }

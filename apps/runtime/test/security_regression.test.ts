@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
@@ -7,11 +7,14 @@ import os from 'node:os';
 const tempDir = path.join(os.tmpdir(), `polar-test-${Date.now()}`);
 process.env.RUNTIME_DATA_DIR = tempDir;
 
-// Import services after setting the env var
 import { mintCapabilityToken, verifyCapabilityToken } from '@polar/core';
-import { getSubjectPolicyVersion, savePolicy } from '../src/policyStore.js';
-import { isTokenRevoked, revokeToken } from '../src/revocationStore.js';
-import { setEmergencyMode, getSystemStatus } from '../src/systemStore.js';
+
+let getSubjectPolicyVersion: (subject: string) => Promise<number>;
+let savePolicy: (policy: { grants: []; rules: []; policyVersions?: Record<string, number> }) => Promise<void>;
+let isTokenRevoked: (jti: string) => Promise<boolean>;
+let revokeToken: (jti: string, reason?: string) => Promise<void>;
+let setEmergencyMode: (enabled: boolean, reason?: string) => Promise<{ mode: 'normal' | 'emergency' }>;
+let getSystemStatus: () => Promise<{ mode: 'normal' | 'emergency' }>;
 
 describe('Security Regression Tests', () => {
     let signingKey: Uint8Array;
@@ -22,6 +25,24 @@ describe('Security Regression Tests', () => {
         const dummyKey = 'test-signing-key-1234567890123456';
         await fs.writeFile(path.join(tempDir, 'signing.key'), dummyKey);
         signingKey = new TextEncoder().encode(dummyKey);
+
+        // Import runtime services after env var setup so config paths bind to tempDir.
+        const policyStore = await import('../src/policyStore.js');
+        const revocationStore = await import('../src/revocationStore.js');
+        const systemStore = await import('../src/systemStore.js');
+
+        getSubjectPolicyVersion = policyStore.getSubjectPolicyVersion;
+        savePolicy = policyStore.savePolicy as unknown as (policy: { grants: []; rules: []; policyVersions?: Record<string, number> }) => Promise<void>;
+        isTokenRevoked = revocationStore.isTokenRevoked;
+        revokeToken = revocationStore.revokeToken;
+        setEmergencyMode = systemStore.setEmergencyMode as unknown as (enabled: boolean, reason?: string) => Promise<{ mode: 'normal' | 'emergency' }>;
+        getSystemStatus = systemStore.getSystemStatus as unknown as () => Promise<{ mode: 'normal' | 'emergency' }>;
+    });
+
+    beforeEach(async () => {
+        await savePolicy({ grants: [], rules: [], policyVersions: {} });
+        await fs.rm(path.join(tempDir, 'revoked_tokens.json'), { force: true });
+        await fs.rm(path.join(tempDir, 'system_status.json'), { force: true });
     });
 
     afterAll(async () => {

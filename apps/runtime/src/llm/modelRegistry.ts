@@ -1,18 +1,11 @@
 /**
  * Model Registry
- * Dynamic registry for provider models with metadata
- * 
- * Per provider-alignment.md:
- * - Maintains model cards with capabilities, reasoning support, deprecation info
- * - Supports runtime discovery where available
- * - Provides fallback known models for providers without discovery API
+ * Static model catalog used for UI defaults and provider fallback listings.
  */
 
 import type { LLMProvider, ModelTier } from './types.js';
 
-// =============================================================================
-// Model Registry Types
-// =============================================================================
+export type ModelTag = 'recommended' | 'agentic' | 'reasoning' | 'cheap';
 
 export interface ModelCapabilities {
     chat: boolean;
@@ -23,127 +16,61 @@ export interface ModelCapabilities {
 }
 
 export interface ReasoningConfig {
-    /** Type of reasoning control */
     type: 'effort' | 'budgetTokens' | 'thinkingLevel' | 'thinkingBudget' | 'none';
-    /** Default value if not specified */
     default?: string | number;
-    /** Supported values (for enum types) */
     values?: string[];
 }
 
 export interface ModelInfo {
-    /** Model identifier */
     id: string;
-    /** Provider this model belongs to */
     provider: LLMProvider;
-    /** Display name for UI */
     displayName: string;
-    /** Model tier (flagship, balanced, efficient) */
     tier: 'flagship' | 'balanced' | 'efficient';
-    /** Capabilities */
     capabilities: ModelCapabilities;
-    /** Reasoning configuration if supported */
     reasoning?: ReasoningConfig;
-    /** Supported parameters */
     supportedParameters: {
         temperature?: boolean;
         topP?: boolean;
         maxTokens?: boolean;
         stopSequences?: boolean;
     };
-    /** Context window size in tokens */
     contextWindow?: number;
-    /** Deprecation info */
     deprecation?: {
         deprecated: boolean;
         deprecatedAt?: string;
         replacementId?: string;
         retirementDate?: string;
     };
-    /** Provider-specific notes */
+    tags?: ModelTag[];
     notes?: string;
 }
 
-// =============================================================================
-// Known Model Registry
-// =============================================================================
+function withTierTags(model: ModelInfo): ModelInfo {
+    const tags = new Set(model.tags ?? []);
+    if (model.tier === 'efficient') {
+        tags.add('cheap');
+    }
+    if (model.capabilities.reasoning) {
+        tags.add('reasoning');
+    }
+    return tags.size > 0 ? { ...model, tags: Array.from(tags) } : model;
+}
 
-/**
- * Registry of known models with full metadata
- * Updated per provider-alignment.md
- */
 export const MODEL_REGISTRY: ModelInfo[] = [
-    // ==========================================================================
-    // OpenAI GPT-5 Family
-    // ==========================================================================
-    {
-        id: 'gpt-5.2',
-        provider: 'openai',
-        displayName: 'GPT-5.2',
-        tier: 'flagship',
-        capabilities: { chat: true, tools: true, vision: true, reasoning: true },
-        reasoning: { type: 'effort', default: 'medium', values: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'] },
-        supportedParameters: { temperature: true, topP: true, maxTokens: true, stopSequences: true },
-        contextWindow: 128000,
-        notes: 'Flagship model for coding and agentic tasks',
-    },
-    {
-        id: 'gpt-5.2-pro',
-        provider: 'openai',
-        displayName: 'GPT-5.2 Pro',
-        tier: 'flagship',
-        capabilities: { chat: true, tools: true, vision: true, reasoning: true },
-        reasoning: { type: 'effort', default: 'high', values: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'] },
-        supportedParameters: { temperature: false, topP: false, maxTokens: true, stopSequences: true },
-        contextWindow: 128000,
-        notes: 'Pro reasoning variant - sampling controls restricted',
-    },
-    {
-        id: 'gpt-5.1',
-        provider: 'openai',
-        displayName: 'GPT-5.1',
-        tier: 'balanced',
-        capabilities: { chat: true, tools: true, vision: true, reasoning: true },
-        reasoning: { type: 'effort', default: 'medium' },
-        supportedParameters: { temperature: true, topP: true, maxTokens: true, stopSequences: true },
-        contextWindow: 128000,
-    },
-    {
-        id: 'gpt-5-mini',
-        provider: 'openai',
-        displayName: 'GPT-5 Mini',
-        tier: 'efficient',
-        capabilities: { chat: true, tools: true, vision: true },
-        supportedParameters: { temperature: true, topP: true, maxTokens: true, stopSequences: true },
-        contextWindow: 128000,
-    },
-    {
-        id: 'gpt-5-nano',
-        provider: 'openai',
-        displayName: 'GPT-5 Nano',
-        tier: 'efficient',
-        capabilities: { chat: true, tools: true },
-        supportedParameters: { temperature: true, topP: true, maxTokens: true, stopSequences: true },
-        contextWindow: 16000,
-        notes: 'Lowest cost option',
-    },
-
-    // ==========================================================================
-    // Anthropic Claude 4.5 Family
-    // ==========================================================================
-    {
-        id: 'claude-opus-4.5',
+    // Anthropic
+    withTierTags({
+        id: 'claude-opus-4-6',
         provider: 'anthropic',
-        displayName: 'Claude Opus 4.5',
+        displayName: 'Claude Opus 4.6',
         tier: 'flagship',
         capabilities: { chat: true, tools: true, vision: true, reasoning: true },
         reasoning: { type: 'budgetTokens', default: 10000 },
         supportedParameters: { temperature: true, topP: false, maxTokens: true, stopSequences: true },
         contextWindow: 200000,
-        notes: 'Highest capability Claude model',
-    },
-    {
-        id: 'claude-sonnet-4.5',
+        tags: ['recommended', 'agentic'],
+    }),
+    withTierTags({
+        id: 'claude-sonnet-4-5',
         provider: 'anthropic',
         displayName: 'Claude Sonnet 4.5',
         tier: 'balanced',
@@ -151,172 +78,515 @@ export const MODEL_REGISTRY: ModelInfo[] = [
         reasoning: { type: 'budgetTokens', default: 5000 },
         supportedParameters: { temperature: true, topP: false, maxTokens: true, stopSequences: true },
         contextWindow: 200000,
-        notes: 'Balanced model, strong for agents/coding',
-    },
-    {
-        id: 'claude-haiku-4.5',
+        tags: ['recommended'],
+    }),
+    withTierTags({
+        id: 'claude-haiku-4-5',
         provider: 'anthropic',
         displayName: 'Claude Haiku 4.5',
         tier: 'efficient',
         capabilities: { chat: true, tools: true, vision: true },
         supportedParameters: { temperature: true, topP: false, maxTokens: true, stopSequences: true },
         contextWindow: 200000,
-        notes: 'Fastest/cost-efficient',
-    },
+    }),
 
-    // ==========================================================================
-    // Google Gemini 3 Family
-    // ==========================================================================
-    {
-        id: 'gemini-3-pro-preview',
+    // Anthropic legacy aliases kept for compatibility
+    withTierTags({
+        id: 'claude-opus-4.5',
+        provider: 'anthropic',
+        displayName: 'Claude Opus 4.5',
+        tier: 'flagship',
+        capabilities: { chat: true, tools: true, vision: true, reasoning: true },
+        supportedParameters: { temperature: true, topP: false, maxTokens: true, stopSequences: true },
+        deprecation: { deprecated: true, replacementId: 'claude-opus-4-6' },
+    }),
+    withTierTags({
+        id: 'claude-sonnet-4.5',
+        provider: 'anthropic',
+        displayName: 'Claude Sonnet 4.5 (Legacy ID)',
+        tier: 'balanced',
+        capabilities: { chat: true, tools: true, vision: true, reasoning: true },
+        supportedParameters: { temperature: true, topP: false, maxTokens: true, stopSequences: true },
+        deprecation: { deprecated: true, replacementId: 'claude-sonnet-4-5' },
+    }),
+    withTierTags({
+        id: 'claude-haiku-4.5',
+        provider: 'anthropic',
+        displayName: 'Claude Haiku 4.5 (Legacy ID)',
+        tier: 'efficient',
+        capabilities: { chat: true, tools: true, vision: true },
+        supportedParameters: { temperature: true, topP: false, maxTokens: true, stopSequences: true },
+        deprecation: { deprecated: true, replacementId: 'claude-haiku-4-5' },
+    }),
+
+    // OpenAI
+    withTierTags({
+        id: 'gpt-5.2',
+        provider: 'openai',
+        displayName: 'GPT-5.2',
+        tier: 'flagship',
+        capabilities: { chat: true, tools: true, vision: true, reasoning: true },
+        reasoning: { type: 'effort', default: 'medium', values: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'] },
+        supportedParameters: { temperature: false, topP: false, maxTokens: true, stopSequences: true },
+        contextWindow: 128000,
+        tags: ['recommended'],
+    }),
+    withTierTags({
+        id: 'gpt-5-mini',
+        provider: 'openai',
+        displayName: 'GPT-5 Mini',
+        tier: 'efficient',
+        capabilities: { chat: true, tools: true, vision: true },
+        supportedParameters: { temperature: false, topP: false, maxTokens: true, stopSequences: true },
+        contextWindow: 128000,
+        tags: ['recommended'],
+    }),
+    withTierTags({
+        id: 'gpt-5-nano',
+        provider: 'openai',
+        displayName: 'GPT-5 Nano',
+        tier: 'efficient',
+        capabilities: { chat: true, tools: true },
+        supportedParameters: { temperature: false, topP: false, maxTokens: true, stopSequences: true },
+        contextWindow: 32000,
+        tags: ['recommended'],
+    }),
+    withTierTags({
+        id: 'gpt-5.3-codex',
+        provider: 'openai',
+        displayName: 'GPT-5.3 Codex',
+        tier: 'flagship',
+        capabilities: { chat: true, tools: true, reasoning: true },
+        supportedParameters: { temperature: false, topP: false, maxTokens: true, stopSequences: true },
+        tags: ['agentic'],
+    }),
+    withTierTags({
+        id: 'gpt-5.2-codex',
+        provider: 'openai',
+        displayName: 'GPT-5.2 Codex',
+        tier: 'flagship',
+        capabilities: { chat: true, tools: true, reasoning: true },
+        supportedParameters: { temperature: false, topP: false, maxTokens: true, stopSequences: true },
+        tags: ['agentic'],
+    }),
+    withTierTags({
+        id: 'gpt-5.1',
+        provider: 'openai',
+        displayName: 'GPT-5.1',
+        tier: 'balanced',
+        capabilities: { chat: true, tools: true, vision: true, reasoning: true },
+        supportedParameters: { temperature: false, topP: false, maxTokens: true, stopSequences: true },
+        contextWindow: 128000,
+        tags: ['recommended'],
+    }),
+    withTierTags({
+        id: 'gpt-5.1-codex',
+        provider: 'openai',
+        displayName: 'GPT-5.1 Codex',
+        tier: 'balanced',
+        capabilities: { chat: true, tools: true, reasoning: true },
+        supportedParameters: { temperature: false, topP: false, maxTokens: true, stopSequences: true },
+        tags: ['agentic'],
+    }),
+    withTierTags({
+        id: 'gpt-5.1-codex-mini',
+        provider: 'openai',
+        displayName: 'GPT-5.1 Codex Mini',
+        tier: 'efficient',
+        capabilities: { chat: true, tools: true, reasoning: true },
+        supportedParameters: { temperature: false, topP: false, maxTokens: true, stopSequences: true },
+        tags: ['agentic'],
+    }),
+    withTierTags({
+        id: 'gpt-5.1-codex-max',
+        provider: 'openai',
+        displayName: 'GPT-5.1 Codex Max',
+        tier: 'flagship',
+        capabilities: { chat: true, tools: true, reasoning: true },
+        supportedParameters: { temperature: false, topP: false, maxTokens: true, stopSequences: true },
+        tags: ['agentic'],
+    }),
+    withTierTags({
+        id: 'computer-use-preview',
+        provider: 'openai',
+        displayName: 'Computer Use Preview',
+        tier: 'flagship',
+        capabilities: { chat: true, tools: true, vision: true, reasoning: true },
+        supportedParameters: { temperature: false, topP: false, maxTokens: true, stopSequences: true },
+        tags: ['agentic'],
+    }),
+    withTierTags({
+        id: 'gpt-5.2-pro',
+        provider: 'openai',
+        displayName: 'GPT-5.2 Pro',
+        tier: 'flagship',
+        capabilities: { chat: true, tools: true, vision: true, reasoning: true },
+        supportedParameters: { temperature: false, topP: false, maxTokens: true, stopSequences: true },
+    }),
+
+    // Gemini
+    withTierTags({
+        id: 'gemini-3-pro-preview-09-2026',
         provider: 'gemini',
-        displayName: 'Gemini 3 Pro (Preview)',
+        displayName: 'Gemini 3 Pro',
         tier: 'flagship',
         capabilities: { chat: true, tools: true, vision: true, audio: true, reasoning: true },
         reasoning: { type: 'thinkingLevel', default: 'high', values: ['minimal', 'low', 'medium', 'high'] },
         supportedParameters: { temperature: true, topP: true, maxTokens: true, stopSequences: true },
         contextWindow: 1000000,
-        notes: 'Preview suffix may change when GA',
-    },
-    {
-        id: 'gemini-3-flash-preview',
+        tags: ['recommended', 'agentic'],
+    }),
+    withTierTags({
+        id: 'gemini-3-flash-preview-09-2026',
         provider: 'gemini',
-        displayName: 'Gemini 3 Flash (Preview)',
+        displayName: 'Gemini 3 Flash',
         tier: 'efficient',
-        capabilities: { chat: true, tools: true, vision: true },
+        capabilities: { chat: true, tools: true, vision: true, reasoning: true },
         reasoning: { type: 'thinkingLevel', default: 'medium', values: ['minimal', 'low', 'medium', 'high'] },
         supportedParameters: { temperature: true, topP: true, maxTokens: true, stopSequences: true },
         contextWindow: 1000000,
-        notes: 'Fast and efficient',
-    },
+        tags: ['recommended'],
+    }),
+    withTierTags({
+        id: 'gemini-2.5-pro',
+        provider: 'gemini',
+        displayName: 'Gemini 2.5 Pro',
+        tier: 'balanced',
+        capabilities: { chat: true, tools: true, vision: true, reasoning: true },
+        supportedParameters: { temperature: true, topP: true, maxTokens: true, stopSequences: true },
+        contextWindow: 1000000,
+    }),
+    withTierTags({
+        id: 'gemini-2.5-flash',
+        provider: 'gemini',
+        displayName: 'Gemini 2.5 Flash',
+        tier: 'efficient',
+        capabilities: { chat: true, tools: true, vision: true },
+        supportedParameters: { temperature: true, topP: true, maxTokens: true, stopSequences: true },
+        contextWindow: 1000000,
+    }),
 
-    // ==========================================================================
-    // Mistral Magistral Series (Reasoning)
-    // ==========================================================================
-    {
-        id: 'magistral-medium-2506',
-        provider: 'mistral',
-        displayName: 'Magistral Medium',
+    // MiniMax
+    withTierTags({
+        id: 'M2',
+        provider: 'minimax',
+        displayName: 'MiniMax M2',
         tier: 'balanced',
         capabilities: { chat: true, tools: true, reasoning: true },
         supportedParameters: { temperature: true, topP: true, maxTokens: true, stopSequences: true },
-        notes: 'Reasoning-focused, has retirement timeline',
-    },
-    {
-        id: 'magistral-small-2506',
-        provider: 'mistral',
-        displayName: 'Magistral Small',
-        tier: 'efficient',
+    }),
+    withTierTags({
+        id: 'M2-Pro',
+        provider: 'minimax',
+        displayName: 'MiniMax M2 Pro',
+        tier: 'flagship',
         capabilities: { chat: true, tools: true, reasoning: true },
         supportedParameters: { temperature: true, topP: true, maxTokens: true, stopSequences: true },
-        notes: 'Compact reasoning model',
-    },
-    {
+    }),
+
+    // Mistral
+    withTierTags({
         id: 'mistral-large-latest',
         provider: 'mistral',
         displayName: 'Mistral Large',
         tier: 'flagship',
         capabilities: { chat: true, tools: true, vision: true },
         supportedParameters: { temperature: true, topP: true, maxTokens: true, stopSequences: true },
-    },
+    }),
+    withTierTags({
+        id: 'mistral-small-latest',
+        provider: 'mistral',
+        displayName: 'Mistral Small',
+        tier: 'efficient',
+        capabilities: { chat: true, tools: true },
+        supportedParameters: { temperature: true, topP: true, maxTokens: true, stopSequences: true },
+    }),
+    withTierTags({
+        id: 'codestral-latest',
+        provider: 'mistral',
+        displayName: 'Codestral',
+        tier: 'balanced',
+        capabilities: { chat: true, tools: true },
+        supportedParameters: { temperature: true, topP: true, maxTokens: true, stopSequences: true },
+    }),
+    withTierTags({
+        id: 'magistral-medium-2506',
+        provider: 'mistral',
+        displayName: 'Magistral Medium',
+        tier: 'balanced',
+        capabilities: { chat: true, tools: true, reasoning: true },
+        supportedParameters: { temperature: true, topP: true, maxTokens: true, stopSequences: true },
+    }),
+    withTierTags({
+        id: 'magistral-small-2506',
+        provider: 'mistral',
+        displayName: 'Magistral Small',
+        tier: 'efficient',
+        capabilities: { chat: true, tools: true, reasoning: true },
+        supportedParameters: { temperature: true, topP: true, maxTokens: true, stopSequences: true },
+    }),
 
-    // ==========================================================================
-    // Amazon Bedrock
-    // ==========================================================================
-    {
+    // Bedrock
+    withTierTags({
         id: 'amazon.nova-pro-v1:0',
         provider: 'bedrock',
         displayName: 'Amazon Nova Pro',
         tier: 'flagship',
         capabilities: { chat: true, tools: true, vision: true },
         supportedParameters: { temperature: true, topP: true, maxTokens: true, stopSequences: true },
-        notes: 'Region-dependent availability',
-    },
-    {
+    }),
+    withTierTags({
         id: 'amazon.nova-lite-v1:0',
         provider: 'bedrock',
         displayName: 'Amazon Nova Lite',
         tier: 'efficient',
-        capabilities: { chat: true, tools: true },
+        capabilities: { chat: true, tools: true, vision: true },
         supportedParameters: { temperature: true, topP: true, maxTokens: true, stopSequences: true },
-    },
-    {
+    }),
+    withTierTags({
         id: 'amazon.nova-micro-v1:0',
         provider: 'bedrock',
         displayName: 'Amazon Nova Micro',
         tier: 'efficient',
         capabilities: { chat: true, tools: true },
         supportedParameters: { temperature: true, topP: true, maxTokens: true, stopSequences: true },
-        notes: 'Lowest cost Bedrock option',
-    },
+    }),
+    withTierTags({
+        id: 'anthropic.claude-3-5-sonnet-20241022-v2:0',
+        provider: 'bedrock',
+        displayName: 'Claude 3.5 Sonnet (Bedrock)',
+        tier: 'balanced',
+        capabilities: { chat: true, tools: true, vision: true, reasoning: true },
+        supportedParameters: { temperature: true, topP: true, maxTokens: true, stopSequences: true },
+    }),
+
+    // Ollama local defaults
+    withTierTags({
+        id: 'llama3.3:latest',
+        provider: 'ollama',
+        displayName: 'Llama 3.3 8B',
+        tier: 'efficient',
+        capabilities: { chat: true, tools: false },
+        supportedParameters: { temperature: true, topP: true, maxTokens: true, stopSequences: true },
+    }),
+    withTierTags({
+        id: 'llama3.3:70b',
+        provider: 'ollama',
+        displayName: 'Llama 3.3 70B',
+        tier: 'flagship',
+        capabilities: { chat: true, tools: false, reasoning: true },
+        supportedParameters: { temperature: true, topP: true, maxTokens: true, stopSequences: true },
+    }),
+    withTierTags({
+        id: 'qwen2.5:latest',
+        provider: 'ollama',
+        displayName: 'Qwen 2.5 7B',
+        tier: 'efficient',
+        capabilities: { chat: true, tools: false },
+        supportedParameters: { temperature: true, topP: true, maxTokens: true, stopSequences: true },
+    }),
+    withTierTags({
+        id: 'qwen2.5:32b',
+        provider: 'ollama',
+        displayName: 'Qwen 2.5 32B',
+        tier: 'balanced',
+        capabilities: { chat: true, tools: false, reasoning: true },
+        supportedParameters: { temperature: true, topP: true, maxTokens: true, stopSequences: true },
+    }),
+    withTierTags({
+        id: 'deepseek-r1:latest',
+        provider: 'ollama',
+        displayName: 'DeepSeek R1',
+        tier: 'balanced',
+        capabilities: { chat: true, tools: false, reasoning: true },
+        supportedParameters: { temperature: true, topP: true, maxTokens: true, stopSequences: true },
+    }),
+    withTierTags({
+        id: 'codellama:latest',
+        provider: 'ollama',
+        displayName: 'Code Llama',
+        tier: 'balanced',
+        capabilities: { chat: true, tools: false },
+        supportedParameters: { temperature: true, topP: true, maxTokens: true, stopSequences: true },
+    }),
+    withTierTags({
+        id: 'mistral:latest',
+        provider: 'ollama',
+        displayName: 'Mistral 7B',
+        tier: 'efficient',
+        capabilities: { chat: true, tools: false },
+        supportedParameters: { temperature: true, topP: true, maxTokens: true, stopSequences: true },
+    }),
+    withTierTags({
+        id: 'phi3:latest',
+        provider: 'ollama',
+        displayName: 'Phi-3',
+        tier: 'efficient',
+        capabilities: { chat: true, tools: false },
+        supportedParameters: { temperature: true, topP: true, maxTokens: true, stopSequences: true },
+    }),
+
+    // Aggregation APIs
+    withTierTags({
+        id: 'anthropic/claude-sonnet-4-5',
+        provider: 'openrouter',
+        displayName: 'Claude Sonnet 4.5 (OpenRouter)',
+        tier: 'balanced',
+        capabilities: { chat: true, tools: true, vision: true, reasoning: true },
+        supportedParameters: { temperature: true, topP: true, maxTokens: true, stopSequences: true },
+        tags: ['recommended'],
+    }),
+    withTierTags({
+        id: 'openai/gpt-5.2',
+        provider: 'openrouter',
+        displayName: 'GPT-5.2 (OpenRouter)',
+        tier: 'flagship',
+        capabilities: { chat: true, tools: true, reasoning: true },
+        supportedParameters: { temperature: false, topP: false, maxTokens: true, stopSequences: true },
+    }),
+    withTierTags({
+        id: 'meta-llama/llama-3.3-70b-instruct',
+        provider: 'openrouter',
+        displayName: 'Llama 3.3 70B (OpenRouter)',
+        tier: 'balanced',
+        capabilities: { chat: true, tools: true },
+        supportedParameters: { temperature: true, topP: true, maxTokens: true, stopSequences: true },
+    }),
+    withTierTags({
+        id: 'deepseek/deepseek-r1',
+        provider: 'openrouter',
+        displayName: 'DeepSeek R1 (OpenRouter)',
+        tier: 'balanced',
+        capabilities: { chat: true, tools: true, reasoning: true },
+        supportedParameters: { temperature: true, topP: true, maxTokens: true, stopSequences: true },
+    }),
+
+    withTierTags({
+        id: 'meta-llama/Llama-3.3-70B-Instruct-Turbo',
+        provider: 'together',
+        displayName: 'Llama 3.3 70B Turbo (Together)',
+        tier: 'balanced',
+        capabilities: { chat: true, tools: true },
+        supportedParameters: { temperature: true, topP: true, maxTokens: true, stopSequences: true },
+    }),
+    withTierTags({
+        id: 'Qwen/Qwen2.5-72B-Instruct-Turbo',
+        provider: 'together',
+        displayName: 'Qwen 2.5 72B Turbo (Together)',
+        tier: 'balanced',
+        capabilities: { chat: true, tools: true },
+        supportedParameters: { temperature: true, topP: true, maxTokens: true, stopSequences: true },
+    }),
+
+    withTierTags({
+        id: 'openai/gpt-oss-120b',
+        provider: 'groq',
+        displayName: 'GPT-OSS 120B (Groq)',
+        tier: 'balanced',
+        capabilities: { chat: true, tools: true, reasoning: true },
+        supportedParameters: { temperature: true, topP: true, maxTokens: true, stopSequences: true },
+    }),
+    withTierTags({
+        id: 'llama-3.3-70b-versatile',
+        provider: 'groq',
+        displayName: 'Llama 3.3 70B (Groq)',
+        tier: 'balanced',
+        capabilities: { chat: true, tools: true },
+        supportedParameters: { temperature: true, topP: true, maxTokens: true, stopSequences: true },
+    }),
+    withTierTags({
+        id: 'mixtral-8x7b-32768',
+        provider: 'groq',
+        displayName: 'Mixtral 8x7B (Groq)',
+        tier: 'efficient',
+        capabilities: { chat: true, tools: true },
+        supportedParameters: { temperature: true, topP: true, maxTokens: true, stopSequences: true },
+    }),
+
+    withTierTags({
+        id: 'deepseek-chat',
+        provider: 'deepseek',
+        displayName: 'DeepSeek Chat',
+        tier: 'efficient',
+        capabilities: { chat: true, tools: true },
+        supportedParameters: { temperature: true, topP: true, maxTokens: true, stopSequences: true },
+    }),
+    withTierTags({
+        id: 'deepseek-reasoner',
+        provider: 'deepseek',
+        displayName: 'DeepSeek Reasoner',
+        tier: 'balanced',
+        capabilities: { chat: true, tools: true, reasoning: true },
+        supportedParameters: { temperature: false, topP: false, maxTokens: true, stopSequences: true },
+    }),
+
+    withTierTags({
+        id: 'Qwen/Qwen2.5-72B-Instruct',
+        provider: 'siliconflow',
+        displayName: 'Qwen 2.5 72B (SiliconFlow)',
+        tier: 'balanced',
+        capabilities: { chat: true, tools: true },
+        supportedParameters: { temperature: true, topP: true, maxTokens: true, stopSequences: true },
+    }),
+    withTierTags({
+        id: 'deepseek-ai/DeepSeek-V3',
+        provider: 'siliconflow',
+        displayName: 'DeepSeek V3 (SiliconFlow)',
+        tier: 'balanced',
+        capabilities: { chat: true, tools: true, reasoning: true },
+        supportedParameters: { temperature: true, topP: true, maxTokens: true, stopSequences: true },
+    }),
 ];
 
-// =============================================================================
-// Registry Functions
-// =============================================================================
-
-/**
- * Get model info by ID
- */
 export function getModelInfo(modelId: string): ModelInfo | undefined {
-    return MODEL_REGISTRY.find(m => m.id === modelId);
+    return MODEL_REGISTRY.find(model => model.id === modelId);
 }
 
-/**
- * Get models for a specific provider
- */
 export function getModelsForProvider(provider: LLMProvider): ModelInfo[] {
-    return MODEL_REGISTRY.filter(m => m.provider === provider);
+    return MODEL_REGISTRY.filter(model => model.provider === provider);
 }
 
-/**
- * Get models by tier
- */
 export function getModelsByTier(tier: ModelInfo['tier']): ModelInfo[] {
-    return MODEL_REGISTRY.filter(m => m.tier === tier);
+    return MODEL_REGISTRY.filter(model => model.tier === tier);
 }
 
-/**
- * Get models with reasoning support
- */
 export function getReasoningModels(): ModelInfo[] {
-    return MODEL_REGISTRY.filter(m => m.capabilities.reasoning);
+    return MODEL_REGISTRY.filter(model => model.capabilities.reasoning);
 }
 
-/**
- * Check if a model supports a specific parameter
- */
+export function getRecommendedModels(provider?: LLMProvider): ModelInfo[] {
+    return MODEL_REGISTRY.filter(model =>
+        model.tags?.includes('recommended') && (!provider || model.provider === provider),
+    );
+}
+
+export function getAgenticModels(provider?: LLMProvider): ModelInfo[] {
+    return MODEL_REGISTRY.filter(model =>
+        model.tags?.includes('agentic') && (!provider || model.provider === provider),
+    );
+}
+
 export function modelSupportsParameter(
     modelId: string,
     param: keyof ModelInfo['supportedParameters'],
 ): boolean {
     const model = getModelInfo(modelId);
-    return model?.supportedParameters[param] ?? true; // Default to allowing if unknown
+    return model?.supportedParameters[param] ?? true;
 }
 
-/**
- * Check if a model is deprecated
- */
 export function isModelDeprecated(modelId: string): boolean {
     const model = getModelInfo(modelId);
     return model?.deprecation?.deprecated ?? false;
 }
 
-/**
- * Get replacement for a deprecated model
- */
 export function getReplacementModel(modelId: string): string | undefined {
     const model = getModelInfo(modelId);
     return model?.deprecation?.replacementId;
 }
 
-/**
- * Map our tier names to registry tiers
- */
 export function getTierMappedModels(provider: LLMProvider, tier: ModelTier): ModelInfo[] {
     const providerModels = getModelsForProvider(provider);
 
-    // Map our tier to registry tier
     const tierMap: Record<ModelTier, ModelInfo['tier'][]> = {
         cheap: ['efficient'],
         fast: ['efficient', 'balanced'],
@@ -326,5 +596,5 @@ export function getTierMappedModels(provider: LLMProvider, tier: ModelTier): Mod
     };
 
     const targetTiers = tierMap[tier] || ['balanced'];
-    return providerModels.filter(m => targetTiers.includes(m.tier));
+    return providerModels.filter(model => targetTiers.includes(model.tier));
 }

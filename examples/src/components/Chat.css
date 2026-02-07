@@ -1,0 +1,307 @@
+.chat {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--background);
+}
+
+.chat-setup,
+.empty-chat {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 3rem;
+}
+
+.chat-setup h2,
+.empty-chat h2 {
+  font-family: 'Instrument Serif', Georgia, serif;
+  font-size: 2rem;
+  margin-bottom: 0.75rem;
+  color: var(--foreground);
+}
+
+.chat-setup p,
+.empty-chat p {
+  color: var(--muted-foreground);
+  margin-bottom: 2rem;
+  font-size: 1rem;
+}
+
+.messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 2rem;
+  max-width: 900px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+.message {
+  margin-bottom: 2rem;
+  max-width: 85%;
+  animation: fadeIn 0.3s ease;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.message.user {
+  margin-left: auto;
+}
+
+.message.assistant {
+  margin-right: auto;
+}
+
+.message-role {
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+  margin-bottom: 0.5rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 500;
+}
+
+.message.user .message-role {
+  text-align: right;
+}
+
+.message-content {
+  padding: 1rem 1.25rem;
+  border-radius: var(--radius-lg);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 0.9375rem;
+}
+
+.message.user .message-content {
+  background: var(--primary);
+  color: var(--primary-foreground);
+  border-bottom-right-radius: var(--radius-sm);
+  box-shadow: var(--shadow-sm);
+}
+
+.message.assistant .message-content {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-bottom-left-radius: var(--radius-sm);
+  color: var(--card-foreground);
+}
+
+.input-form {
+  display: flex;
+  gap: 1rem;
+  padding: 1.5rem 2rem;
+  background: var(--card);
+  border-top: 1px solid var(--border);
+  max-width: 900px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+.input-form textarea {
+  flex: 1;
+  resize: none;
+  min-height: 60px;
+  max-height: 200px;
+  background: var(--background);
+}
+
+.input-form button {
+  align-self: flex-end;
+  padding: 0.875rem 1.75rem;
+}
+
+/* Typing indicator */
+.typing-indicator {
+  display: inline-flex;
+  gap: 4px;
+  padding: 0.5rem;
+}
+
+.typing-indicator span {
+  width: 6px;
+  height: 6px;
+  background: var(--muted-foreground);
+  border-radius: 50%;
+  animation: bounce 1.4s infinite ease-in-out both;
+}
+
+.typing-indicator span:nth-child(1) { animation-delay: -0.32s; }
+.typing-indicator span:nth-child(2) { animation-delay: -0.16s; }
+
+@keyframes bounce {
+  0%, 80%, 100% { transform: scale(0); }
+  40% { transform: scale(1); }
+}
+
+/* Chat controls with tool toggle */
+.chat-controls {
+  padding: 0.75rem 2rem;
+  max-width: 900px;
+  margin: 0 auto;
+  width: 100%;
+  background: var(--card);
+  border-top: 1px solid var(--border);
+}
+
+.tools-toggle {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.model-select {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+}
+
+.model-select label {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.model-select select {
+  padding: 0.25rem 0.5rem;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--background);
+  color: var(--foreground);
+  font-size: 0.75rem;
+}
+
+.model-select .hint {
+  font-size: 0.7rem;
+  color: var(--muted-foreground);
+}
+
+.toggle-label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
+  font-size: 0.875rem;
+  color: var(--muted-foreground);
+}
+
+.toggle-label input[type="checkbox"] {
+  width: 1rem;
+  height: 1rem;
+  accent-color: var(--primary);
+  cursor: pointer;
+}
+
+.toggle-text {
+  user-select: none;
+}
+
+.toggle-label:has(input:checked) .toggle-text {
+  color: var(--foreground);
+  font-weight: 500;
+}
+
+.project-toggle {
+  padding: 0.25rem 0.75rem;
+  font-size: 0.75rem;
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.project-toggle:hover {
+  background: var(--muted);
+}
+
+.project-path-row {
+  margin-top: 0.5rem;
+}
+
+.project-path-row input {
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.875rem;
+  background: var(--background);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--foreground);
+}
+
+.project-path-row input::placeholder {
+  color: var(--muted-foreground);
+}
+
+/* Tool executions inline display */
+.tool-executions-inline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding: 0.75rem 0;
+  margin-top: 0.5rem;
+  animation: fadeIn 0.2s ease;
+}
+
+.tool-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.25rem 0.625rem;
+  font-size: 0.75rem;
+  border-radius: var(--radius);
+  font-family: monospace;
+  transition: all 0.2s ease;
+}
+
+.tool-chip.running {
+  background: rgba(106, 64, 64, 0.1);
+  color: var(--primary);
+  border: 1px solid rgba(106, 64, 64, 0.3);
+}
+
+.tool-chip.completed {
+  background: rgba(34, 139, 34, 0.1);
+  color: #228b22;
+  border: 1px solid rgba(34, 139, 34, 0.3);
+}
+
+.tool-chip.error {
+  background: rgba(220, 53, 69, 0.1);
+  color: #dc3545;
+  border: 1px solid rgba(220, 53, 69, 0.3);
+}
+
+.tool-chip-name {
+  font-weight: 500;
+}
+
+.tool-chip-status {
+  opacity: 0.8;
+}
+
+.tool-chip.running .tool-chip-status {
+  animation: pulse 1s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}

@@ -1,15 +1,39 @@
 
 import MessageBus from 'events';
 import crypto from 'node:crypto';
+import fs from 'node:fs/promises';
+import path from 'node:path';
 import { IngestedEvent } from '@polar/core';
+import { runtimeConfig } from './config.js';
 
-// In-memory event store for MVP
-// In production, this would be Redis Stream or Postgres
 const eventHistory: Map<string, IngestedEvent> = new Map();
 const bus = new MessageBus();
 
-// Deduplication window (e.g., 24 hours) - naive in-memory approach
 const MAX_HISTORY = 1000;
+const eventsPath = path.join(runtimeConfig.dataDir, 'events.json');
+let loaded = false;
+
+async function ensureLoaded(): Promise<void> {
+    if (loaded) return;
+    loaded = true;
+    try {
+        const raw = await fs.readFile(eventsPath, 'utf-8');
+        const parsed = JSON.parse(raw) as IngestedEvent[];
+        for (const event of parsed) {
+            if (event?.id && event?.source && event?.type) {
+                eventHistory.set(event.id, event);
+            }
+        }
+    } catch {
+        // first boot or file missing
+    }
+}
+
+async function persistHistory(): Promise<void> {
+    await fs.mkdir(runtimeConfig.dataDir, { recursive: true });
+    const entries = Array.from(eventHistory.values()).slice(-MAX_HISTORY);
+    await fs.writeFile(eventsPath, JSON.stringify(entries, null, 2), 'utf-8');
+}
 
 export async function ingestEvent(
     source: string,
@@ -17,6 +41,7 @@ export async function ingestEvent(
     payload: Record<string, unknown>,
     originalId?: string
 ): Promise<IngestedEvent> {
+    await ensureLoaded();
     const id = originalId || crypto.randomUUID();
 
     // 1. Deduplication
@@ -41,6 +66,7 @@ export async function ingestEvent(
         const firstKey = eventHistory.keys().next().value;
         eventHistory.delete(firstKey!);
     }
+    await persistHistory();
 
     // 3. Broadcast
     bus.emit('event', event);

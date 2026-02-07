@@ -46,7 +46,7 @@ export async function runDiagnostics(): Promise<DoctorResult[]> {
             results.push({
                 id: 'runtime_health',
                 name: 'Runtime Connectivity',
-                status: 'CRITICAL',
+                status: 'WARNING',
                 message: `Runtime returned status ${response.status}.`,
                 remediation: 'Ensure the runtime service is running.',
             });
@@ -55,7 +55,7 @@ export async function runDiagnostics(): Promise<DoctorResult[]> {
         results.push({
             id: 'runtime_health',
             name: 'Runtime Connectivity',
-            status: 'CRITICAL',
+            status: 'WARNING',
             message: 'Runtime is unreachable.',
             remediation: 'Start the runtime service.',
         });
@@ -83,7 +83,7 @@ export async function runDiagnostics(): Promise<DoctorResult[]> {
             results.push({
                 id: 'introspection_health',
                 name: 'Introspection Service',
-                status: 'CRITICAL',
+                status: 'WARNING',
                 message: `Introspection endpoint returned unexpected status ${response.status}.`,
                 remediation: 'Check runtime introspection endpoint configuration.',
             });
@@ -92,7 +92,7 @@ export async function runDiagnostics(): Promise<DoctorResult[]> {
         results.push({
             id: 'introspection_health',
             name: 'Introspection Service',
-            status: 'CRITICAL',
+            status: 'WARNING',
             message: 'Introspection endpoint is unreachable.',
             remediation: 'Ensure runtime is running and internal secret is correctly configured.',
         });

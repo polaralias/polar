@@ -54,13 +54,31 @@ interface OllamaTagsResponse {
 export class OllamaProvider implements LLMProviderAdapter {
     readonly name = 'ollama';
 
-    private getEndpoint(baseUrl: string | undefined): string {
-        return baseUrl || LLM_PROVIDER_ENDPOINTS.ollama;
+    private getBaseUrl(baseUrl: string | undefined): string {
+        const resolved = (baseUrl && baseUrl.trim().length > 0 ? baseUrl : LLM_PROVIDER_ENDPOINTS.ollama)
+            .replace(/\/+$/, '');
+        return resolved;
+    }
+
+    private getChatEndpoint(baseUrl: string | undefined): string {
+        const root = this.getBaseUrl(baseUrl);
+        if (root.endsWith('/api/chat')) {
+            return root;
+        }
+        return `${root}/api/chat`;
+    }
+
+    private getTagsEndpoint(baseUrl: string | undefined): string {
+        const root = this.getBaseUrl(baseUrl).replace(/\/api\/chat$/, '');
+        if (root.endsWith('/api/tags')) {
+            return root;
+        }
+        return `${root}/api/tags`;
     }
 
     async chat(request: LLMRequest, baseUrl: string, config: LLMConfig): Promise<LLMResponse> {
         const modelId = request.modelOverride || config.modelId;
-        const endpoint = this.getEndpoint(baseUrl);
+        const endpoint = this.getChatEndpoint(baseUrl);
 
         // Convert messages to Ollama format (no tool role)
         const messages: OllamaMessage[] = request.messages
@@ -154,11 +172,11 @@ export class OllamaProvider implements LLMProviderAdapter {
     }
 
     async isAvailable(baseUrl: string | undefined): Promise<boolean> {
-        const endpoint = this.getEndpoint(baseUrl);
+        const endpoint = this.getTagsEndpoint(baseUrl);
 
         try {
             // Check if Ollama is running by hitting the tags endpoint
-            const response = await fetch(endpoint.replace('/api/chat', '/api/tags'), {
+            const response = await fetch(endpoint, {
                 method: 'GET',
             });
             return response.ok;
@@ -168,10 +186,10 @@ export class OllamaProvider implements LLMProviderAdapter {
     }
 
     async listModels(baseUrl: string): Promise<string[]> {
-        const endpoint = this.getEndpoint(baseUrl);
+        const endpoint = this.getTagsEndpoint(baseUrl);
 
         try {
-            const response = await fetch(endpoint.replace('/api/chat', '/api/tags'), {
+            const response = await fetch(endpoint, {
                 method: 'GET',
             });
 

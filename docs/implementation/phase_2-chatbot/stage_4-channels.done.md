@@ -3,6 +3,9 @@
 ## Goal
 Interact with Polar through external messaging apps (Slack, Telegram, WhatsApp). Treat these channels as **untrusted ingress points**.
 
+## Implementation Status (as of February 7, 2026)
+**Status**: Complete
+
 ## 1. Channel Adapter Interface
 Standardize the internal interface for all channels.
 
@@ -43,12 +46,18 @@ Implement the following channels:
 *   **Secrets**: Channel adapters must never log message contents containing secrets.
 
 ## Acceptance Criteria
-- [ ] Telegram/Slack bot accepts messages only from paired users.
-- [ ] Unknown users/unpaired accounts are ignored.
-- [ ] Inbound messages are normalized and routed to correct sessions.
-- [ ] Attachments are quarantined by default.
-- [ ] Rate limits prevent message flooding.
-- [ ] "Pairing Code" flow works end-to-end.
+- [x] Telegram/Slack bot accepts messages only from paired users.
+- [x] Unknown users/unpaired accounts are ignored.
+- [x] Inbound messages are normalized and routed to correct sessions.
+- [x] Attachments are quarantined by default.
+- [x] Rate limits prevent message flooding.
+- [x] "Pairing Code" flow works end-to-end.
+
+## Pending Implementation Gaps (as of February 7, 2026)
+- No blocking gaps remain for Stage 4 acceptance.
+- Channel routing supports explicit conversation/thread to session pinning with persisted mappings and UI controls.
+- Quarantined attachments now have explicit list and "request analysis" workflow endpoints and UI actions.
+- Slack inbound transport is implemented via runtime webhook ingestion path and adapter normalization.
 
 ## Deferred from Phase 1 (Maturity)
 - **Pairing Flow Protocol**: Implement a formalized pairing protocol including support for mTLS or OAuth-based identity binding where supported by the channel.

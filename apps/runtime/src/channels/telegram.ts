@@ -76,7 +76,15 @@ export class TelegramAdapter implements ChannelAdapter {
                 const updates = data.result as any[];
                 for (const update of updates) {
                     this.offset = update.update_id;
-                    if (update.message && update.message.text) {
+                    if (
+                        update.message &&
+                        (
+                            update.message.text ||
+                            update.message.caption ||
+                            update.message.photo ||
+                            update.message.document
+                        )
+                    ) {
                         await this.processMessage(update.message);
                     }
                 }
@@ -90,13 +98,35 @@ export class TelegramAdapter implements ChannelAdapter {
     private async processMessage(telegramMsg: any) {
         if (!this.messageHandler) return;
 
+        const attachments: InboundMessage['attachments'] = [];
+
+        if (Array.isArray(telegramMsg.photo) && telegramMsg.photo.length > 0) {
+            const largestPhoto = telegramMsg.photo[telegramMsg.photo.length - 1];
+            if (largestPhoto?.file_id) {
+                attachments.push({
+                    type: 'image',
+                    url: `tg://file/${largestPhoto.file_id}`,
+                    mimeType: 'image/jpeg',
+                });
+            }
+        }
+
+        if (telegramMsg.document?.file_id) {
+            attachments.push({
+                type: 'document',
+                url: `tg://file/${telegramMsg.document.file_id}`,
+                mimeType: telegramMsg.document.mime_type || 'application/octet-stream',
+            });
+        }
+
         const msg: InboundMessage = {
             id: String(telegramMsg.message_id),
             channelId: this.id,
             senderId: String(telegramMsg.from.id),
             senderName: telegramMsg.from.username || telegramMsg.from.first_name,
             conversationId: String(telegramMsg.chat.id),
-            content: telegramMsg.text,
+            content: telegramMsg.text || telegramMsg.caption || '',
+            ...(attachments.length > 0 ? { attachments } : {}),
             timestamp: new Date(telegramMsg.date * 1000).toISOString()
         };
 

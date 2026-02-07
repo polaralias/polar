@@ -1,0 +1,38 @@
+{
+  "id": "office-assistant.mail-drafts",
+  "name": "Office Assistant",
+  "version": "1.0.0",
+  "description": "Inbox search and draft creation with snippet-first access.",
+  "workerTemplates": [
+    {
+      "id": "search_inbox",
+      "name": "Search Inbox",
+      "description": "Searches Gmail snippets and headers.",
+      "requiredCapabilities": [
+        "google.mail"
+      ]
+    },
+    {
+      "id": "create_draft_reply",
+      "name": "Create Draft Reply",
+      "description": "Creates a Gmail draft from composed text.",
+      "requiredCapabilities": [
+        "google.mail"
+      ]
+    }
+  ],
+  "requestedCapabilities": [
+    {
+      "connector": "google",
+      "action": "google.mail",
+      "resource": {
+        "type": "connector",
+        "connectorId": "google.mail",
+        "constraints": {
+          "allowBody": false
+        }
+      },
+      "justification": "Need snippet-level mailbox access and draft creation."
+    }
+  ]
+}

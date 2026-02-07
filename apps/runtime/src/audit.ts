@@ -17,6 +17,68 @@ export type AuditQuery = {
 // Queue to serialize writes for blockchain integrity
 let auditQueue = Promise.resolve();
 
+const SENSITIVE_KEY_PATTERN = /(token|secret|password|credential|api[_-]?key|authorization|cookie|signature|private[_-]?key)/i;
+const BEARER_PATTERN = /\bBearer\s+[A-Za-z0-9\-._~+/]+=*/gi;
+const OPENAI_KEY_PATTERN = /\bsk-[A-Za-z0-9_-]{12,}\b/g;
+const AWS_KEY_PATTERN = /\bAKIA[0-9A-Z]{16}\b/g;
+
+function redactString(value: string): string {
+  return value
+    .replace(BEARER_PATTERN, 'Bearer [REDACTED]')
+    .replace(OPENAI_KEY_PATTERN, '[REDACTED_API_KEY]')
+    .replace(AWS_KEY_PATTERN, '[REDACTED_AWS_KEY]');
+}
+
+function redactUnknown(value: unknown): unknown {
+  if (typeof value === 'string') {
+    return redactString(value);
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((item) => redactUnknown(item));
+  }
+
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    const redacted: Record<string, unknown> = {};
+    for (const [key, nested] of Object.entries(record)) {
+      if (SENSITIVE_KEY_PATTERN.test(key)) {
+        redacted[key] = '[REDACTED]';
+      } else {
+        redacted[key] = redactUnknown(nested);
+      }
+    }
+    return redacted;
+  }
+
+  return value;
+}
+
+function sanitizeResource(resource: AuditEvent['resource']): AuditEvent['resource'] {
+  const sanitized = redactUnknown(resource) as AuditEvent['resource'];
+  if (sanitized.url) {
+    try {
+      const parsed = new URL(sanitized.url);
+      // Strip query/fragment to avoid credential leakage.
+      parsed.search = '';
+      parsed.hash = '';
+      sanitized.url = parsed.toString();
+    } catch {
+      sanitized.url = redactString(sanitized.url);
+    }
+  }
+  return sanitized;
+}
+
+export function sanitizeAuditEvent(event: AuditEvent): AuditEvent {
+  return {
+    ...event,
+    reason: event.reason ? redactString(event.reason) : event.reason,
+    resource: sanitizeResource(event.resource),
+    metadata: event.metadata ? (redactUnknown(event.metadata) as Record<string, unknown>) : event.metadata,
+  };
+}
+
 export async function redactEvent(eventId: string, reason: string, subject: string = 'system'): Promise<void> {
   const event: AuditEvent = {
     id: crypto.randomUUID(),
@@ -43,8 +105,10 @@ export function appendAudit(event: AuditEvent): Promise<void> {
 }
 
 async function processAppend(event: AuditEvent): Promise<void> {
+  const sanitizedEvent = sanitizeAuditEvent(event);
+
   // Validate structure
-  const parsed = AuditEventSchema.safeParse(event);
+  const parsed = AuditEventSchema.safeParse(sanitizedEvent);
   if (!parsed.success) {
     throw new Error('Invalid audit event');
   }
@@ -84,32 +148,39 @@ async function getLastHash(): Promise<string> {
       const stats = await fileHandle.stat();
       if (stats.size === 0) return GENESIS_HASH;
 
-      const bufferSize = 4096; // Scan last 4KB
-      const position = Math.max(0, stats.size - bufferSize);
-      const length = stats.size - position;
-      const buffer = Buffer.alloc(length);
+      // Read increasingly larger windows from file tail until we find the last valid hashed line.
+      let windowSize = Math.min(4096, stats.size);
+      while (windowSize <= stats.size) {
+        const position = stats.size - windowSize;
+        const buffer = Buffer.alloc(windowSize);
+        await fileHandle.read(buffer, 0, windowSize, position);
+        const content = buffer.toString('utf-8');
+        const lines = content.split('\n');
 
-      await fileHandle.read(buffer, 0, length, position);
-      const content = buffer.toString('utf-8');
-
-      // Split by newline and filter empty strings (e.g. trailing newline)
-      const lines = content.trim().split('\n');
-
-      if (lines.length === 0) return GENESIS_HASH;
-
-      // Iterate backwards to find last valid JSON
-      for (let i = lines.length - 1; i >= 0; i--) {
-        const line = lines[i];
-        if (!line) continue;
-        try {
-          const json = JSON.parse(line);
-          if (typeof json.hash === 'string' && json.hash.length === 64) {
-            return json.hash as string;
-          }
-        } catch {
-          // Ignore partial/malformed lines
+        // If we did not read from start of file, first line may be truncated.
+        if (position > 0) {
+          lines.shift();
         }
+
+        for (let i = lines.length - 1; i >= 0; i--) {
+          const line = lines[i]?.trim();
+          if (!line) continue;
+          try {
+            const json = JSON.parse(line);
+            if (typeof json.hash === 'string' && json.hash.length === 64) {
+              return json.hash as string;
+            }
+          } catch {
+            // Ignore malformed lines and continue scanning backward.
+          }
+        }
+
+        if (windowSize === stats.size) {
+          break;
+        }
+        windowSize = Math.min(stats.size, windowSize * 2);
       }
+
       return GENESIS_HASH;
     } finally {
       await fileHandle.close();
@@ -166,7 +237,7 @@ export async function queryAudit(query: AuditQuery): Promise<AuditEvent[]> {
         if (query.tool && event.tool !== query.tool) continue;
         if (query.decision && event.decision !== query.decision) continue;
 
-        buffer.push(event);
+        buffer.push(sanitizeAuditEvent(event));
 
         // Optimization: If we have more than limit, we *could* shift, 
         // but for extremely large logs where matches >> limit, shifting is O(N).
@@ -189,7 +260,7 @@ export async function queryAudit(query: AuditQuery): Promise<AuditEvent[]> {
   }
 }
 
-export async function pruneAuditLog(): Promise<number> {
+async function processPruneAuditLog(): Promise<number> {
   try {
     const content = await fs.readFile(runtimeConfig.auditPath, 'utf-8');
     const lines = content.trim().split('\n');
@@ -225,4 +296,12 @@ export async function pruneAuditLog(): Promise<number> {
     if ((e as NodeJS.ErrnoException).code === 'ENOENT') return 0;
     throw e;
   }
+}
+
+export function pruneAuditLog(): Promise<number> {
+  const next = auditQueue.then(() => processPruneAuditLog());
+  auditQueue = next.then(() => undefined).catch((err) => {
+    console.error('Audit prune failed:', err);
+  });
+  return next;
 }
