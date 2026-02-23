@@ -758,6 +758,138 @@ test("control-plane service proxies scheduler queue run-action operations", asyn
   assert.equal(listed.totalCount, 0);
 });
 
+test("control-plane service proxies scheduler queue retry_now and requeue actions", async () => {
+  let nowMs = Date.UTC(2026, 1, 23, 12, 20, 0);
+  const retryEvents = [
+    Object.freeze({
+      sequence: 2,
+      eventId: "event-retry-now",
+      source: "automation",
+      runId: "run-retry-now",
+      attempt: 1,
+      maxAttempts: 3,
+      retryAtMs: Date.UTC(2026, 1, 23, 12, 5, 0),
+      reason: "execution_failed_retry",
+      requestPayload: {
+        automationId: "auto.daily-summary",
+        runId: "run-retry-now",
+      },
+    }),
+  ];
+  const deadLetterEvents = [
+    Object.freeze({
+      sequence: 4,
+      eventId: "event-dead-letter-requeue",
+      source: "automation",
+      runId: "run-dead-letter-requeue",
+      attempt: 3,
+      maxAttempts: 3,
+      reason: "max_attempts_exhausted",
+      requestPayload: {
+        automationId: "auto.daily-summary",
+        runId: "run-dead-letter-requeue",
+      },
+    }),
+  ];
+
+  const service = createControlPlaneService({
+    now: () => nowMs,
+    schedulerStateStore: {
+      async listRetryEvents() {
+        return Object.freeze([...retryEvents]);
+      },
+      async listDeadLetterEvents() {
+        return Object.freeze([...deadLetterEvents]);
+      },
+      async removeRetryEvent(request) {
+        const index = retryEvents.findIndex(
+          (event) => event.eventId === request.eventId,
+        );
+        if (index < 0) {
+          return false;
+        }
+        retryEvents.splice(index, 1);
+        return true;
+      },
+      async removeDeadLetterEvent(request) {
+        const index = deadLetterEvents.findIndex(
+          (event) => event.eventId === request.eventId,
+        );
+        if (index < 0) {
+          return false;
+        }
+        deadLetterEvents.splice(index, 1);
+        return true;
+      },
+      async storeRetryEvent(event) {
+        retryEvents.push(Object.freeze({ ...event }));
+      },
+    },
+  });
+
+  const retryNowAtMs = Date.UTC(2026, 1, 23, 12, 25, 0);
+  const retryNow = await service.runSchedulerQueueAction({
+    queue: "retry",
+    action: "retry_now",
+    eventId: "event-retry-now",
+    retryAtMs: retryNowAtMs,
+    reason: "operator_retry_now",
+  });
+  assert.deepEqual(retryNow, {
+    status: "applied",
+    queue: "retry",
+    action: "retry_now",
+    eventId: "event-retry-now",
+    sequence: 2,
+    targetQueue: "retry",
+    targetSequence: 0,
+    source: "automation",
+    runId: "run-retry-now",
+    attempt: 1,
+    maxAttempts: 3,
+    retryAtMs: retryNowAtMs,
+    appliedAtMs: nowMs,
+  });
+
+  nowMs = Date.UTC(2026, 1, 23, 12, 26, 0);
+  const requeue = await service.runSchedulerQueueAction({
+    queue: "dead_letter",
+    action: "requeue",
+    eventId: "event-dead-letter-requeue",
+    reason: "operator_requeue",
+  });
+  assert.deepEqual(requeue, {
+    status: "applied",
+    queue: "dead_letter",
+    action: "requeue",
+    eventId: "event-dead-letter-requeue",
+    sequence: 4,
+    targetQueue: "retry",
+    targetSequence: 1,
+    source: "automation",
+    runId: "run-dead-letter-requeue",
+    attempt: 3,
+    maxAttempts: 3,
+    retryAtMs: nowMs,
+    appliedAtMs: nowMs,
+  });
+
+  const retryQueue = await service.listSchedulerEventQueue({
+    queue: "retry",
+  });
+  assert.equal(retryQueue.totalCount, 2);
+  const requeuedEntry = retryQueue.items.find(
+    (item) => item.eventId === "event-dead-letter-requeue",
+  );
+  assert.ok(requeuedEntry);
+  assert.equal(requeuedEntry.reason, "operator_requeue");
+
+  const deadLetterQueue = await service.listSchedulerEventQueue({
+    queue: "dead_letter",
+  });
+  assert.equal(deadLetterQueue.totalCount, 0);
+});
+
 test("control-plane service preserves contract validation errors", async () => {
   const service = createControlPlaneService();
 

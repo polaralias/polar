@@ -698,6 +698,205 @@ test("scheduler supports typed queue run-actions for retry and dead-letter dismi
   });
 });
 
+test("scheduler supports retry_now and requeue queue actions with deterministic queue mutations", async () => {
+  let nowMs = Date.UTC(2026, 1, 23, 11, 50, 0);
+  const { schedulerGateway } = setupSchedulerIntegration({
+    now: () => nowMs,
+    automationExecutor: {
+      async executePlan(request) {
+        if (request.runId === "run-retry-now") {
+          return {
+            status: "failed",
+            failure: {
+              code: "POLAR_AUTOMATION_FAILURE",
+              message: "Retry queue fixture",
+            },
+            retryEligible: true,
+            deadLetterEligible: false,
+          };
+        }
+
+        return {
+          status: "failed",
+          failure: {
+            code: "POLAR_AUTOMATION_FAILURE",
+            message: "Dead-letter queue fixture",
+          },
+          retryEligible: false,
+          deadLetterEligible: true,
+        };
+      },
+    },
+  });
+
+  await schedulerGateway.processPersistedEvent({
+    eventId: "event-retry-now",
+    source: "automation",
+    runId: "run-retry-now",
+    recordedAtMs: Date.UTC(2026, 1, 23, 11, 40, 0),
+    attempt: 1,
+    maxAttempts: 3,
+    retryBackoffMs: 10_000,
+    automationRequest: createAutomationRunRequest({
+      runId: "run-retry-now",
+    }),
+  });
+  await schedulerGateway.processPersistedEvent({
+    eventId: "event-requeue-dead-letter",
+    source: "automation",
+    runId: "run-requeue-dead-letter",
+    recordedAtMs: Date.UTC(2026, 1, 23, 11, 41, 0),
+    attempt: 3,
+    maxAttempts: 3,
+    retryBackoffMs: 10_000,
+    automationRequest: createAutomationRunRequest({
+      runId: "run-requeue-dead-letter",
+    }),
+  });
+
+  nowMs = Date.UTC(2026, 1, 23, 11, 52, 0);
+  const retryNowAtMs = Date.UTC(2026, 1, 23, 11, 53, 0);
+  const retryNowResult = await schedulerGateway.runQueueAction({
+    queue: "retry",
+    action: "retry_now",
+    eventId: "event-retry-now",
+    retryAtMs: retryNowAtMs,
+    reason: "operator_retry_now",
+  });
+  assert.deepEqual(retryNowResult, {
+    status: "applied",
+    queue: "retry",
+    action: "retry_now",
+    eventId: "event-retry-now",
+    sequence: 0,
+    targetQueue: "retry",
+    targetSequence: 0,
+    source: "automation",
+    runId: "run-retry-now",
+    attempt: 1,
+    maxAttempts: 3,
+    retryAtMs: retryNowAtMs,
+    appliedAtMs: nowMs,
+  });
+
+  const retryQueueAfterRetryNow = await schedulerGateway.listEventQueue({
+    queue: "retry",
+    eventId: "event-retry-now",
+  });
+  assert.equal(retryQueueAfterRetryNow.totalCount, 1);
+  assert.equal(retryQueueAfterRetryNow.items[0].sequence, 0);
+  assert.equal(retryQueueAfterRetryNow.items[0].reason, "operator_retry_now");
+  assert.equal(retryQueueAfterRetryNow.items[0].retryAtMs, retryNowAtMs);
+  assert.deepEqual(
+    retryQueueAfterRetryNow.items[0].requestPayload,
+    createAutomationRunRequest({
+      runId: "run-retry-now",
+    }),
+  );
+
+  nowMs = Date.UTC(2026, 1, 23, 11, 54, 0);
+  const requeueResult = await schedulerGateway.runQueueAction({
+    queue: "dead_letter",
+    action: "requeue",
+    eventId: "event-requeue-dead-letter",
+    reason: "operator_requeue",
+  });
+  assert.deepEqual(requeueResult, {
+    status: "applied",
+    queue: "dead_letter",
+    action: "requeue",
+    eventId: "event-requeue-dead-letter",
+    sequence: 0,
+    targetQueue: "retry",
+    targetSequence: 1,
+    source: "automation",
+    runId: "run-requeue-dead-letter",
+    attempt: 3,
+    maxAttempts: 3,
+    retryAtMs: nowMs,
+    appliedAtMs: nowMs,
+  });
+
+  const deadLetterQueueAfterRequeue = await schedulerGateway.listEventQueue({
+    queue: "dead_letter",
+    eventId: "event-requeue-dead-letter",
+  });
+  assert.equal(deadLetterQueueAfterRequeue.totalCount, 0);
+
+  const retryQueueAfterRequeue = await schedulerGateway.listEventQueue({
+    queue: "retry",
+  });
+  assert.equal(retryQueueAfterRequeue.totalCount, 2);
+  const requeued = retryQueueAfterRequeue.items.find(
+    (item) => item.eventId === "event-requeue-dead-letter",
+  );
+  assert.ok(requeued);
+  assert.equal(requeued.sequence, 1);
+  assert.equal(requeued.reason, "operator_requeue");
+  assert.equal(requeued.retryAtMs, nowMs);
+  assert.deepEqual(
+    requeued.requestPayload,
+    createAutomationRunRequest({
+      runId: "run-requeue-dead-letter",
+    }),
+  );
+});
+
+test("scheduler queue run-actions reject unsupported action combinations and missing payloads", async () => {
+  const removalCalls = [];
+  const { schedulerGateway } = setupSchedulerIntegration({
+    schedulerStateStore: {
+      async listDeadLetterEvents() {
+        return Object.freeze([
+          Object.freeze({
+            sequence: 0,
+            eventId: "event-dead-letter-missing-payload",
+            source: "automation",
+            runId: "run-dead-letter-missing-payload",
+            attempt: 3,
+            maxAttempts: 3,
+            reason: "max_attempts_exhausted",
+          }),
+        ]);
+      },
+      async removeDeadLetterEvent(request) {
+        removalCalls.push(request);
+        return true;
+      },
+    },
+  });
+
+  const unsupported = await schedulerGateway.runQueueAction({
+    queue: "retry",
+    action: "requeue",
+    eventId: "event-any",
+  });
+  assert.deepEqual(unsupported, {
+    status: "rejected",
+    queue: "retry",
+    action: "requeue",
+    eventId: "event-any",
+    rejectionCode: "POLAR_SCHEDULER_QUEUE_ACTION_UNSUPPORTED",
+    reason: 'Scheduler queue action "requeue" is not supported for queue "retry"',
+  });
+
+  const missingPayload = await schedulerGateway.runQueueAction({
+    queue: "dead_letter",
+    action: "requeue",
+    eventId: "event-dead-letter-missing-payload",
+  });
+  assert.deepEqual(missingPayload, {
+    status: "rejected",
+    queue: "dead_letter",
+    action: "requeue",
+    eventId: "event-dead-letter-missing-payload",
+    rejectionCode: "POLAR_SCHEDULER_QUEUE_ACTION_PAYLOAD_MISSING",
+    reason:
+      "Scheduler queue action requires requestPayload on the targeted queue event",
+  });
+  assert.deepEqual(removalCalls, []);
+});
+
 test("scheduler queue diagnostics reject invalid queue filter combinations", async () => {
   const { schedulerGateway } = setupSchedulerIntegration();
 

@@ -36,11 +36,16 @@ export const SCHEDULER_EVENT_QUEUE_ACTIONABLE_TYPES = Object.freeze([
   "retry",
   "dead_letter",
 ]);
-export const SCHEDULER_EVENT_QUEUE_ACTIONS = Object.freeze(["dismiss"]);
+export const SCHEDULER_EVENT_QUEUE_ACTIONS = Object.freeze([
+  "dismiss",
+  "retry_now",
+  "requeue",
+]);
 export const SCHEDULER_EVENT_QUEUE_LIST_STATUSES = Object.freeze(["ok"]);
 export const SCHEDULER_EVENT_QUEUE_ACTION_STATUSES = Object.freeze([
   "applied",
   "not_found",
+  "rejected",
 ]);
 export const SCHEDULER_RUN_LINK_REPLAY_SOURCES = Object.freeze([
   "automation",
@@ -216,6 +221,8 @@ export function createSchedulerContracts(options = {}) {
           action: enumField(SCHEDULER_EVENT_QUEUE_ACTIONS),
           eventId: stringField({ minLength: 1 }),
           sequence: numberField({ min: 0, required: false }),
+          retryAtMs: numberField({ min: 0, required: false }),
+          reason: stringField({ minLength: 1, required: false }),
         },
       }),
       outputSchema: createStrictObjectSchema({
@@ -226,12 +233,19 @@ export function createSchedulerContracts(options = {}) {
           action: enumField(SCHEDULER_EVENT_QUEUE_ACTIONS),
           eventId: stringField({ minLength: 1 }),
           sequence: numberField({ min: 0, required: false }),
+          targetQueue: enumField(SCHEDULER_EVENT_QUEUE_ACTIONABLE_TYPES, {
+            required: false,
+          }),
+          targetSequence: numberField({ min: 0, required: false }),
           source: enumField(SCHEDULER_EVENT_SOURCES, {
             required: false,
           }),
           runId: stringField({ minLength: 1, required: false }),
           attempt: numberField({ min: 1, required: false }),
           maxAttempts: numberField({ min: 1, required: false }),
+          retryAtMs: numberField({ min: 0, required: false }),
+          rejectionCode: stringField({ minLength: 1, required: false }),
+          reason: stringField({ minLength: 1, required: false }),
           appliedAtMs: numberField({ min: 0, required: false }),
         },
       }),

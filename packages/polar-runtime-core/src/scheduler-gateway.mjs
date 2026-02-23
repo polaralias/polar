@@ -82,12 +82,18 @@ const runQueueActionRequestSchema = createStrictObjectSchema({
     action: enumField(SCHEDULER_EVENT_QUEUE_ACTIONS),
     eventId: stringField({ minLength: 1 }),
     sequence: numberField({ min: 0, required: false }),
+    retryAtMs: numberField({ min: 0, required: false }),
+    reason: stringField({ minLength: 1, required: false }),
   },
 });
 
 const processableRunStatuses = new Set(SCHEDULER_EVENT_RUN_STATUSES);
 const processableEventStatuses = new Set(SCHEDULER_EVENT_PROCESS_STATUSES);
 const dispositionStatuses = new Set(SCHEDULER_EVENT_DISPOSITIONS);
+const queueActionSupport = Object.freeze({
+  retry: Object.freeze(["dismiss", "retry_now"]),
+  dead_letter: Object.freeze(["dismiss", "requeue"]),
+});
 
 /**
  * @param {unknown} value
@@ -236,6 +242,19 @@ function normalizeQueueEvent(queue, event, index) {
         `Scheduler queue "${queue}" event at index ${index} requires retryAtMs`,
       );
     }
+    if (!isNonEmptyString(event.reason)) {
+      throw new RuntimeExecutionError(
+        `Scheduler queue "${queue}" event at index ${index} requires reason`,
+      );
+    }
+    if (
+      event.requestPayload !== undefined &&
+      !isPlainObject(event.requestPayload)
+    ) {
+      throw new RuntimeExecutionError(
+        `Scheduler queue "${queue}" event at index ${index} has invalid requestPayload`,
+      );
+    }
   }
 
   if (queue === "dead_letter") {
@@ -247,6 +266,14 @@ function normalizeQueueEvent(queue, event, index) {
     if (!isNonEmptyString(event.reason)) {
       throw new RuntimeExecutionError(
         `Scheduler queue "${queue}" event at index ${index} requires reason`,
+      );
+    }
+    if (
+      event.requestPayload !== undefined &&
+      !isPlainObject(event.requestPayload)
+    ) {
+      throw new RuntimeExecutionError(
+        `Scheduler queue "${queue}" event at index ${index} has invalid requestPayload`,
       );
     }
   }
@@ -375,6 +402,15 @@ function assertQueueFilterCompatibility(queue, status, runStatus, disposition) {
       },
     );
   }
+}
+
+/**
+ * @param {"retry"|"dead_letter"} queue
+ * @param {"dismiss"|"retry_now"|"requeue"} action
+ * @returns {boolean}
+ */
+function isQueueActionSupported(queue, action) {
+  return queueActionSupport[queue].includes(action);
 }
 
 /**
@@ -722,13 +758,14 @@ export function createSchedulerGateway({
    *   eventId: string,
    *   source: "automation"|"heartbeat",
    *   runId: string,
-   *   attempt: number,
-   *   maxAttempts: number,
-   *   reason: string,
-   *   output?: unknown,
-   *   failure?: unknown,
-   *   metadata?: unknown
-   * }} entry
+ *   attempt: number,
+ *   maxAttempts: number,
+ *   reason: string,
+ *   requestPayload?: Record<string, unknown>,
+ *   output?: unknown,
+ *   failure?: unknown,
+ *   metadata?: unknown
+ * }} entry
    * @returns {Record<string, unknown>}
    */
   const appendDeadLetterEvent = (entry) => {
@@ -741,6 +778,9 @@ export function createSchedulerGateway({
       attempt: entry.attempt,
       maxAttempts: entry.maxAttempts,
       reason: entry.reason,
+      ...(entry.requestPayload !== undefined
+        ? { requestPayload: entry.requestPayload }
+        : {}),
       ...(entry.output !== undefined ? { output: entry.output } : {}),
       ...(entry.failure !== undefined ? { failure: entry.failure } : {}),
       ...(entry.metadata !== undefined ? { metadata: entry.metadata } : {}),
@@ -755,6 +795,9 @@ export function createSchedulerGateway({
       attempt: ledgerEntry.attempt,
       maxAttempts: ledgerEntry.maxAttempts,
       reason: ledgerEntry.reason,
+      ...(ledgerEntry.requestPayload !== undefined
+        ? { requestPayload: ledgerEntry.requestPayload }
+        : {}),
     };
   };
 
@@ -1109,6 +1152,7 @@ export function createSchedulerGateway({
               attempt: inputAttempt,
               maxAttempts: inputMaxAttempts,
               reason,
+              requestPayload: payload,
               ...(output !== undefined ? { output } : {}),
               ...(failure !== undefined ? { failure } : {}),
               ...(metadata !== undefined ? { metadata } : {}),
@@ -1116,6 +1160,7 @@ export function createSchedulerGateway({
             await persistDeadLetterEvent({
               ...deadLetterEvent,
               reason,
+              requestPayload: payload,
               ...(output !== undefined ? { output } : {}),
               ...(failure !== undefined ? { failure } : {}),
               ...(metadata !== undefined ? { metadata } : {}),
@@ -1335,13 +1380,50 @@ export function createSchedulerGateway({
             action: parsed.action,
             eventId: parsed.eventId,
             ...(parsed.sequence !== undefined ? { sequence: parsed.sequence } : {}),
+            ...(parsed.retryAtMs !== undefined
+              ? { retryAtMs: parsed.retryAtMs }
+              : {}),
+            ...(parsed.reason !== undefined ? { reason: parsed.reason } : {}),
           },
         },
         async (input) => {
           const queue = /** @type {"retry"|"dead_letter"} */ (input.queue);
-          const action = /** @type {"dismiss"} */ (input.action);
+          const action = /** @type {"dismiss"|"retry_now"|"requeue"} */ (
+            input.action
+          );
           const eventId = /** @type {string} */ (input.eventId);
           const sequence = /** @type {number|undefined} */ (input.sequence);
+          const requestedRetryAtMs =
+            /** @type {number|undefined} */ (input.retryAtMs);
+          const requestedReason = /** @type {string|undefined} */ (input.reason);
+
+          const rejectQueueAction = (rejectionCode, reason) =>
+            Object.freeze({
+              status: "rejected",
+              queue,
+              action,
+              eventId,
+              rejectionCode,
+              reason,
+            });
+
+          if (!isQueueActionSupported(queue, action)) {
+            return rejectQueueAction(
+              "POLAR_SCHEDULER_QUEUE_ACTION_UNSUPPORTED",
+              `Scheduler queue action "${action}" is not supported for queue "${queue}"`,
+            );
+          }
+
+          if (
+            requestedRetryAtMs !== undefined &&
+            !isNonNegativeInteger(requestedRetryAtMs)
+          ) {
+            return rejectQueueAction(
+              "POLAR_SCHEDULER_QUEUE_ACTION_RETRY_AT_INVALID",
+              "Scheduler queue action retryAtMs must be a non-negative integer when provided",
+            );
+          }
+
           const queueEvents = await getQueueEvents(queue);
           const matchedEvent = queueEvents.find(
             (event) =>
@@ -1356,6 +1438,59 @@ export function createSchedulerGateway({
               action,
               eventId,
             };
+          }
+
+          const matchedSequence = /** @type {number} */ (matchedEvent.sequence);
+          const matchedSource = /** @type {"automation"|"heartbeat"} */ (
+            matchedEvent.source
+          );
+          const matchedRunId = /** @type {string} */ (matchedEvent.runId);
+          const matchedAttempt = isPositiveInteger(matchedEvent.attempt)
+            ? matchedEvent.attempt
+            : 1;
+          const matchedMaxAttempts = isPositiveInteger(matchedEvent.maxAttempts)
+            ? matchedEvent.maxAttempts
+            : matchedAttempt;
+          const actionAppliedAtMs = now();
+
+          if (action === "dismiss") {
+            const persistedRemoved = await removePersistedQueueEvent(
+              queue,
+              eventId,
+              sequence,
+            );
+            if (persistedRemoved === false) {
+              return {
+                status: "not_found",
+                queue,
+                action,
+                eventId,
+              };
+            }
+            removeQueueEventFromLedger(queue, eventId, sequence);
+
+            return Object.freeze({
+              status: "applied",
+              queue,
+              action,
+              eventId,
+              sequence: matchedSequence,
+              source: matchedSource,
+              runId: matchedRunId,
+              attempt: matchedAttempt,
+              maxAttempts: matchedMaxAttempts,
+              appliedAtMs: actionAppliedAtMs,
+            });
+          }
+
+          const requestPayload = isPlainObject(matchedEvent.requestPayload)
+            ? matchedEvent.requestPayload
+            : undefined;
+          if (!requestPayload) {
+            return rejectQueueAction(
+              "POLAR_SCHEDULER_QUEUE_ACTION_PAYLOAD_MISSING",
+              "Scheduler queue action requires requestPayload on the targeted queue event",
+            );
           }
 
           const persistedRemoved = await removePersistedQueueEvent(
@@ -1373,24 +1508,53 @@ export function createSchedulerGateway({
           }
           removeQueueEventFromLedger(queue, eventId, sequence);
 
-          const appliedResult = {
+          const retryAtMs = requestedRetryAtMs ?? actionAppliedAtMs;
+          const reason =
+            requestedReason ??
+            (action === "retry_now" ? "operator_retry_now" : "operator_requeue");
+          const replayRetryEvent = appendRetryEvent({
+            eventId,
+            source: matchedSource,
+            runId: matchedRunId,
+            attempt: matchedAttempt,
+            maxAttempts: matchedMaxAttempts,
+            retryAtMs,
+            reason,
+            requestPayload,
+            ...(matchedEvent.metadata !== undefined
+              ? { metadata: matchedEvent.metadata }
+              : {}),
+          });
+          await persistRetryEvent({
+            ...replayRetryEvent,
+            reason,
+            requestPayload,
+            ...(matchedEvent.output !== undefined
+              ? { output: matchedEvent.output }
+              : {}),
+            ...(matchedEvent.failure !== undefined
+              ? { failure: matchedEvent.failure }
+              : {}),
+            ...(matchedEvent.metadata !== undefined
+              ? { metadata: matchedEvent.metadata }
+              : {}),
+          });
+
+          return Object.freeze({
             status: "applied",
             queue,
             action,
             eventId,
-            sequence: /** @type {number} */ (matchedEvent.sequence),
-            source: /** @type {"automation"|"heartbeat"} */ (matchedEvent.source),
-            runId: /** @type {string} */ (matchedEvent.runId),
-            appliedAtMs: now(),
-          };
-          if (isPositiveInteger(matchedEvent.attempt)) {
-            appliedResult.attempt = matchedEvent.attempt;
-          }
-          if (isPositiveInteger(matchedEvent.maxAttempts)) {
-            appliedResult.maxAttempts = matchedEvent.maxAttempts;
-          }
-
-          return Object.freeze(appliedResult);
+            sequence: matchedSequence,
+            targetQueue: "retry",
+            targetSequence: replayRetryEvent.sequence,
+            source: matchedSource,
+            runId: matchedRunId,
+            attempt: matchedAttempt,
+            maxAttempts: matchedMaxAttempts,
+            retryAtMs,
+            appliedAtMs: actionAppliedAtMs,
+          });
         },
       );
     },

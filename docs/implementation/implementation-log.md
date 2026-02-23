@@ -28,6 +28,30 @@ Use this section for currently in-flight work. Move items to `Completed Items` w
 
 Record completed work in reverse chronological order (newest first).
 
+### 2026-02-23 - PR-18-SCHEDULER-HARDEN-008 - Typed scheduler queue `retry_now`/`requeue` actions and rejection shaping
+
+1. Status: Done
+2. Owner: codex
+3. Summary: Expanded the contract-governed scheduler queue action surface by adding typed `retry_now` and `requeue` actions alongside `dismiss`, added deterministic rejected outcomes for unsupported queue/action combinations and invalid retry scheduling inputs, and extended scheduler runtime behavior so dead-letter records retain request-payload provenance required for safe operator requeue flows; all behavior remains enforced through before/after middleware and surfaced through control-plane proxy paths.
+4. Files changed:
+   - `packages/polar-domain/src/scheduler-contracts.mjs`
+   - `packages/polar-runtime-core/src/scheduler-gateway.mjs`
+   - `tests/runtime-core-scheduler-gateway.test.mjs`
+   - `tests/control-plane-service.test.mjs`
+   - `docs/status/current-status.md`
+   - `docs/status/roadmap.md`
+   - `docs/implementation/implementation-program-overview.md`
+   - `docs/implementation/implementation-log.md`
+5. Validation performed:
+   - `node --test tests/runtime-core-scheduler-gateway.test.mjs`
+   - `node --test tests/control-plane-service.test.mjs`
+   - `npm run check`
+6. Follow-up:
+   - Add explicit actor/policy approval routing for high-risk queue run-actions in control-plane and operator UI workflows.
+   - Wire production-grade scheduler queue/storage backends beyond the file-backed adapter baseline.
+7. Blockers:
+   - None.
+
 ### 2026-02-23 - PR-13-MEMORY-HARDEN-002 - Contract-governed memory upsert/compaction gateway baseline
 
 1. Status: Done
