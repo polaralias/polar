@@ -2,83 +2,112 @@ import {
   ContractValidationError,
   RuntimeExecutionError,
   TELEMETRY_ALERT_ACTION,
+  TELEMETRY_ALERT_ROUTE_ACTION,
   TELEMETRY_ALERT_SCOPES,
+  TELEMETRY_ALERT_SEVERITIES,
+  TASK_BOARD_ASSIGNEE_TYPES,
+  TASK_BOARD_STATUSES,
   createStrictObjectSchema,
   createTelemetryAlertContract,
+  createTelemetryAlertRouteContract,
   enumField,
   numberField,
   booleanField,
+  jsonField,
   stringField,
 } from "../../polar-domain/src/index.mjs";
 
+const telemetryAlertRequestFields = Object.freeze({
+  executionType: enumField(["tool", "handoff", "automation", "heartbeat"], {
+    required: false,
+  }),
+  traceId: stringField({ minLength: 1, required: false }),
+  scope: enumField(TELEMETRY_ALERT_SCOPES, { required: false }),
+  minimumSampleSize: numberField({ min: 1, max: 10_000, required: false }),
+  usageFromSequence: numberField({ min: 1, required: false }),
+  usageLimit: numberField({ min: 1, max: 500, required: false }),
+  usageOperation: enumField(["generate", "stream", "embed"], {
+    required: false,
+  }),
+  usageProviderId: stringField({ minLength: 1, required: false }),
+  usageRequestedProviderId: stringField({ minLength: 1, required: false }),
+  usageStatus: enumField(["completed", "failed"], {
+    required: false,
+  }),
+  usageModelLane: enumField(["local", "worker", "brain"], {
+    required: false,
+  }),
+  usageFallbackUsed: booleanField({ required: false }),
+  usageExecutionType: enumField(
+    ["tool", "handoff", "automation", "heartbeat"],
+    { required: false },
+  ),
+  usageFailureRateWarning: numberField({ min: 0, max: 1, required: false }),
+  usageFailureRateCritical: numberField({ min: 0, max: 1, required: false }),
+  usageFallbackRateWarning: numberField({ min: 0, max: 1, required: false }),
+  usageFallbackRateCritical: numberField({
+    min: 0,
+    max: 1,
+    required: false,
+  }),
+  usageAverageDurationMsWarning: numberField({ min: 0, required: false }),
+  usageAverageDurationMsCritical: numberField({ min: 0, required: false }),
+  handoffFromSequence: numberField({ min: 1, required: false }),
+  handoffLimit: numberField({ min: 1, max: 500, required: false }),
+  handoffMode: enumField(["direct", "delegate", "fanout-fanin"], {
+    required: false,
+  }),
+  handoffRouteAdjustedOnly: booleanField({ required: false }),
+  handoffProfileResolutionStatus: enumField(["resolved", "not_resolved"], {
+    required: false,
+  }),
+  handoffSessionId: stringField({ minLength: 1, required: false }),
+  handoffWorkspaceId: stringField({ minLength: 1, required: false }),
+  handoffSourceAgentId: stringField({ minLength: 1, required: false }),
+  handoffStatus: enumField(["completed", "failed", "unknown"], {
+    required: false,
+  }),
+  handoffFailureRateWarning: numberField({ min: 0, max: 1, required: false }),
+  handoffFailureRateCritical: numberField({
+    min: 0,
+    max: 1,
+    required: false,
+  }),
+  handoffRouteAdjustedRateWarning: numberField({
+    min: 0,
+    max: 1,
+    required: false,
+  }),
+  handoffRouteAdjustedRateCritical: numberField({
+    min: 0,
+    max: 1,
+    required: false,
+  }),
+});
+
 const listTelemetryAlertsRequestSchema = createStrictObjectSchema({
   schemaId: "telemetry.alert.gateway.list.request",
+  fields: telemetryAlertRequestFields,
+});
+
+const routeTelemetryAlertsRequestSchema = createStrictObjectSchema({
+  schemaId: "telemetry.alert.gateway.route.request",
   fields: {
-    executionType: enumField(["tool", "handoff", "automation", "heartbeat"], {
+    ...telemetryAlertRequestFields,
+    minimumSeverity: enumField(TELEMETRY_ALERT_SEVERITIES, {
       required: false,
     }),
-    traceId: stringField({ minLength: 1, required: false }),
-    scope: enumField(TELEMETRY_ALERT_SCOPES, { required: false }),
-    minimumSampleSize: numberField({ min: 1, max: 10_000, required: false }),
-    usageFromSequence: numberField({ min: 1, required: false }),
-    usageLimit: numberField({ min: 1, max: 500, required: false }),
-    usageOperation: enumField(["generate", "stream", "embed"], {
-      required: false,
-    }),
-    usageProviderId: stringField({ minLength: 1, required: false }),
-    usageRequestedProviderId: stringField({ minLength: 1, required: false }),
-    usageStatus: enumField(["completed", "failed"], {
-      required: false,
-    }),
-    usageModelLane: enumField(["local", "worker", "brain"], {
-      required: false,
-    }),
-    usageFallbackUsed: booleanField({ required: false }),
-    usageExecutionType: enumField(
-      ["tool", "handoff", "automation", "heartbeat"],
-      { required: false },
-    ),
-    usageFailureRateWarning: numberField({ min: 0, max: 1, required: false }),
-    usageFailureRateCritical: numberField({ min: 0, max: 1, required: false }),
-    usageFallbackRateWarning: numberField({ min: 0, max: 1, required: false }),
-    usageFallbackRateCritical: numberField({
-      min: 0,
-      max: 1,
-      required: false,
-    }),
-    usageAverageDurationMsWarning: numberField({ min: 0, required: false }),
-    usageAverageDurationMsCritical: numberField({ min: 0, required: false }),
-    handoffFromSequence: numberField({ min: 1, required: false }),
-    handoffLimit: numberField({ min: 1, max: 500, required: false }),
-    handoffMode: enumField(["direct", "delegate", "fanout-fanin"], {
-      required: false,
-    }),
-    handoffRouteAdjustedOnly: booleanField({ required: false }),
-    handoffProfileResolutionStatus: enumField(["resolved", "not_resolved"], {
-      required: false,
-    }),
-    handoffSessionId: stringField({ minLength: 1, required: false }),
-    handoffWorkspaceId: stringField({ minLength: 1, required: false }),
-    handoffSourceAgentId: stringField({ minLength: 1, required: false }),
-    handoffStatus: enumField(["completed", "failed", "unknown"], {
-      required: false,
-    }),
-    handoffFailureRateWarning: numberField({ min: 0, max: 1, required: false }),
-    handoffFailureRateCritical: numberField({
-      min: 0,
-      max: 1,
-      required: false,
-    }),
-    handoffRouteAdjustedRateWarning: numberField({
-      min: 0,
-      max: 1,
-      required: false,
-    }),
-    handoffRouteAdjustedRateCritical: numberField({
-      min: 0,
-      max: 1,
-      required: false,
-    }),
+    maxAlerts: numberField({ min: 1, max: 200, required: false }),
+    assigneeType: enumField(TASK_BOARD_ASSIGNEE_TYPES),
+    assigneeId: stringField({ minLength: 1 }),
+    taskStatus: enumField(TASK_BOARD_STATUSES, { required: false }),
+    taskIdPrefix: stringField({ minLength: 1, required: false }),
+    titlePrefix: stringField({ minLength: 1, required: false }),
+    actorId: stringField({ minLength: 1, required: false }),
+    sessionId: stringField({ minLength: 1, required: false }),
+    runId: stringField({ minLength: 1, required: false }),
+    metadata: jsonField({ required: false }),
+    dryRun: booleanField({ required: false }),
   },
 });
 

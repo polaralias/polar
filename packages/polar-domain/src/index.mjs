@@ -97,11 +97,13 @@ export {
 } from "./usage-telemetry-contracts.mjs";
 export {
   TELEMETRY_ALERT_ACTION,
+  TELEMETRY_ALERT_ROUTE_ACTION,
   TELEMETRY_ALERT_SCOPES,
   TELEMETRY_ALERT_SEVERITIES,
   TELEMETRY_ALERT_SOURCES,
   TELEMETRY_ALERT_STATUSES,
   createTelemetryAlertContract,
+  createTelemetryAlertRouteContract,
 } from "./telemetry-alert-contracts.mjs";
 export {
   HEARTBEAT_DELIVERY_RULES,
