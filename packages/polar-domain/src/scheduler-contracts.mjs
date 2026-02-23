@@ -1,0 +1,122 @@
+import {
+  createStrictObjectSchema,
+  enumField,
+  jsonField,
+  numberField,
+  stringField,
+} from "./runtime-contracts.mjs";
+
+export const SCHEDULER_EVENT_SOURCES = Object.freeze([
+  "automation",
+  "heartbeat",
+]);
+export const SCHEDULER_EVENT_PROCESS_STATUSES = Object.freeze([
+  "processed",
+  "rejected",
+  "failed",
+]);
+export const SCHEDULER_EVENT_RUN_STATUSES = Object.freeze([
+  "executed",
+  "skipped",
+  "blocked",
+  "failed",
+]);
+export const SCHEDULER_RUN_LINK_REPLAY_SOURCES = Object.freeze([
+  "automation",
+  "heartbeat",
+  "all",
+]);
+export const SCHEDULER_RUN_LINK_REPLAY_STATUSES = Object.freeze(["ok"]);
+
+export const SCHEDULER_ACTIONS = Object.freeze({
+  processPersistedEvent: Object.freeze({
+    actionId: "runtime.scheduler.event.process",
+    version: 1,
+  }),
+  replayRunLinks: Object.freeze({
+    actionId: "runtime.scheduler.run-link.replay",
+    version: 1,
+  }),
+});
+
+/**
+ * @param {{ trustClass?: "native"|"skill"|"mcp"|"plugin", riskClass?: "low"|"moderate"|"high"|"critical" }} [options]
+ */
+export function createSchedulerContracts(options = {}) {
+  const { trustClass = "native", riskClass = "moderate" } = options;
+
+  return Object.freeze([
+    Object.freeze({
+      actionId: SCHEDULER_ACTIONS.processPersistedEvent.actionId,
+      version: SCHEDULER_ACTIONS.processPersistedEvent.version,
+      inputSchema: createStrictObjectSchema({
+        schemaId: "runtime.scheduler.event.process.input",
+        fields: {
+          eventId: stringField({ minLength: 1 }),
+          source: enumField(SCHEDULER_EVENT_SOURCES),
+          runId: stringField({ minLength: 1 }),
+          recordedAtMs: numberField({ min: 0 }),
+          automationRequest: jsonField({ required: false }),
+          heartbeatRequest: jsonField({ required: false }),
+          metadata: jsonField({ required: false }),
+        },
+      }),
+      outputSchema: createStrictObjectSchema({
+        schemaId: "runtime.scheduler.event.process.output",
+        fields: {
+          status: enumField(SCHEDULER_EVENT_PROCESS_STATUSES),
+          eventId: stringField({ minLength: 1 }),
+          source: enumField(SCHEDULER_EVENT_SOURCES),
+          runId: stringField({ minLength: 1 }),
+          sequence: numberField({ min: 0 }),
+          runStatus: enumField(SCHEDULER_EVENT_RUN_STATUSES, {
+            required: false,
+          }),
+          output: jsonField({ required: false }),
+          rejectionCode: stringField({ minLength: 1, required: false }),
+          reason: stringField({ minLength: 1, required: false }),
+          failure: jsonField({ required: false }),
+        },
+      }),
+      riskClass,
+      trustClass,
+      timeoutMs: 20_000,
+      retryPolicy: {
+        maxAttempts: 1,
+      },
+    }),
+    Object.freeze({
+      actionId: SCHEDULER_ACTIONS.replayRunLinks.actionId,
+      version: SCHEDULER_ACTIONS.replayRunLinks.version,
+      inputSchema: createStrictObjectSchema({
+        schemaId: "runtime.scheduler.run-link.replay.input",
+        fields: {
+          source: enumField(SCHEDULER_RUN_LINK_REPLAY_SOURCES, {
+            required: false,
+          }),
+          fromSequence: numberField({ min: 0, required: false }),
+        },
+      }),
+      outputSchema: createStrictObjectSchema({
+        schemaId: "runtime.scheduler.run-link.replay.output",
+        fields: {
+          status: enumField(SCHEDULER_RUN_LINK_REPLAY_STATUSES),
+          source: enumField(SCHEDULER_RUN_LINK_REPLAY_SOURCES),
+          fromSequence: numberField({ min: 0 }),
+          automationRecordCount: numberField({ min: 0 }),
+          heartbeatRecordCount: numberField({ min: 0 }),
+          linkedCount: numberField({ min: 0 }),
+          skippedCount: numberField({ min: 0 }),
+          rejectedCount: numberField({ min: 0 }),
+          totalCount: numberField({ min: 0 }),
+        },
+      }),
+      riskClass,
+      trustClass,
+      timeoutMs: 20_000,
+      retryPolicy: {
+        maxAttempts: 1,
+      },
+    }),
+  ]);
+}

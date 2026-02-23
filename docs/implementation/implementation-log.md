@@ -28,6 +28,133 @@ Use this section for currently in-flight work. Move items to `Completed Items` w
 
 Record completed work in reverse chronological order (newest first).
 
+### 2026-02-23 - PR-19-COST-TELEMETRY-002 - Contract-governed telemetry alert synthesis gateway and control-plane proxy baseline
+
+1. Status: Done
+2. Owner: codex
+3. Summary: Added a new contract-governed telemetry alert synthesis surface (`runtime.telemetry.alerts.list`) that evaluates usage and handoff telemetry windows with deterministic threshold rules (failure/fallback/duration and route-adjustment/failure rates), emits typed warning/critical alert records, and runs entirely through before/after middleware; wired control-plane service proxying for operator access to alert outputs, expanded runtime/control-plane tests for strict validation and middleware coverage, and validated the new control-plane endpoint via a dev-only Chrome DevTools MCP smoke artifact.
+4. Files changed:
+   - `packages/polar-domain/src/telemetry-alert-contracts.mjs`
+   - `packages/polar-domain/src/index.mjs`
+   - `packages/polar-runtime-core/src/telemetry-alert-gateway.mjs`
+   - `packages/polar-runtime-core/src/index.mjs`
+   - `packages/polar-control-plane/src/index.mjs`
+   - `tests/runtime-core-telemetry-alert-gateway.test.mjs`
+   - `tests/control-plane-service.test.mjs`
+   - `docs/status/current-status.md`
+   - `docs/status/roadmap.md`
+   - `docs/implementation/implementation-program-overview.md`
+   - `docs/implementation/implementation-log.md`
+5. Validation performed:
+   - `node --test tests/runtime-core-telemetry-alert-gateway.test.mjs tests/runtime-core-usage-telemetry-gateway.test.mjs tests/runtime-core-handoff-telemetry-gateway.test.mjs tests/control-plane-service.test.mjs`
+   - `npm run check:boundaries`
+   - `npm test`
+   - Dev-only telemetry alert smoke artifact generated at `file:///C:/Users/JAMES~1.DES/AppData/Local/Temp/polar-telemetry-alert-devtools-result.html` via `node - %TEMP%\\polar-telemetry-alert-devtools-result.html` and verified with Chrome DevTools MCP (`telemetryStatus=ok`, `alertCount=0`, `scope=all`, `contractCount=19`).
+6. Follow-up:
+   - Wire telemetry alert outputs into operator Web UI dashboards and alert-routing policy workflows.
+   - Add persisted alert history and escalation delivery channels (task-board, notification sinks, policy webhooks).
+7. Blockers:
+   - None.
+
+### 2026-02-23 - PR-18-TASK-BOARD-004 - Contract-governed persisted scheduler/event execution and run-link replay runner baseline
+
+1. Status: Done
+2. Owner: codex
+3. Summary: Implemented persisted scheduler/event execution depth by adding new contract-governed scheduler actions for processing persisted automation/heartbeat run envelopes and replaying recorded run-link events, wiring a runtime scheduler gateway that dispatches persisted events through existing automation/heartbeat gateways under before/after middleware with deterministic typed rejection/failure shaping and sequence-stamped event ledgering, and extending integration tests to verify task-board-linked outcomes plus idempotent replay behavior.
+4. Files changed:
+   - `packages/polar-domain/src/scheduler-contracts.mjs`
+   - `packages/polar-domain/src/index.mjs`
+   - `packages/polar-runtime-core/src/scheduler-gateway.mjs`
+   - `packages/polar-runtime-core/src/index.mjs`
+   - `tests/runtime-core-scheduler-gateway.test.mjs`
+   - `docs/status/current-status.md`
+   - `docs/status/roadmap.md`
+   - `docs/implementation/implementation-program-overview.md`
+   - `docs/implementation/implementation-log.md`
+5. Validation performed:
+   - `node --test tests/runtime-core-scheduler-gateway.test.mjs tests/runtime-core-task-board-run-linker.test.mjs tests/runtime-core-automation-gateway.test.mjs tests/runtime-core-heartbeat-gateway.test.mjs`
+   - `npm run check:boundaries`
+   - `npm test`
+6. Follow-up:
+   - Connect scheduler gateway inputs to durable queue/storage adapters so replay survives process restarts without in-memory ledgers.
+   - Expose scheduler event/replay diagnostics through control-plane/Web UI operator views and alert routing policies.
+7. Blockers:
+   - None.
+
+### 2026-02-23 - PR-19-COST-TELEMETRY-001 - Provider usage telemetry collector and control-plane list/summary baseline
+
+1. Status: Done
+2. Owner: codex
+3. Summary: Implemented a Phase 8 observability baseline by adding a new contract-governed usage telemetry list surface (`runtime.usage-telemetry.list`) with strict typed filters and summary payloads, a runtime usage telemetry collector with deterministic sequence/timestamp capture and summary aggregation (`fallbackUsed`, duration, optional model lane and estimated cost), provider-gateway telemetry emission on both success and terminal failure paths (including fallback attempt lineage), and control-plane service proxy wiring plus health visibility for usage telemetry counts.
+4. Files changed:
+   - `packages/polar-domain/src/usage-telemetry-contracts.mjs`
+   - `packages/polar-domain/src/index.mjs`
+   - `packages/polar-runtime-core/src/provider-gateway.mjs`
+   - `packages/polar-runtime-core/src/usage-telemetry.mjs`
+   - `packages/polar-runtime-core/src/usage-telemetry-gateway.mjs`
+   - `packages/polar-runtime-core/src/index.mjs`
+   - `packages/polar-control-plane/src/index.mjs`
+   - `tests/runtime-core-usage-telemetry-gateway.test.mjs`
+   - `tests/control-plane-service.test.mjs`
+   - `docs/status/current-status.md`
+   - `docs/status/roadmap.md`
+   - `docs/implementation/implementation-program-overview.md`
+   - `docs/implementation/implementation-log.md`
+5. Validation performed:
+   - `node --test tests/runtime-core-provider-gateway.test.mjs tests/runtime-core-usage-telemetry-gateway.test.mjs tests/control-plane-service.test.mjs`
+   - `npm run check:boundaries`
+   - `npm test`
+   - Dev-only control-plane smoke artifact generated at `file:///C:/Users/JAMES~1.DES/AppData/Local/Temp/polar-usage-telemetry-devtools-result.html` via `node %TEMP%\\polar-usage-telemetry-devtools-smoke.mjs %TEMP%\\polar-usage-telemetry-devtools-result.html` and verified with Chrome DevTools MCP (`telemetryStatus=ok`, `returnedCount=0`, `totalOperations=0`, `contractCount=18`, `usageTelemetryCount=0`).
+6. Follow-up:
+   - Expose usage telemetry list/summary outputs in operator Web UI dashboards and alert routing views.
+   - Add budget-policy enforcement actions that consume usage telemetry and gate high-frequency automation lanes.
+7. Blockers:
+   - None.
+
+### 2026-02-23 - PR-08-HANDOFF-TELEMETRY-006 - Scoped routing telemetry filters and continuity fixture expansion
+
+1. Status: Done
+2. Owner: codex
+3. Summary: Extended handoff routing telemetry list surfaces with strict typed filters (`sessionId`, `workspaceId`, `sourceAgentId`, `status`) across domain contracts, runtime collector filtering, and runtime telemetry gateway request validation; enriched emitted telemetry events with stable run-context fields (`sessionId`, `workspaceId`, `userId`) so operator telemetry consumers can segment fanout/fanin flows deterministically; and expanded handoff telemetry regression fixtures to assert cross-run session continuity pagination plus scoped filtering behavior.
+4. Files changed:
+   - `packages/polar-domain/src/handoff-telemetry-contracts.mjs`
+   - `packages/polar-domain/src/index.mjs`
+   - `packages/polar-runtime-core/src/handoff-routing-telemetry.mjs`
+   - `packages/polar-runtime-core/src/handoff-telemetry-gateway.mjs`
+   - `tests/runtime-core-handoff-routing-telemetry.test.mjs`
+   - `tests/runtime-core-handoff-telemetry-gateway.test.mjs`
+   - `docs/status/current-status.md`
+   - `docs/status/roadmap.md`
+   - `docs/implementation/implementation-program-overview.md`
+   - `docs/implementation/implementation-log.md`
+5. Validation performed:
+   - `node --test tests/runtime-core-handoff-routing-telemetry.test.mjs tests/runtime-core-handoff-telemetry-gateway.test.mjs`
+   - `npm run check:boundaries`
+   - `npm test`
+6. Follow-up:
+   - Wire scoped handoff telemetry filters into operator Web UI dashboards and alert-routing policy views.
+   - Add orchestrator integration fixtures that assert routing diagnostics and telemetry continuity across policy/budget context overlays.
+7. Blockers:
+   - None.
+
+### 2026-02-23 - PR-MAINT-SECURITY-AUDIT-003 - Transitive vulnerability remediation and gitignore hygiene
+
+1. Status: Done
+2. Owner: codex
+3. Summary: Resolved `npm audit` high-severity transitive vulnerabilities in the `gaxios -> rimraf -> glob -> minimatch` chain by adding root dependency overrides and regenerating lock resolution, resulting in `0` reported vulnerabilities; also expanded repository `.gitignore` coverage for Node dependency/cache artifacts, build outputs, and future `.env*` secret files while preserving common template env files.
+4. Files changed:
+   - `package.json`
+   - `package-lock.json`
+   - `.gitignore`
+   - `docs/implementation/implementation-log.md`
+5. Validation performed:
+   - `npm audit --json`
+   - `npm run check`
+6. Follow-up:
+   - Re-run `npm audit` during dependency bumps and keep root overrides aligned with upstream package releases.
+7. Blockers:
+   - None.
+
 ### 2026-02-23 - PR-MAINT-PI-MONO-TRIM-002 - Remove local pi-mono snapshot and pin runtime package dependencies
 
 1. Status: Done

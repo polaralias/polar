@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Last updated: 2026-02-22
+Last updated: 2026-02-23
 
 ## Purpose
 
@@ -68,9 +68,10 @@ Implement in this order unless explicitly directed otherwise:
 
 ## Agent Message Format
 
-1. End every user-facing message with a progress percentage based on completion of the entire project in the format: `Progress: NN%`.
-2. Calculate the percentage of work completed so far against what is outstanding.
-3. Use `Progress: 100%` only when the entire platform is fully complete with all code built, tested and completed.
+1. End every user-facing message with a progress percentage based on **overall platform/project completion only** in the format: `Progress: NN%`.
+2. Do **not** report progress for the current task, PR, phase, chain-of-thought, or review stage; do **not** reset progress to `0%` for each new task/PR.
+3. Calculate the percentage against total project scope completed so far versus total project scope remaining.
+4. Use `Progress: 100%` only when the entire platform is fully complete with all code built, tested and completed.
 
 ## Documentation Reconciliation Lessons (2026-02-22)
 

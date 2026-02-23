@@ -10,10 +10,10 @@ Last updated: 2026-02-23
 | Foundation Track B: OpenClaw Concept Adaptation | In Progress | Heartbeat, memory retrieval, automation, and fallback patterns are implemented as Polar-native gateway contracts | Add persistence/scheduler depth and richer observability surfaces for automation + run health |
 | Phase 1: Deterministic Core | In Progress | Contract registry + typed middleware/audit pipelines are implemented and enforced in runtime gateways | Complete hardened deployment defaults and maintain non-bypass regression coverage as new capabilities land |
 | Phase 2: Unified Chat Surface | In Progress | Web/Telegram/Slack/Discord ingress normalization, native-thread/session continuity parity coverage, typed ingress health-check baseline, and control-plane ingress diagnostics proxying are implemented on one canonical contract path | Integrate ingress health diagnostics into operator UI + alert workflows and extend end-to-end channel continuity visibility |
-| Phase 3: Multi-Agent And Profiles | In Progress | Typed routing policy + handoff gateway, contract-governed profile pinning/resolution baseline, resolver-aware automation/heartbeat gateway entry handling, resolver-aware handoff routing constraints, typed handoff routing diagnostics, middleware-based handoff routing telemetry collector baseline, contract-governed telemetry listing gateway with control-plane proxying, and delegated handoff profile-scoped capability projection support are implemented | Complete operator-facing telemetry views/alerts and end-to-end fanout/fanin integration on top of resolver-aware routing/projection baselines |
+| Phase 3: Multi-Agent And Profiles | In Progress | Typed routing policy + handoff gateway, contract-governed profile pinning/resolution baseline, resolver-aware automation/heartbeat gateway entry handling, resolver-aware handoff routing constraints, typed handoff routing diagnostics, middleware-based handoff routing telemetry collector baseline, contract-governed telemetry listing gateway with control-plane proxying plus scoped telemetry filters (`sessionId`, `workspaceId`, `sourceAgentId`, `status`) and continuity fixtures, contract-governed telemetry alert synthesis for handoff/usage collector windows, and delegated handoff profile-scoped capability projection support are implemented | Complete operator-facing telemetry views/alerts and full orchestrator fanout/fanin integration on top of resolver-aware routing/projection baselines |
 | Phase 4: Extension Fabric | In Progress | Skills/MCP/plugins install-sync/lifecycle/execute governance baselines are implemented | Complete operational trust/revocation workflows and deeper governance telemetry |
-| Phase 5: Automation, Heartbeat, And Memory | In Progress | Typed heartbeat tick, automation draft/run, and memory search/get gateways are implemented | Add persisted scheduler/event execution, memory write/compaction, and richer retry/dead-letter orchestration |
-| Phase 6: Polar Web UI Control Plane | In Progress | Control-plane config API, chat-management backend, task-board runtime/live-update gateways, automation/heartbeat gateway run-to-task linkage wiring, and task replay ingestion endpoint are implemented | Deliver operator Web UI surfaces and complete persisted scheduler/event run-link source ingestion |
+| Phase 5: Automation, Heartbeat, And Memory | In Progress | Typed heartbeat tick, automation draft/run, memory search/get gateways, and contract-governed persisted scheduler/event processing + run-link replay orchestration baseline are implemented | Harden durable scheduler queue/storage integration, memory write/compaction, and richer retry/dead-letter orchestration |
+| Phase 6: Polar Web UI Control Plane | In Progress | Control-plane config API, chat-management backend, task-board runtime/live-update gateways, automation/heartbeat gateway run-to-task linkage wiring, task replay ingestion endpoint, persisted scheduler/event run-link source ingestion baseline, and contract-governed usage telemetry list/summary + telemetry alert proxy baseline are implemented | Deliver operator Web UI surfaces and telemetry dashboard/alert integration on top of shipped backend diagnostics |
 | Phase 7: Production Hardening | In Progress | Multiple hardening sweeps and policy-bypass regressions are in place | Complete security/SLO/canary rollout milestones and production hardening checklists |
 
 ## Foundation Track A: pi-mono Wrap Layer
@@ -94,7 +94,7 @@ Exit criteria:
 ## Phase 5: Automation, Heartbeat, And Memory
 
 1. Extend chat-configured automation and heartbeat from gateway baseline to persisted runtime control.
-2. Add proactive schedule/event runners and queue integration.
+2. Harden proactive schedule/event runners with durable queue/storage integration.
 3. Implement structured memory write/recall flows with compaction-aware persistence.
 4. Deepen idempotency, retry, and dead-letter controls.
 
@@ -109,8 +109,8 @@ Exit criteria:
 
 1. Complete task-board operator surfaces on top of shipped assignment/status contract backends.
 2. Ship operator management surfaces for channels, extensions, automations, policies, and runs.
-3. Extend live runtime run-link ingestion from gateway-level hooks and replay endpoint to persisted scheduler/event execution sources.
-4. Ship usage/cost and fallback visibility with actionable diagnostics.
+3. Surface persisted scheduler/event run execution and replay diagnostics in operator UI workflows.
+4. Expand shipped usage/cost telemetry list/summary + alert APIs into operator-visible dashboards and actionable diagnostics.
 
 Exit criteria:
 

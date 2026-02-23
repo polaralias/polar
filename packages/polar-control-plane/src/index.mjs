@@ -9,6 +9,9 @@ import {
   createControlPlaneGateway,
   createHandoffRoutingTelemetryCollector,
   createHandoffRoutingTelemetryGateway,
+  createTelemetryAlertGateway,
+  createUsageTelemetryCollector,
+  createUsageTelemetryGateway,
   createMiddlewarePipeline,
   createProfileResolutionGateway,
   createTaskBoardGateway,
@@ -17,7 +20,9 @@ import {
   registerControlPlaneContracts,
   registerHandoffRoutingTelemetryContract,
   registerProfileResolutionContract,
+  registerTelemetryAlertContract,
   registerTaskBoardContracts,
+  registerUsageTelemetryContract,
 } from "../../polar-runtime-core/src/index.mjs";
 
 /**
@@ -40,6 +45,7 @@ import {
  *     discord?: () => unknown|Promise<unknown>
  *   },
  *   handoffRoutingTelemetryCollector?: ReturnType<import("../../polar-runtime-core/src/handoff-routing-telemetry.mjs").createHandoffRoutingTelemetryCollector>,
+ *   usageTelemetryCollector?: ReturnType<import("../../polar-runtime-core/src/usage-telemetry.mjs").createUsageTelemetryCollector>,
  *   auditSink?: (event: unknown) => Promise<void>|void,
  *   now?: () => number
  * }} [config]
@@ -52,10 +58,17 @@ export function createControlPlaneService(config = {}) {
   registerChatManagementContracts(contractRegistry);
   registerTaskBoardContracts(contractRegistry);
   registerHandoffRoutingTelemetryContract(contractRegistry);
+  registerUsageTelemetryContract(contractRegistry);
+  registerTelemetryAlertContract(contractRegistry);
 
   const handoffRoutingTelemetryCollector =
     config.handoffRoutingTelemetryCollector ??
     createHandoffRoutingTelemetryCollector({
+      now: config.now,
+    });
+  const usageTelemetryCollector =
+    config.usageTelemetryCollector ??
+    createUsageTelemetryCollector({
       now: config.now,
     });
 
@@ -102,6 +115,15 @@ export function createControlPlaneService(config = {}) {
     middlewarePipeline,
     telemetryCollector: handoffRoutingTelemetryCollector,
   });
+  const usageTelemetryGateway = createUsageTelemetryGateway({
+    middlewarePipeline,
+    telemetryCollector: usageTelemetryCollector,
+  });
+  const telemetryAlertGateway = createTelemetryAlertGateway({
+    middlewarePipeline,
+    usageTelemetryCollector,
+    handoffTelemetryCollector: handoffRoutingTelemetryCollector,
+  });
   const profileResolutionGateway = createProfileResolutionGateway({
     middlewarePipeline,
     readConfigRecord: gateway.readConfigRecord,
@@ -116,6 +138,7 @@ export function createControlPlaneService(config = {}) {
       const replayKeys = taskBoardGateway.listAppliedReplayKeysState();
       const handoffRoutingTelemetryEvents =
         handoffRoutingTelemetryCollector.listState();
+      const usageTelemetryEvents = usageTelemetryCollector.listState();
       return Object.freeze({
         status: "ok",
         contractCount: contractRegistry.list().length,
@@ -125,6 +148,7 @@ export function createControlPlaneService(config = {}) {
         taskEventCount: taskEvents.length,
         taskReplayKeyCount: replayKeys.length,
         handoffRoutingTelemetryCount: handoffRoutingTelemetryEvents.length,
+        usageTelemetryCount: usageTelemetryEvents.length,
       });
     },
 
@@ -254,6 +278,22 @@ export function createControlPlaneService(config = {}) {
      */
     async listHandoffRoutingTelemetry(request = {}) {
       return handoffRoutingTelemetryGateway.listRoutingTelemetry(request);
+    },
+
+    /**
+     * @param {unknown} [request]
+     * @returns {Promise<Record<string, unknown>>}
+     */
+    async listUsageTelemetry(request = {}) {
+      return usageTelemetryGateway.listUsageTelemetry(request);
+    },
+
+    /**
+     * @param {unknown} [request]
+     * @returns {Promise<Record<string, unknown>>}
+     */
+    async listTelemetryAlerts(request = {}) {
+      return telemetryAlertGateway.listAlerts(request);
     },
   });
 }

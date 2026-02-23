@@ -4,9 +4,15 @@ import {
   enumField,
   jsonField,
   numberField,
+  stringField,
 } from "./runtime-contracts.mjs";
 
 export const HANDOFF_ROUTING_TELEMETRY_STATUSES = Object.freeze(["ok"]);
+export const HANDOFF_ROUTING_EVENT_STATUSES = Object.freeze([
+  "completed",
+  "failed",
+  "unknown",
+]);
 export const HANDOFF_ROUTING_TELEMETRY_PROFILE_RESOLUTION_STATUSES = Object.freeze([
   "resolved",
   "not_resolved",
@@ -41,6 +47,12 @@ export function createHandoffRoutingTelemetryContract(options = {}) {
             required: false,
           },
         ),
+        sessionId: stringField({ minLength: 1, required: false }),
+        workspaceId: stringField({ minLength: 1, required: false }),
+        sourceAgentId: stringField({ minLength: 1, required: false }),
+        status: enumField(HANDOFF_ROUTING_EVENT_STATUSES, {
+          required: false,
+        }),
       },
     }),
     outputSchema: createStrictObjectSchema({

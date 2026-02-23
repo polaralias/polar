@@ -10,13 +10,14 @@ test("control-plane service health reports contract and record counts", async ()
   const initialHealth = service.health();
   assert.deepEqual(initialHealth, {
     status: "ok",
-    contractCount: 17,
+    contractCount: 19,
     recordCount: 0,
     sessionCount: 0,
     taskCount: 0,
     taskEventCount: 0,
     taskReplayKeyCount: 0,
     handoffRoutingTelemetryCount: 0,
+    usageTelemetryCount: 0,
   });
 
   await service.upsertConfig({
@@ -29,13 +30,14 @@ test("control-plane service health reports contract and record counts", async ()
 
   assert.deepEqual(service.health(), {
     status: "ok",
-    contractCount: 17,
+    contractCount: 19,
     recordCount: 1,
     sessionCount: 0,
     taskCount: 0,
     taskEventCount: 0,
     taskReplayKeyCount: 0,
     handoffRoutingTelemetryCount: 0,
+    usageTelemetryCount: 0,
   });
 });
 
@@ -445,13 +447,14 @@ test("control-plane service proxies task-board operations", async () => {
 
   assert.deepEqual(service.health(), {
     status: "ok",
-    contractCount: 17,
+    contractCount: 19,
     recordCount: 0,
     sessionCount: 0,
     taskCount: 2,
     taskEventCount: 4,
     taskReplayKeyCount: 1,
     handoffRoutingTelemetryCount: 0,
+    usageTelemetryCount: 0,
   });
 });
 
@@ -488,6 +491,110 @@ test("control-plane service proxies handoff routing telemetry list operations", 
   });
   assert.deepEqual(middlewareEvents, [
     "before:agent.handoff.routing-telemetry.list",
+    "after:ok",
+  ]);
+});
+
+test("control-plane service proxies usage telemetry list operations", async () => {
+  const middlewareEvents = [];
+  const service = createControlPlaneService({
+    middleware: [
+      {
+        id: "capture-usage-telemetry",
+        before(context) {
+          if (context.actionId === "runtime.usage-telemetry.list") {
+            middlewareEvents.push(`before:${context.actionId}`);
+          }
+        },
+        after(context) {
+          if (context.actionId === "runtime.usage-telemetry.list") {
+            middlewareEvents.push(`after:${context.output.status}`);
+          }
+        },
+      },
+    ],
+  });
+
+  const listed = await service.listUsageTelemetry({
+    traceId: "trace-usage-telemetry-1",
+    limit: 10,
+  });
+  assert.deepEqual(listed, {
+    status: "ok",
+    fromSequence: 1,
+    returnedCount: 0,
+    totalCount: 0,
+    items: [],
+    summary: {
+      totalOperations: 0,
+      completedCount: 0,
+      failedCount: 0,
+      fallbackCount: 0,
+      totalDurationMs: 0,
+      totalEstimatedCostUsd: 0,
+      byOperation: [],
+      byProvider: [],
+      byModelLane: [],
+    },
+  });
+  assert.deepEqual(middlewareEvents, [
+    "before:runtime.usage-telemetry.list",
+    "after:ok",
+  ]);
+});
+
+test("control-plane service proxies telemetry alert list operations", async () => {
+  const middlewareEvents = [];
+  const service = createControlPlaneService({
+    middleware: [
+      {
+        id: "capture-telemetry-alerts",
+        before(context) {
+          if (context.actionId === "runtime.telemetry.alerts.list") {
+            middlewareEvents.push(`before:${context.actionId}`);
+          }
+        },
+        after(context) {
+          if (context.actionId === "runtime.telemetry.alerts.list") {
+            middlewareEvents.push(`after:${context.output.status}`);
+          }
+        },
+      },
+    ],
+  });
+
+  const listed = await service.listTelemetryAlerts({
+    traceId: "trace-telemetry-alerts-1",
+    scope: "all",
+    minimumSampleSize: 1,
+  });
+
+  assert.deepEqual(listed, {
+    status: "ok",
+    evaluatedAtMs: listed.evaluatedAtMs,
+    scope: "all",
+    minimumSampleSize: 1,
+    alertCount: 0,
+    alerts: [],
+    usageWindow: {
+      totalOperations: 0,
+      failedCount: 0,
+      fallbackCount: 0,
+      totalDurationMs: 0,
+      averageDurationMs: 0,
+      sampleSizeSatisfied: false,
+    },
+    handoffWindow: {
+      evaluatedCount: 0,
+      failedCount: 0,
+      routeAdjustedCount: 0,
+      failureRate: 0,
+      routeAdjustedRate: 0,
+      sampleSizeSatisfied: false,
+    },
+  });
+  assert.deepEqual(middlewareEvents, [
+    "before:runtime.telemetry.alerts.list",
     "after:ok",
   ]);
 });
@@ -532,6 +639,27 @@ test("control-plane service preserves contract validation errors", async () => {
     async () =>
       service.listHandoffRoutingTelemetry({
         mode: "invalid",
+      }),
+    (error) =>
+      error instanceof ContractValidationError &&
+      error.code === "POLAR_CONTRACT_VALIDATION_ERROR",
+  );
+
+  await assert.rejects(
+    async () =>
+      service.listUsageTelemetry({
+        operation: "invalid",
+      }),
+    (error) =>
+      error instanceof ContractValidationError &&
+      error.code === "POLAR_CONTRACT_VALIDATION_ERROR",
+  );
+
+  await assert.rejects(
+    async () =>
+      service.listTelemetryAlerts({
+        usageFailureRateWarning: 0.7,
+        usageFailureRateCritical: 0.5,
       }),
     (error) =>
       error instanceof ContractValidationError &&

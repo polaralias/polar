@@ -27,12 +27,25 @@ export {
   createHandoffRoutingTelemetryGateway,
   registerHandoffRoutingTelemetryContract,
 } from "./handoff-telemetry-gateway.mjs";
+export { createUsageTelemetryCollector } from "./usage-telemetry.mjs";
+export {
+  createUsageTelemetryGateway,
+  registerUsageTelemetryContract,
+} from "./usage-telemetry-gateway.mjs";
+export {
+  createTelemetryAlertGateway,
+  registerTelemetryAlertContract,
+} from "./telemetry-alert-gateway.mjs";
 export { createHandoffGateway, registerHandoffContract } from "./handoff-gateway.mjs";
 export { createHeartbeatGateway, registerHeartbeatContract } from "./heartbeat-gateway.mjs";
 export { createExtensionGateway, registerExtensionContracts } from "./extension-gateway.mjs";
 export { createSkillInstallerGateway, registerSkillInstallerContract } from "./skill-installer-gateway.mjs";
 export { createMcpConnectorGateway, registerMcpConnectorContract } from "./mcp-connector-gateway.mjs";
 export { createMemoryGateway, registerMemoryContracts } from "./memory-gateway.mjs";
+export {
+  createSchedulerGateway,
+  registerSchedulerContracts,
+} from "./scheduler-gateway.mjs";
 export {
   createPluginInstallerGateway,
   registerPluginInstallerContract,

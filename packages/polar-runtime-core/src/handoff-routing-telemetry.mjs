@@ -1,10 +1,12 @@
 import {
   booleanField,
   ContractValidationError,
+  HANDOFF_ROUTING_EVENT_STATUSES,
   RuntimeExecutionError,
   createStrictObjectSchema,
   enumField,
   numberField,
+  stringField,
 } from "../../polar-domain/src/index.mjs";
 
 const listTelemetryRequestSchema = createStrictObjectSchema({
@@ -17,6 +19,12 @@ const listTelemetryRequestSchema = createStrictObjectSchema({
     }),
     routeAdjustedOnly: booleanField({ required: false }),
     profileResolutionStatus: enumField(["resolved", "not_resolved"], {
+      required: false,
+    }),
+    sessionId: stringField({ minLength: 1, required: false }),
+    workspaceId: stringField({ minLength: 1, required: false }),
+    sourceAgentId: stringField({ minLength: 1, required: false }),
+    status: enumField(HANDOFF_ROUTING_EVENT_STATUSES, {
       required: false,
     }),
   },
@@ -121,7 +129,7 @@ function toTelemetryEvent(context, sequence, now) {
         ? context.output.status
         : context.error
           ? "failed"
-          : "unknown",
+        : "unknown",
     requestedMode,
     resolvedMode,
     requestedTargetCount,
@@ -138,6 +146,15 @@ function toTelemetryEvent(context, sequence, now) {
 
   if (typeof context.input.targetAgentId === "string") {
     event.targetAgentId = context.input.targetAgentId;
+  }
+  if (typeof context.input.sessionId === "string") {
+    event.sessionId = context.input.sessionId;
+  }
+  if (typeof context.input.workspaceId === "string") {
+    event.workspaceId = context.input.workspaceId;
+  }
+  if (typeof context.input.userId === "string") {
+    event.userId = context.input.userId;
   }
 
   const profileId =
@@ -176,6 +193,12 @@ function filterEvents(events, request) {
   const profileResolutionStatus = /** @type {"resolved"|"not_resolved"|undefined} */ (
     request.profileResolutionStatus
   );
+  const sessionId = /** @type {string|undefined} */ (request.sessionId);
+  const workspaceId = /** @type {string|undefined} */ (request.workspaceId);
+  const sourceAgentId = /** @type {string|undefined} */ (request.sourceAgentId);
+  const status = /** @type {"completed"|"failed"|"unknown"|undefined} */ (
+    request.status
+  );
 
   return events.filter((event) => {
     if (mode !== undefined && event.resolvedMode !== mode) {
@@ -190,6 +213,18 @@ function filterEvents(events, request) {
       profileResolutionStatus !== undefined &&
       event.profileResolutionStatus !== profileResolutionStatus
     ) {
+      return false;
+    }
+    if (sessionId !== undefined && event.sessionId !== sessionId) {
+      return false;
+    }
+    if (workspaceId !== undefined && event.workspaceId !== workspaceId) {
+      return false;
+    }
+    if (sourceAgentId !== undefined && event.sourceAgentId !== sourceAgentId) {
+      return false;
+    }
+    if (status !== undefined && event.status !== status) {
       return false;
     }
 

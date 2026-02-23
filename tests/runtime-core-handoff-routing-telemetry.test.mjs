@@ -97,10 +97,28 @@ test("handoff routing telemetry collector captures resolver-aware routing events
   await gateway.execute({
     sourceAgentId: "primary",
     targetAgentId: "planner",
+    reason: "follow-up review",
+    sessionId: "session-1",
+    workspaceId: "workspace-1",
+    userId: "user-1",
+    defaultProfileId: "profile.global",
+    capabilityScope: {
+      allowedTools: ["search"],
+      maxToolCalls: 2,
+    },
+    payload: {
+      task: "follow-up",
+    },
+    preferredMode: "direct",
+  });
+
+  await gateway.execute({
+    sourceAgentId: "secondary",
+    targetAgentId: "planner",
     reason: "delegate if allowed",
     sessionId: "session-2",
     workspaceId: "workspace-2",
-    userId: "user-2",
+    userId: "user-3",
     defaultProfileId: "profile.global",
     capabilityScope: {
       allowedTools: ["search"],
@@ -114,10 +132,13 @@ test("handoff routing telemetry collector captures resolver-aware routing events
 
   const allEvents = telemetryCollector.listEvents();
   assert.deepEqual(allEvents.status, "ok");
-  assert.equal(allEvents.returnedCount, 2);
-  assert.equal(allEvents.totalCount, 2);
+  assert.equal(allEvents.returnedCount, 3);
+  assert.equal(allEvents.totalCount, 3);
   assert.equal(allEvents.nextFromSequence, undefined);
-  assert.equal(sinkEvents.length, 2);
+  assert.equal(sinkEvents.length, 3);
+  assert.equal(allEvents.items[0].sessionId, "session-1");
+  assert.equal(allEvents.items[0].workspaceId, "workspace-1");
+  assert.equal(allEvents.items[0].status, "completed");
 
   const fanoutOnly = telemetryCollector.listEvents({
     mode: "fanout-fanin",
@@ -133,6 +154,30 @@ test("handoff routing telemetry collector captures resolver-aware routing events
   });
   assert.equal(adjustedOnly.returnedCount, 1);
   assert.equal(adjustedOnly.items[0].sequence, 1);
+
+  const sessionScoped = telemetryCollector.listEvents({
+    sessionId: "session-1",
+    workspaceId: "workspace-1",
+    sourceAgentId: "primary",
+    status: "completed",
+    limit: 1,
+  });
+  assert.equal(sessionScoped.returnedCount, 1);
+  assert.equal(sessionScoped.totalCount, 2);
+  assert.equal(sessionScoped.nextFromSequence, 2);
+  assert.equal(sessionScoped.items[0].sequence, 1);
+
+  const sessionContinuation = telemetryCollector.listEvents({
+    sessionId: "session-1",
+    workspaceId: "workspace-1",
+    sourceAgentId: "primary",
+    status: "completed",
+    fromSequence: 2,
+  });
+  assert.equal(sessionContinuation.returnedCount, 1);
+  assert.equal(sessionContinuation.totalCount, 1);
+  assert.equal(sessionContinuation.nextFromSequence, undefined);
+  assert.equal(sessionContinuation.items[0].sequence, 2);
 });
 
 test("handoff routing telemetry collector captures not_resolved profile diagnostics on failed delegated handoff", async () => {
@@ -192,6 +237,16 @@ test("handoff routing telemetry collector list request is strictly validated", (
     () =>
       telemetryCollector.listEvents({
         mode: "invalid-mode",
+      }),
+    (error) =>
+      error instanceof ContractValidationError &&
+      error.code === "POLAR_CONTRACT_VALIDATION_ERROR",
+  );
+
+  assert.throws(
+    () =>
+      telemetryCollector.listEvents({
+        status: "invalid-status",
       }),
     (error) =>
       error instanceof ContractValidationError &&

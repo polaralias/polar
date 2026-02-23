@@ -1,18 +1,20 @@
 import {
-  booleanField,
   ContractValidationError,
-  HANDOFF_ROUTING_EVENT_STATUSES,
-  HANDOFF_ROUTING_TELEMETRY_ACTION,
   RuntimeExecutionError,
-  createHandoffRoutingTelemetryContract,
+  USAGE_TELEMETRY_ACTION,
+  USAGE_TELEMETRY_EVENT_STATUSES,
+  USAGE_TELEMETRY_MODEL_LANES,
+  USAGE_TELEMETRY_OPERATIONS,
   createStrictObjectSchema,
+  createUsageTelemetryContract,
   enumField,
+  booleanField,
   numberField,
   stringField,
 } from "../../polar-domain/src/index.mjs";
 
 const listRequestSchema = createStrictObjectSchema({
-  schemaId: "handoff.telemetry.gateway.list.request",
+  schemaId: "usage.telemetry.gateway.list.request",
   fields: {
     executionType: enumField(["tool", "handoff", "automation", "heartbeat"], {
       required: false,
@@ -20,19 +22,12 @@ const listRequestSchema = createStrictObjectSchema({
     traceId: stringField({ minLength: 1, required: false }),
     fromSequence: numberField({ min: 1, required: false }),
     limit: numberField({ min: 1, max: 500, required: false }),
-    mode: enumField(["direct", "delegate", "fanout-fanin"], {
-      required: false,
-    }),
-    routeAdjustedOnly: booleanField({ required: false }),
-    profileResolutionStatus: enumField(["resolved", "not_resolved"], {
-      required: false,
-    }),
-    sessionId: stringField({ minLength: 1, required: false }),
-    workspaceId: stringField({ minLength: 1, required: false }),
-    sourceAgentId: stringField({ minLength: 1, required: false }),
-    status: enumField(HANDOFF_ROUTING_EVENT_STATUSES, {
-      required: false,
-    }),
+    operation: enumField(USAGE_TELEMETRY_OPERATIONS, { required: false }),
+    providerId: stringField({ minLength: 1, required: false }),
+    requestedProviderId: stringField({ minLength: 1, required: false }),
+    status: enumField(USAGE_TELEMETRY_EVENT_STATUSES, { required: false }),
+    modelLane: enumField(USAGE_TELEMETRY_MODEL_LANES, { required: false }),
+    fallbackUsed: booleanField({ required: false }),
   },
 });
 
@@ -43,7 +38,7 @@ const listRequestSchema = createStrictObjectSchema({
 function validateRequest(request) {
   const validation = listRequestSchema.validate(request);
   if (!validation.ok) {
-    throw new ContractValidationError("Invalid handoff telemetry list request", {
+    throw new ContractValidationError("Invalid usage telemetry list request", {
       schemaId: listRequestSchema.schemaId,
       errors: validation.errors ?? [],
     });
@@ -55,14 +50,14 @@ function validateRequest(request) {
 /**
  * @param {ReturnType<import("./contract-registry.mjs").createContractRegistry>} contractRegistry
  */
-export function registerHandoffRoutingTelemetryContract(contractRegistry) {
+export function registerUsageTelemetryContract(contractRegistry) {
   if (
     !contractRegistry.has(
-      HANDOFF_ROUTING_TELEMETRY_ACTION.actionId,
-      HANDOFF_ROUTING_TELEMETRY_ACTION.version,
+      USAGE_TELEMETRY_ACTION.actionId,
+      USAGE_TELEMETRY_ACTION.version,
     )
   ) {
-    contractRegistry.register(createHandoffRoutingTelemetryContract());
+    contractRegistry.register(createUsageTelemetryContract());
   }
 }
 
@@ -73,10 +68,10 @@ export function registerHandoffRoutingTelemetryContract(contractRegistry) {
  *   defaultExecutionType?: "tool"|"handoff"|"automation"|"heartbeat"
  * }} config
  */
-export function createHandoffRoutingTelemetryGateway({
+export function createUsageTelemetryGateway({
   middlewarePipeline,
   telemetryCollector,
-  defaultExecutionType = "handoff",
+  defaultExecutionType = "tool",
 }) {
   if (
     typeof telemetryCollector !== "object" ||
@@ -93,7 +88,7 @@ export function createHandoffRoutingTelemetryGateway({
      * @param {unknown} [request]
      * @returns {Promise<Record<string, unknown>>}
      */
-    async listRoutingTelemetry(request = {}) {
+    async listUsageTelemetry(request = {}) {
       const parsed = validateRequest(request);
 
       return middlewarePipeline.run(
@@ -103,8 +98,8 @@ export function createHandoffRoutingTelemetryGateway({
               parsed.executionType
             ) ?? defaultExecutionType,
           traceId: /** @type {string|undefined} */ (parsed.traceId),
-          actionId: HANDOFF_ROUTING_TELEMETRY_ACTION.actionId,
-          version: HANDOFF_ROUTING_TELEMETRY_ACTION.version,
+          actionId: USAGE_TELEMETRY_ACTION.actionId,
+          version: USAGE_TELEMETRY_ACTION.version,
           input: (() => {
             const input = {};
             if (parsed.fromSequence !== undefined) {
@@ -113,26 +108,26 @@ export function createHandoffRoutingTelemetryGateway({
             if (parsed.limit !== undefined) {
               input.limit = parsed.limit;
             }
-            if (parsed.mode !== undefined) {
-              input.mode = parsed.mode;
+            if (parsed.operation !== undefined) {
+              input.operation = parsed.operation;
             }
-            if (parsed.routeAdjustedOnly !== undefined) {
-              input.routeAdjustedOnly = parsed.routeAdjustedOnly;
+            if (parsed.providerId !== undefined) {
+              input.providerId = parsed.providerId;
             }
-            if (parsed.profileResolutionStatus !== undefined) {
-              input.profileResolutionStatus = parsed.profileResolutionStatus;
-            }
-            if (parsed.sessionId !== undefined) {
-              input.sessionId = parsed.sessionId;
-            }
-            if (parsed.workspaceId !== undefined) {
-              input.workspaceId = parsed.workspaceId;
-            }
-            if (parsed.sourceAgentId !== undefined) {
-              input.sourceAgentId = parsed.sourceAgentId;
+            if (parsed.requestedProviderId !== undefined) {
+              input.requestedProviderId = parsed.requestedProviderId;
             }
             if (parsed.status !== undefined) {
               input.status = parsed.status;
+            }
+            if (parsed.modelLane !== undefined) {
+              input.modelLane = parsed.modelLane;
+            }
+            if (parsed.fallbackUsed !== undefined) {
+              input.fallbackUsed = parsed.fallbackUsed;
+            }
+            if (parsed.executionType !== undefined) {
+              input.executionType = parsed.executionType;
             }
             return input;
           })(),

@@ -119,6 +119,10 @@ test("handoff telemetry gateway lists collected events through middleware and co
   const listed = await telemetryGateway.listRoutingTelemetry({
     traceId: "trace-handoff-telemetry-list-1",
     routeAdjustedOnly: true,
+    sessionId: "session-1",
+    workspaceId: "workspace-1",
+    sourceAgentId: "primary",
+    status: "completed",
   });
 
   assert.deepEqual(listed, {
@@ -134,6 +138,9 @@ test("handoff telemetry gateway lists collected events through middleware and co
         actionId: "agent.handoff.execute",
         version: 1,
         sourceAgentId: "primary",
+        sessionId: "session-1",
+        workspaceId: "workspace-1",
+        userId: "user-1",
         targetAgentIds: ["research", "coder"],
         status: "completed",
         requestedMode: "fanout-fanin",
@@ -165,6 +172,16 @@ test("handoff telemetry gateway rejects invalid list request shapes", async () =
     async () =>
       telemetryGateway.listRoutingTelemetry({
         fromSequence: 0,
+      }),
+    (error) =>
+      error instanceof ContractValidationError &&
+      error.code === "POLAR_CONTRACT_VALIDATION_ERROR",
+  );
+
+  await assert.rejects(
+    async () =>
+      telemetryGateway.listRoutingTelemetry({
+        status: "not-a-status",
       }),
     (error) =>
       error instanceof ContractValidationError &&
