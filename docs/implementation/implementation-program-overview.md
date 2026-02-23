@@ -14,7 +14,7 @@ It is written as an execution guide for implementation agents and engineers.
 2. `pi-mono` is selected as wrapped runtime foundation and isolated to adapter boundaries.
 3. OpenClaw concept adoption decisions are documented (adopt/adapt/reject).
 4. Core runtime invariants are implemented across shipped runtime gateways (tool/handoff/automation/heartbeat coverage, typed contracts, and middleware audit paths), with ongoing hardening and full-surface rollout work remaining.
-5. Canonical ingress adapters for web/Telegram/Slack/Discord, channel-native thread/session continuity parity tests, typed ingress health-check baseline, control-plane ingress diagnostics proxying, and runtime profile pinning/resolution baseline are implemented; heartbeat and automation gateways now support resolver-driven profile fallback when explicit profile ids are absent, and handoff delegation paths support resolver-driven profile-scoped capability projection plus resolved-profile routing constraints, typed routing diagnostics, middleware-based routing telemetry collection, and contract-governed routing telemetry listing proxy surfaces with scoped filters (`sessionId`, `workspaceId`, `sourceAgentId`, `status`) and continuity fixtures; provider operations now emit usage telemetry events (fallback usage, execution duration, and optional model-lane/cost metadata) with contract-governed usage telemetry list/summary proxying plus cross-collector telemetry alert synthesis baseline, while control-plane config, chat-management, and task-board backend/live-update contract baselines are implemented with automation/heartbeat gateway run-link wiring plus contract-governed run-link replay ingestion into task-board events and a new contract-governed persisted scheduler/event processing + run-link replay orchestration gateway baseline; operator Web UI delivery, richer telemetry UI/alert integration depth, ingress alert workflow integration, and durable scheduler/queue storage hardening remain active roadmap items.
+5. Canonical ingress adapters for web/Telegram/Slack/Discord, channel-native thread/session continuity parity tests, typed ingress health-check baseline, control-plane ingress diagnostics proxying, and runtime profile pinning/resolution baseline are implemented; heartbeat and automation gateways now support resolver-driven profile fallback when explicit profile ids are absent, and handoff delegation paths support resolver-driven profile-scoped capability projection plus resolved-profile routing constraints, typed routing diagnostics, middleware-based routing telemetry collection, and contract-governed routing telemetry listing proxy surfaces with scoped filters (`sessionId`, `workspaceId`, `sourceAgentId`, `status`) and continuity fixtures; provider operations now emit usage telemetry events (fallback usage, execution duration, and optional model-lane/cost metadata) with contract-governed usage telemetry list/summary proxying plus cross-collector telemetry alert synthesis baseline, memory gateway surfaces now include contract-governed retrieval/write/compaction operations (`memory.search`, `memory.get`, `memory.upsert`, `memory.compact`) with deterministic degraded-provider shaping, while control-plane config, chat-management, and task-board backend/live-update contract baselines are implemented with automation/heartbeat gateway run-link wiring plus contract-governed run-link replay ingestion into task-board events and a contract-governed persisted scheduler/event processing gateway that now includes typed retry/dead-letter orchestration outputs, a concrete file-backed scheduler state-store adapter, contract-governed scheduler queue diagnostics proxying, and contract-governed queue run-action controls (`runtime.scheduler.event-queue.run-action`) through control-plane service surfaces; operator Web UI delivery, richer telemetry UI/alert integration depth, ingress alert workflow integration, and production-grade durable scheduler/queue backend + workflow hardening remain active roadmap items.
 
 ## Final Target State
 
@@ -210,7 +210,7 @@ If replacing `pi-mono`, only `polar-adapter-pi` and wiring code should change.
 
 ### Tasks
 
-1. Add memory entities and retrieval tools (`memory_search`, `memory_get`).
+1. Add memory entities and contract-governed retrieval/write/compaction tools (`memory_search`, `memory_get`, `memory_upsert`, `memory_compact`).
 2. Add degraded behavior contract when retrieval provider is unavailable.
 3. Implement pre-compaction memory persistence run.
 4. Implement heartbeat policy fields (cadence, active hours, delivery rules, model lane).
@@ -349,7 +349,7 @@ This is the target operator flow from clean deployment to fully configured runti
 1. Enable structured memory storage.
 2. Set retention policy and scope rules.
 3. Enable retrieval provider and fallback policy.
-4. Validate `memory_search` and `memory_get` behavior.
+4. Validate `memory_search`, `memory_get`, `memory_upsert`, and `memory_compact` behavior.
 
 ### Step 7: Configure Heartbeat
 

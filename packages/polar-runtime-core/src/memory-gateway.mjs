@@ -1,9 +1,11 @@
 import {
+  MEMORY_COMPACT_STRATEGIES,
   ContractValidationError,
   MEMORY_ACTIONS,
   MEMORY_SCOPES,
   PolarTypedError,
   RuntimeExecutionError,
+  booleanField,
   createMemoryContracts,
   createStrictObjectSchema,
   enumField,
@@ -43,6 +45,41 @@ const memoryGetRequestSchema = createStrictObjectSchema({
   },
 });
 
+const memoryUpsertRequestSchema = createStrictObjectSchema({
+  schemaId: "memory.gateway.upsert.request",
+  fields: {
+    executionType: enumField(["tool", "handoff", "automation", "heartbeat"], {
+      required: false,
+    }),
+    traceId: stringField({ minLength: 1, required: false }),
+    sessionId: stringField({ minLength: 1 }),
+    userId: stringField({ minLength: 1 }),
+    scope: enumField(MEMORY_SCOPES),
+    memoryId: stringField({ minLength: 1, required: false }),
+    record: jsonField(),
+    metadata: jsonField({ required: false }),
+  },
+});
+
+const memoryCompactRequestSchema = createStrictObjectSchema({
+  schemaId: "memory.gateway.compact.request",
+  fields: {
+    executionType: enumField(["tool", "handoff", "automation", "heartbeat"], {
+      required: false,
+    }),
+    traceId: stringField({ minLength: 1, required: false }),
+    sessionId: stringField({ minLength: 1 }),
+    userId: stringField({ minLength: 1 }),
+    scope: enumField(MEMORY_SCOPES),
+    strategy: enumField(MEMORY_COMPACT_STRATEGIES, {
+      required: false,
+    }),
+    maxRecords: numberField({ min: 1, max: 10_000, required: false }),
+    dryRun: booleanField({ required: false }),
+    metadata: jsonField({ required: false }),
+  },
+});
+
 const unavailableMessagePattern =
   /\b(unavailable|offline|unreachable|timeout|timed out|connection refused)\b/i;
 
@@ -67,6 +104,8 @@ function validateRequest(value, schemaId) {
   const schema = {
     [memorySearchRequestSchema.schemaId]: memorySearchRequestSchema,
     [memoryGetRequestSchema.schemaId]: memoryGetRequestSchema,
+    [memoryUpsertRequestSchema.schemaId]: memoryUpsertRequestSchema,
+    [memoryCompactRequestSchema.schemaId]: memoryCompactRequestSchema,
   }[schemaId];
 
   const validation = schema.validate(value);
@@ -186,6 +225,100 @@ function normalizeGetResult(value) {
 }
 
 /**
+ * @param {unknown} value
+ * @returns {value is number}
+ */
+function isNonNegativeInteger(value) {
+  return Number.isInteger(value) && /** @type {number} */ (value) >= 0;
+}
+
+/**
+ * @param {unknown} value
+ * @param {string|undefined} inputMemoryId
+ * @returns {{ memoryId: string, created?: boolean }}
+ */
+function normalizeUpsertResult(value, inputMemoryId) {
+  let memoryId = inputMemoryId;
+  /** @type {boolean|undefined} */
+  let created = undefined;
+
+  if (typeof value === "string" && value.length > 0) {
+    memoryId = value;
+  } else if (isPlainObject(value)) {
+    if (value.memoryId !== undefined) {
+      if (typeof value.memoryId !== "string" || value.memoryId.length === 0) {
+        throw new RuntimeExecutionError(
+          "Memory provider upsert result memoryId must be a non-empty string when provided",
+        );
+      }
+      memoryId = value.memoryId;
+    }
+    if (value.created !== undefined) {
+      if (typeof value.created !== "boolean") {
+        throw new RuntimeExecutionError(
+          "Memory provider upsert result created must be boolean when provided",
+        );
+      }
+      created = value.created;
+    }
+  } else {
+    throw new RuntimeExecutionError(
+      "Memory provider upsert result must be a non-empty string or plain object",
+    );
+  }
+
+  if (typeof memoryId !== "string" || memoryId.length === 0) {
+    throw new RuntimeExecutionError(
+      "Memory provider upsert result must include memoryId",
+    );
+  }
+
+  return {
+    memoryId,
+    ...(created !== undefined ? { created } : {}),
+  };
+}
+
+/**
+ * @param {unknown} value
+ * @returns {{ examinedCount: number, compactedCount: number, archivedCount: number }}
+ */
+function normalizeCompactResult(value) {
+  if (!isPlainObject(value)) {
+    throw new RuntimeExecutionError(
+      "Memory provider compact result must be a plain object",
+    );
+  }
+
+  if (!isNonNegativeInteger(value.examinedCount)) {
+    throw new RuntimeExecutionError(
+      "Memory provider compact result examinedCount must be a non-negative integer",
+    );
+  }
+
+  if (!isNonNegativeInteger(value.compactedCount)) {
+    throw new RuntimeExecutionError(
+      "Memory provider compact result compactedCount must be a non-negative integer",
+    );
+  }
+
+  if (
+    value.archivedCount !== undefined &&
+    !isNonNegativeInteger(value.archivedCount)
+  ) {
+    throw new RuntimeExecutionError(
+      "Memory provider compact result archivedCount must be a non-negative integer when provided",
+    );
+  }
+
+  return {
+    examinedCount: value.examinedCount,
+    compactedCount: value.compactedCount,
+    archivedCount: value.archivedCount ?? 0,
+  };
+}
+
+/**
  * @param {ReturnType<import("./contract-registry.mjs").createContractRegistry>} contractRegistry
  */
 export function registerMemoryContracts(contractRegistry) {
@@ -201,7 +334,9 @@ export function registerMemoryContracts(contractRegistry) {
  *   middlewarePipeline: ReturnType<import("./middleware-pipeline.mjs").createMiddlewarePipeline>,
  *   memoryProvider: {
  *     search: (request: Record<string, unknown>) => Promise<unknown>|unknown,
- *     get: (request: Record<string, unknown>) => Promise<unknown>|unknown
+ *     get: (request: Record<string, unknown>) => Promise<unknown>|unknown,
+ *     upsert: (request: Record<string, unknown>) => Promise<unknown>|unknown,
+ *     compact: (request: Record<string, unknown>) => Promise<unknown>|unknown
  *   },
  *   isProviderUnavailableError?: (error: unknown) => boolean,
  *   defaultExecutionType?: "tool"|"handoff"|"automation"|"heartbeat"
@@ -217,10 +352,12 @@ export function createMemoryGateway({
     typeof memoryProvider !== "object" ||
     memoryProvider === null ||
     typeof memoryProvider.search !== "function" ||
-    typeof memoryProvider.get !== "function"
+    typeof memoryProvider.get !== "function" ||
+    typeof memoryProvider.upsert !== "function" ||
+    typeof memoryProvider.compact !== "function"
   ) {
     throw new RuntimeExecutionError(
-      "memoryProvider must expose search(request) and get(request)",
+      "memoryProvider must expose search(request), get(request), upsert(request), and compact(request)",
     );
   }
 
@@ -400,6 +537,181 @@ export function createMemoryGateway({
             }
 
             throw new RuntimeExecutionError("Memory get failed", {
+              cause: toErrorMessage(error),
+            });
+          }
+        },
+      );
+    },
+
+    /**
+     * @param {unknown} request
+     * @returns {Promise<Record<string, unknown>>}
+     */
+    async upsert(request) {
+      const validatedRequest = validateRequest(
+        request,
+        memoryUpsertRequestSchema.schemaId,
+      );
+
+      return middlewarePipeline.run(
+        {
+          executionType:
+            /** @type {"tool"|"handoff"|"automation"|"heartbeat"|undefined} */ (
+              validatedRequest.executionType
+            ) ?? defaultExecutionType,
+          traceId: /** @type {string|undefined} */ (validatedRequest.traceId),
+          actionId: MEMORY_ACTIONS.upsert.actionId,
+          version: MEMORY_ACTIONS.upsert.version,
+          input: {
+            sessionId: validatedRequest.sessionId,
+            userId: validatedRequest.userId,
+            scope: validatedRequest.scope,
+            ...(validatedRequest.memoryId !== undefined
+              ? { memoryId: validatedRequest.memoryId }
+              : {}),
+            record: validatedRequest.record,
+            ...(validatedRequest.metadata !== undefined
+              ? { metadata: validatedRequest.metadata }
+              : {}),
+          },
+        },
+        async (input) => {
+          try {
+            const providerResponse = normalizeUpsertResult(
+              await memoryProvider.upsert({
+                sessionId: input.sessionId,
+                userId: input.userId,
+                scope: input.scope,
+                memoryId: input.memoryId,
+                record: input.record,
+                metadata: input.metadata,
+              }),
+              /** @type {string|undefined} */ (input.memoryId),
+            );
+
+            return {
+              status: "completed",
+              sessionId: input.sessionId,
+              userId: input.userId,
+              scope: input.scope,
+              memoryId: providerResponse.memoryId,
+              providerStatus: "available",
+              ...(providerResponse.created !== undefined
+                ? { created: providerResponse.created }
+                : {}),
+            };
+          } catch (error) {
+            if (isProviderUnavailableError(error)) {
+              return {
+                status: "degraded",
+                sessionId: input.sessionId,
+                userId: input.userId,
+                scope: input.scope,
+                ...(input.memoryId !== undefined
+                  ? { memoryId: input.memoryId }
+                  : {}),
+                providerStatus: "unavailable",
+                degradedReason: toErrorMessage(error),
+              };
+            }
+
+            if (error instanceof PolarTypedError) {
+              throw error;
+            }
+
+            throw new RuntimeExecutionError("Memory upsert failed", {
+              cause: toErrorMessage(error),
+            });
+          }
+        },
+      );
+    },
+
+    /**
+     * @param {unknown} request
+     * @returns {Promise<Record<string, unknown>>}
+     */
+    async compact(request) {
+      const validatedRequest = validateRequest(
+        request,
+        memoryCompactRequestSchema.schemaId,
+      );
+
+      return middlewarePipeline.run(
+        {
+          executionType:
+            /** @type {"tool"|"handoff"|"automation"|"heartbeat"|undefined} */ (
+              validatedRequest.executionType
+            ) ?? defaultExecutionType,
+          traceId: /** @type {string|undefined} */ (validatedRequest.traceId),
+          actionId: MEMORY_ACTIONS.compact.actionId,
+          version: MEMORY_ACTIONS.compact.version,
+          input: {
+            sessionId: validatedRequest.sessionId,
+            userId: validatedRequest.userId,
+            scope: validatedRequest.scope,
+            strategy:
+              /** @type {"summarize"|"deduplicate"|undefined} */ (
+                validatedRequest.strategy
+              ) ?? "summarize",
+            ...(validatedRequest.maxRecords !== undefined
+              ? { maxRecords: validatedRequest.maxRecords }
+              : {}),
+            ...(validatedRequest.dryRun !== undefined
+              ? { dryRun: validatedRequest.dryRun }
+              : {}),
+            ...(validatedRequest.metadata !== undefined
+              ? { metadata: validatedRequest.metadata }
+              : {}),
+          },
+        },
+        async (input) => {
+          try {
+            const providerResponse = normalizeCompactResult(
+              await memoryProvider.compact({
+                sessionId: input.sessionId,
+                userId: input.userId,
+                scope: input.scope,
+                strategy: input.strategy,
+                maxRecords: input.maxRecords,
+                dryRun: input.dryRun,
+                metadata: input.metadata,
+              }),
+            );
+
+            return {
+              status: "completed",
+              sessionId: input.sessionId,
+              userId: input.userId,
+              scope: input.scope,
+              strategy: input.strategy,
+              examinedCount: providerResponse.examinedCount,
+              compactedCount: providerResponse.compactedCount,
+              archivedCount: providerResponse.archivedCount,
+              providerStatus: "available",
+            };
+          } catch (error) {
+            if (isProviderUnavailableError(error)) {
+              return {
+                status: "degraded",
+                sessionId: input.sessionId,
+                userId: input.userId,
+                scope: input.scope,
+                strategy: input.strategy,
+                examinedCount: 0,
+                compactedCount: 0,
+                archivedCount: 0,
+                providerStatus: "unavailable",
+                degradedReason: toErrorMessage(error),
+              };
+            }
+
+            if (error instanceof PolarTypedError) {
+              throw error;
+            }
+
+            throw new RuntimeExecutionError("Memory compact failed", {
               cause: toErrorMessage(error),
             });
           }

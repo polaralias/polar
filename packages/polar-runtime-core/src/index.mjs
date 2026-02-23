@@ -46,6 +46,7 @@ export {
   createSchedulerGateway,
   registerSchedulerContracts,
 } from "./scheduler-gateway.mjs";
+export { createFileSchedulerStateStore } from "./scheduler-state-store-file.mjs";
 export {
   createPluginInstallerGateway,
   registerPluginInstallerContract,

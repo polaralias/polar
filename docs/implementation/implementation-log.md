@@ -28,6 +28,110 @@ Use this section for currently in-flight work. Move items to `Completed Items` w
 
 Record completed work in reverse chronological order (newest first).
 
+### 2026-02-23 - PR-13-MEMORY-HARDEN-002 - Contract-governed memory upsert/compaction gateway baseline
+
+1. Status: Done
+2. Owner: codex
+3. Summary: Extended the Phase 5 memory service baseline by adding new Polar-owned typed contracts for `memory.upsert` and `memory.compact`, implementing runtime-core memory gateway execution paths for both operations through before/after middleware with strict request/result validation, and adding deterministic degraded-provider shaping and provider-payload normalization/error handling for write and compaction flows so no untyped or bypassed memory operation reaches runtime boundaries.
+4. Files changed:
+   - `packages/polar-domain/src/memory-contracts.mjs`
+   - `packages/polar-domain/src/index.mjs`
+   - `packages/polar-runtime-core/src/memory-gateway.mjs`
+   - `tests/runtime-core-memory-gateway.test.mjs`
+   - `docs/status/current-status.md`
+   - `docs/status/roadmap.md`
+   - `docs/implementation/implementation-program-overview.md`
+   - `docs/implementation/implementation-log.md`
+5. Validation performed:
+   - `node --test tests/runtime-core-memory-gateway.test.mjs`
+   - `npm run check`
+6. Follow-up:
+   - Wire memory gateway write/compaction operations to durable provider-backed persistence adapters and compaction policies.
+   - Expose memory write/compaction operational controls and diagnostics through control-plane/Web UI workflows.
+7. Blockers:
+   - None.
+
+### 2026-02-23 - PR-18-SCHEDULER-HARDEN-007 - Contract-governed scheduler queue run-action controls and durable dismissal hooks
+
+1. Status: Done
+2. Owner: codex
+3. Summary: Extended scheduler governance with a new contract-registered queue run-action surface (`runtime.scheduler.event-queue.run-action`) that executes through before/after middleware, implemented typed queue-item dismissal for `retry` and `dead_letter` queues in scheduler runtime gateway, added durable file-state-store removal hooks (`removeRetryEvent`, `removeDeadLetterEvent`) so queue actions persist across restarts, and wired control-plane service proxying for operator-facing queue action invocation under the same contract/policy/audit path.
+4. Files changed:
+   - `packages/polar-domain/src/scheduler-contracts.mjs`
+   - `packages/polar-domain/src/index.mjs`
+   - `packages/polar-runtime-core/src/scheduler-gateway.mjs`
+   - `packages/polar-runtime-core/src/scheduler-state-store-file.mjs`
+   - `packages/polar-control-plane/src/index.mjs`
+   - `tests/runtime-core-scheduler-gateway.test.mjs`
+   - `tests/runtime-core-scheduler-state-store-file.test.mjs`
+   - `tests/control-plane-service.test.mjs`
+   - `docs/status/current-status.md`
+   - `docs/status/roadmap.md`
+   - `docs/implementation/implementation-program-overview.md`
+   - `docs/implementation/implementation-log.md`
+5. Validation performed:
+   - `node --test tests/runtime-core-scheduler-gateway.test.mjs tests/runtime-core-scheduler-state-store-file.test.mjs tests/control-plane-service.test.mjs`
+   - `npm run check`
+   - Dev-only scheduler queue action smoke artifact generated at `file:///C:/Users/JAMES~1.DES/AppData/Local/Temp/polar-scheduler-queue-action-devtools-result.html` via `node - %TEMP%\\polar-scheduler-queue-action-devtools-result.html` and verified with Chrome DevTools MCP (`smoke=ok`, `actionStatus=applied`, `queueCount=0`, `contractCount=23`).
+6. Follow-up:
+   - Expand queue run-actions beyond dismiss (for example, operator-approved requeue/retry-now) with explicit policy gating.
+   - Surface scheduler queue action controls in operator Web UI workflows with alert-routing integration.
+7. Blockers:
+   - None.
+
+### 2026-02-23 - PR-18-SCHEDULER-HARDEN-006 - File-backed scheduler state-store adapter and control-plane queue diagnostics proxy baseline
+
+1. Status: Done
+2. Owner: codex
+3. Summary: Implemented a concrete durable scheduler state-store adapter (`createFileSchedulerStateStore`) that persists processed/retry/dead-letter queue records with strict event-shape validation and deterministic serialized writes, extended scheduler contracts/gateway with a contract-governed queue diagnostics surface (`runtime.scheduler.event-queue.list`) including typed filters and summary outputs, and wired control-plane service proxying so operator surfaces can query scheduler retry/dead-letter diagnostics through the same middleware and contract enforcement path.
+4. Files changed:
+   - `packages/polar-domain/src/scheduler-contracts.mjs`
+   - `packages/polar-domain/src/index.mjs`
+   - `packages/polar-runtime-core/src/scheduler-gateway.mjs`
+   - `packages/polar-runtime-core/src/scheduler-state-store-file.mjs`
+   - `packages/polar-runtime-core/src/index.mjs`
+   - `packages/polar-control-plane/src/index.mjs`
+   - `tests/runtime-core-scheduler-gateway.test.mjs`
+   - `tests/runtime-core-scheduler-state-store-file.test.mjs`
+   - `tests/control-plane-service.test.mjs`
+   - `docs/status/current-status.md`
+   - `docs/status/roadmap.md`
+   - `docs/implementation/implementation-program-overview.md`
+   - `docs/implementation/implementation-log.md`
+5. Validation performed:
+   - `node --test tests/runtime-core-scheduler-state-store-file.test.mjs tests/runtime-core-scheduler-gateway.test.mjs tests/control-plane-service.test.mjs`
+   - `npm run check:boundaries`
+   - `npm test`
+6. Follow-up:
+   - Add production-grade scheduler durability adapters (database/queue-backed stores) and migration strategy from file-backed baseline.
+   - Integrate scheduler queue diagnostics into operator Web UI workflows and alert routing actions.
+7. Blockers:
+   - None.
+
+### 2026-02-23 - PR-18-SCHEDULER-HARDEN-005 - Typed retry/dead-letter orchestration and scheduler state-store hooks baseline
+
+1. Status: Done
+2. Owner: codex
+3. Summary: Extended the contract-governed persisted scheduler/event gateway with typed retry/dead-letter orchestration by adding explicit attempt/max-attempt/backoff/dead-letter policy inputs and disposition outputs, implementing deterministic retry scheduling and dead-letter routing for failed automation/heartbeat event execution, and adding pluggable scheduler state-store hooks (`hasProcessedEvent`, `storeProcessedEvent`, `storeRetryEvent`, `storeDeadLetterEvent`) so durable queue/storage adapters can be integrated without bypassing middleware, contracts, or audit flows.
+4. Files changed:
+   - `packages/polar-domain/src/scheduler-contracts.mjs`
+   - `packages/polar-domain/src/index.mjs`
+   - `packages/polar-runtime-core/src/scheduler-gateway.mjs`
+   - `tests/runtime-core-scheduler-gateway.test.mjs`
+   - `docs/status/current-status.md`
+   - `docs/status/roadmap.md`
+   - `docs/implementation/implementation-program-overview.md`
+   - `docs/implementation/implementation-log.md`
+5. Validation performed:
+   - `node --test tests/runtime-core-scheduler-gateway.test.mjs`
+   - `npm run check:boundaries`
+   - `npm test`
+6. Follow-up:
+   - Wire `schedulerStateStore` hooks to concrete durable queue/storage backends.
+   - Add control-plane and Web UI diagnostics for retry/dead-letter queue visibility and operations.
+7. Blockers:
+   - None.
+
 ### 2026-02-23 - PR-19-COST-TELEMETRY-002 - Contract-governed telemetry alert synthesis gateway and control-plane proxy baseline
 
 1. Status: Done

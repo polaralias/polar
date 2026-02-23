@@ -9,6 +9,7 @@ import {
   createControlPlaneGateway,
   createHandoffRoutingTelemetryCollector,
   createHandoffRoutingTelemetryGateway,
+  createSchedulerGateway,
   createTelemetryAlertGateway,
   createUsageTelemetryCollector,
   createUsageTelemetryGateway,
@@ -20,6 +21,7 @@ import {
   registerControlPlaneContracts,
   registerHandoffRoutingTelemetryContract,
   registerProfileResolutionContract,
+  registerSchedulerContracts,
   registerTelemetryAlertContract,
   registerTaskBoardContracts,
   registerUsageTelemetryContract,
@@ -46,6 +48,17 @@ import {
  *   },
  *   handoffRoutingTelemetryCollector?: ReturnType<import("../../polar-runtime-core/src/handoff-routing-telemetry.mjs").createHandoffRoutingTelemetryCollector>,
  *   usageTelemetryCollector?: ReturnType<import("../../polar-runtime-core/src/usage-telemetry.mjs").createUsageTelemetryCollector>,
+ *   schedulerStateStore?: {
+ *     hasProcessedEvent?: (request: { eventId: string }) => Promise<unknown>|unknown,
+ *     storeProcessedEvent?: (request: Record<string, unknown>) => Promise<unknown>|unknown,
+ *     storeRetryEvent?: (request: Record<string, unknown>) => Promise<unknown>|unknown,
+ *     storeDeadLetterEvent?: (request: Record<string, unknown>) => Promise<unknown>|unknown,
+ *     listProcessedEvents?: () => Promise<unknown>|unknown,
+ *     listRetryEvents?: () => Promise<unknown>|unknown,
+ *     listDeadLetterEvents?: () => Promise<unknown>|unknown,
+ *     removeRetryEvent?: (request: { eventId: string, sequence?: number }) => Promise<unknown>|unknown,
+ *     removeDeadLetterEvent?: (request: { eventId: string, sequence?: number }) => Promise<unknown>|unknown
+ *   },
  *   auditSink?: (event: unknown) => Promise<void>|void,
  *   now?: () => number
  * }} [config]
@@ -60,6 +73,7 @@ export function createControlPlaneService(config = {}) {
   registerHandoffRoutingTelemetryContract(contractRegistry);
   registerUsageTelemetryContract(contractRegistry);
   registerTelemetryAlertContract(contractRegistry);
+  registerSchedulerContracts(contractRegistry);
 
   const handoffRoutingTelemetryCollector =
     config.handoffRoutingTelemetryCollector ??
@@ -123,6 +137,11 @@ export function createControlPlaneService(config = {}) {
     middlewarePipeline,
     usageTelemetryCollector,
     handoffTelemetryCollector: handoffRoutingTelemetryCollector,
+  });
+  const schedulerGateway = createSchedulerGateway({
+    middlewarePipeline,
+    schedulerStateStore: config.schedulerStateStore,
+    now: config.now,
   });
   const profileResolutionGateway = createProfileResolutionGateway({
     middlewarePipeline,
@@ -294,6 +313,22 @@ export function createControlPlaneService(config = {}) {
      */
     async listTelemetryAlerts(request = {}) {
       return telemetryAlertGateway.listAlerts(request);
+    },
+
+    /**
+     * @param {unknown} [request]
+     * @returns {Promise<Record<string, unknown>>}
+     */
+    async listSchedulerEventQueue(request = {}) {
+      return schedulerGateway.listEventQueue(request);
+    },
+
+    /**
+     * @param {unknown} [request]
+     * @returns {Promise<Record<string, unknown>>}
+     */
+    async runSchedulerQueueAction(request = {}) {
+      return schedulerGateway.runQueueAction(request);
     },
   });
 }

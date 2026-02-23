@@ -10,7 +10,7 @@ test("control-plane service health reports contract and record counts", async ()
   const initialHealth = service.health();
   assert.deepEqual(initialHealth, {
     status: "ok",
-    contractCount: 19,
+    contractCount: 23,
     recordCount: 0,
     sessionCount: 0,
     taskCount: 0,
@@ -30,7 +30,7 @@ test("control-plane service health reports contract and record counts", async ()
 
   assert.deepEqual(service.health(), {
     status: "ok",
-    contractCount: 19,
+    contractCount: 23,
     recordCount: 1,
     sessionCount: 0,
     taskCount: 0,
@@ -447,7 +447,7 @@ test("control-plane service proxies task-board operations", async () => {
 
   assert.deepEqual(service.health(), {
     status: "ok",
-    contractCount: 19,
+    contractCount: 23,
     recordCount: 0,
     sessionCount: 0,
     taskCount: 2,
@@ -599,6 +599,165 @@ test("control-plane service proxies telemetry alert list operations", async () =
   ]);
 });
 
+test("control-plane service proxies scheduler queue diagnostics operations", async () => {
+  const middlewareEvents = [];
+  const service = createControlPlaneService({
+    schedulerStateStore: {
+      async listRetryEvents() {
+        return Object.freeze([
+          Object.freeze({
+            sequence: 2,
+            eventId: "event-retry-1",
+            source: "automation",
+            runId: "run-retry-1",
+            attempt: 1,
+            maxAttempts: 3,
+            retryAtMs: Date.UTC(2026, 1, 23, 12, 5, 0),
+            reason: "execution_failed_retry",
+          }),
+        ]);
+      },
+    },
+    middleware: [
+      {
+        id: "capture-scheduler-queue",
+        before(context) {
+          if (context.actionId === "runtime.scheduler.event-queue.list") {
+            middlewareEvents.push(`before:${context.actionId}`);
+          }
+        },
+        after(context) {
+          if (context.actionId === "runtime.scheduler.event-queue.list") {
+            middlewareEvents.push(`after:${context.output.status}`);
+          }
+        },
+      },
+    ],
+  });
+
+  const listed = await service.listSchedulerEventQueue({
+    traceId: "trace-scheduler-queue-1",
+    queue: "retry",
+    limit: 10,
+  });
+
+  assert.deepEqual(listed, {
+    status: "ok",
+    queue: "retry",
+    fromSequence: 0,
+    returnedCount: 1,
+    totalCount: 1,
+    items: [
+      {
+        sequence: 2,
+        eventId: "event-retry-1",
+        source: "automation",
+        runId: "run-retry-1",
+        attempt: 1,
+        maxAttempts: 3,
+        retryAtMs: Date.UTC(2026, 1, 23, 12, 5, 0),
+        reason: "execution_failed_retry",
+      },
+    ],
+    summary: {
+      queue: "retry",
+      totalCount: 1,
+      uniqueRunCount: 1,
+      sourceBreakdown: [
+        {
+          source: "automation",
+          count: 1,
+        },
+      ],
+      firstSequence: 2,
+      lastSequence: 2,
+      nextRetryAtMs: Date.UTC(2026, 1, 23, 12, 5, 0),
+      latestRetryAtMs: Date.UTC(2026, 1, 23, 12, 5, 0),
+    },
+  });
+  assert.deepEqual(middlewareEvents, [
+    "before:runtime.scheduler.event-queue.list",
+    "after:ok",
+  ]);
+});
+
+test("control-plane service proxies scheduler queue run-action operations", async () => {
+  const middlewareEvents = [];
+  const retryEvents = [
+    Object.freeze({
+      sequence: 2,
+      eventId: "event-retry-dismiss",
+      source: "automation",
+      runId: "run-retry-dismiss",
+      attempt: 1,
+      maxAttempts: 3,
+      retryAtMs: Date.UTC(2026, 1, 23, 12, 5, 0),
+      reason: "execution_failed_retry",
+    }),
+  ];
+  const service = createControlPlaneService({
+    now: () => Date.UTC(2026, 1, 23, 12, 10, 0),
+    schedulerStateStore: {
+      async listRetryEvents() {
+        return Object.freeze([...retryEvents]);
+      },
+      async removeRetryEvent(request) {
+        const index = retryEvents.findIndex(
+          (event) => event.eventId === request.eventId,
+        );
+        if (index < 0) {
+          return false;
+        }
+        retryEvents.splice(index, 1);
+        return true;
+      },
+    },
+    middleware: [
+      {
+        id: "capture-scheduler-queue-action",
+        before(context) {
+          if (context.actionId === "runtime.scheduler.event-queue.run-action") {
+            middlewareEvents.push(`before:${context.actionId}`);
+          }
+        },
+        after(context) {
+          if (context.actionId === "runtime.scheduler.event-queue.run-action") {
+            middlewareEvents.push(`after:${context.output.status}`);
+          }
+        },
+      },
+    ],
+  });
+
+  const actionResult = await service.runSchedulerQueueAction({
+    traceId: "trace-scheduler-queue-action-1",
+    queue: "retry",
+    action: "dismiss",
+    eventId: "event-retry-dismiss",
+  });
+  assert.deepEqual(actionResult, {
+    status: "applied",
+    queue: "retry",
+    action: "dismiss",
+    eventId: "event-retry-dismiss",
+    sequence: 2,
+    source: "automation",
+    runId: "run-retry-dismiss",
+    attempt: 1,
+    maxAttempts: 3,
+    appliedAtMs: Date.UTC(2026, 1, 23, 12, 10, 0),
+  });
+  assert.deepEqual(middlewareEvents, [
+    "before:runtime.scheduler.event-queue.run-action",
+    "after:applied",
+  ]);
+
+  const listed = await service.listSchedulerEventQueue({
+    queue: "retry",
+  });
+  assert.equal(listed.totalCount, 0);
+});
+
 test("control-plane service preserves contract validation errors", async () => {
   const service = createControlPlaneService();
 
@@ -660,6 +819,29 @@ test("control-plane service preserves contract validation errors", async () => {
       service.listTelemetryAlerts({
         usageFailureRateWarning: 0.7,
         usageFailureRateCritical: 0.5,
+      }),
+    (error) =>
+      error instanceof ContractValidationError &&
+      error.code === "POLAR_CONTRACT_VALIDATION_ERROR",
+  );
+
+  await assert.rejects(
+    async () =>
+      service.listSchedulerEventQueue({
+        queue: "retry",
+        status: "failed",
+      }),
+    (error) =>
+      error instanceof ContractValidationError &&
+      error.code === "POLAR_CONTRACT_VALIDATION_ERROR",
+  );
+
+  await assert.rejects(
+    async () =>
+      service.runSchedulerQueueAction({
+        queue: "processed",
+        action: "dismiss",
+        eventId: "event-invalid",
       }),
     (error) =>
       error instanceof ContractValidationError &&
