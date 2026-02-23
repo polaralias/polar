@@ -1,0 +1,13 @@
+{
+  "name": "@polar/adapter-pi",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@mariozechner/pi-agent-core": "^0.54.0",
+    "@mariozechner/pi-ai": "^0.54.0"
+  },
+  "exports": {
+    ".": "./src/index.mjs"
+  }
+}
