@@ -6,11 +6,37 @@ import {
   PROVIDER_ACTIONS,
   createProviderOperationContracts,
   createStrictObjectSchema,
+  booleanField,
   enumField,
+  jsonField,
   numberField,
   stringArrayField,
   stringField,
 } from "../../polar-domain/src/index.mjs";
+
+const commonGatewayFields = {
+  endpointMode: enumField(["responses", "chat", "anthropic_messages", "gemini_generate_content"], { required: false }),
+  system: stringField({ minLength: 1, required: false }),
+  messages: jsonField({ required: false }),
+  maxOutputTokens: numberField({ required: false, min: 1 }),
+  temperature: numberField({ required: false, min: 0 }),
+  topP: numberField({ required: false, min: 0 }),
+  topK: numberField({ required: false, min: 1 }),
+  presencePenalty: numberField({ required: false }),
+  frequencyPenalty: numberField({ required: false }),
+  seed: numberField({ required: false }),
+  stream: booleanField({ required: false }),
+  tools: jsonField({ required: false }),
+  toolChoice: jsonField({ required: false }),
+  responseFormat: jsonField({ required: false }),
+  reasoningEffort: stringField({ minLength: 1, required: false }),
+  reasoningSummary: stringField({ minLength: 1, required: false }),
+  verbosity: stringField({ minLength: 1, required: false }),
+  thinkingEnabled: booleanField({ required: false }),
+  thinkingBudget: numberField({ required: false, min: 1 }),
+  thinkingLevel: stringField({ minLength: 1, required: false }),
+  providerExtensions: jsonField({ required: false }),
+};
 
 const executionTypes = Object.freeze([...EXECUTION_TYPES]);
 
@@ -25,6 +51,7 @@ const generateRequestSchema = createStrictObjectSchema({
     prompt: stringField({ minLength: 1 }),
     modelLane: enumField(["local", "worker", "brain"], { required: false }),
     estimatedCostUsd: numberField({ min: 0, required: false }),
+    ...commonGatewayFields,
   },
 });
 
@@ -39,6 +66,7 @@ const streamRequestSchema = createStrictObjectSchema({
     prompt: stringField({ minLength: 1 }),
     modelLane: enumField(["local", "worker", "brain"], { required: false }),
     estimatedCostUsd: numberField({ min: 0, required: false }),
+    ...commonGatewayFields,
   },
 });
 
@@ -60,6 +88,27 @@ const embedRequestSchema = createStrictObjectSchema({
  * @typedef {Object} ProviderOperationInput
  * @property {string} providerId
  * @property {string} model
+ * @property {"responses"|"chat"|"anthropic_messages"|"gemini_generate_content"} [endpointMode]
+ * @property {string} [system]
+ * @property {unknown} [messages]
+ * @property {number} [maxOutputTokens]
+ * @property {number} [temperature]
+ * @property {number} [topP]
+ * @property {number} [topK]
+ * @property {number} [presencePenalty]
+ * @property {number} [frequencyPenalty]
+ * @property {number} [seed]
+ * @property {boolean} [stream]
+ * @property {unknown} [tools]
+ * @property {unknown} [toolChoice]
+ * @property {unknown} [responseFormat]
+ * @property {string} [reasoningEffort]
+ * @property {string} [reasoningSummary]
+ * @property {string} [verbosity]
+ * @property {boolean} [thinkingEnabled]
+ * @property {number} [thinkingBudget]
+ * @property {string} [thinkingLevel]
+ * @property {unknown} [providerExtensions]
  */
 
 /**
@@ -69,7 +118,20 @@ const embedRequestSchema = createStrictObjectSchema({
  */
 
 /**
+ * @typedef {Object} ProviderCapabilities
+ * @property {boolean} [supportsResponsesEndpoint]
+ * @property {boolean} [supportsChatCompletionsEndpoint]
+ * @property {boolean} [supportsNativeThinkingControl]
+ * @property {boolean} [supportsOpenAIReasoningObject]
+ * @property {boolean} [supportsOpenAIVerbosity]
+ * @property {boolean} [supportsTopK]
+ * @property {boolean} [requiresVersionHeader]
+ * @property {boolean} [supportsStatefulResponses]
+ */
+
+/**
  * @typedef {Object} ProviderEngine
+ * @property {ProviderCapabilities} [capabilities]
  * @property {(input: ProviderGenerateInput) => Promise<Record<string, unknown>>} generate
  * @property {(input: ProviderStreamInput) => Promise<Record<string, unknown>>} stream
  * @property {(input: ProviderEmbedInput) => Promise<Record<string, unknown>>} embed
@@ -223,7 +285,7 @@ export function createProviderGateway({
   middlewarePipeline,
   providers,
   resolveFallbackOrder,
-  usageTelemetryCollector = { async recordOperation() {} },
+  usageTelemetryCollector = { async recordOperation() { } },
   now = Date.now,
 }) {
   const providerEntries =
@@ -292,16 +354,16 @@ export function createProviderGateway({
 
     const providerOrder = resolveFallbackOrder
       ? Object.freeze(
-          [...resolveFallbackOrder({
-            operation: params.operation,
-            providerId: requestProviderId,
-            fallbackProviderIds: requestFallbackProviderIds,
-          })],
-        )
-      : resolveProviderOrder(providerMap, {
+        [...resolveFallbackOrder({
+          operation: params.operation,
           providerId: requestProviderId,
           fallbackProviderIds: requestFallbackProviderIds,
-        });
+        })],
+      )
+      : resolveProviderOrder(providerMap, {
+        providerId: requestProviderId,
+        fallbackProviderIds: requestFallbackProviderIds,
+      });
 
     if (!Array.isArray(providerOrder) || providerOrder.length === 0) {
       throw new RuntimeExecutionError(
@@ -388,12 +450,12 @@ export function createProviderGateway({
             attempts.length === 1 && isLastProvider
               ? normalized
               : new RuntimeExecutionError(
-                  `All providers failed for ${params.operation}`,
-                  {
-                    operation: params.operation,
-                    attempts: Object.freeze([...attempts]),
-                  },
-                );
+                `All providers failed for ${params.operation}`,
+                {
+                  operation: params.operation,
+                  attempts: Object.freeze([...attempts]),
+                },
+              );
           const telemetryEvent = {
             traceId,
             actionId: params.actionId,
@@ -455,11 +517,19 @@ export function createProviderGateway({
         validatedRequest,
         actionId: PROVIDER_ACTIONS.generate.actionId,
         version: PROVIDER_ACTIONS.generate.version,
-        buildInput: (parsedRequest, providerId) => ({
-          providerId,
-          model: parsedRequest.model,
-          prompt: parsedRequest.prompt,
-        }),
+        buildInput: (parsedRequest, providerId) => {
+          const input = {
+            providerId,
+            model: parsedRequest.model,
+            prompt: parsedRequest.prompt,
+          };
+          for (const key of Object.keys(commonGatewayFields)) {
+            if (parsedRequest[key] !== undefined) {
+              input[key] = parsedRequest[key];
+            }
+          }
+          return input;
+        },
       });
     },
 
@@ -478,11 +548,19 @@ export function createProviderGateway({
         validatedRequest,
         actionId: PROVIDER_ACTIONS.stream.actionId,
         version: PROVIDER_ACTIONS.stream.version,
-        buildInput: (parsedRequest, providerId) => ({
-          providerId,
-          model: parsedRequest.model,
-          prompt: parsedRequest.prompt,
-        }),
+        buildInput: (parsedRequest, providerId) => {
+          const input = {
+            providerId,
+            model: parsedRequest.model,
+            prompt: parsedRequest.prompt,
+          };
+          for (const key of Object.keys(commonGatewayFields)) {
+            if (parsedRequest[key] !== undefined) {
+              input[key] = parsedRequest[key];
+            }
+          }
+          return input;
+        },
       });
     },
 

@@ -1,6 +1,7 @@
 export { createContractKey, createContractRegistry } from "./contract-registry.mjs";
 export { createMiddlewarePipeline } from "./middleware-pipeline.mjs";
 export { createAutomationGateway, registerAutomationContracts } from "./automation-gateway.mjs";
+export { createBudgetGateway, registerBudgetContracts } from "./budget-gateway.mjs";
 export {
   createControlPlaneGateway,
   registerControlPlaneContracts,
@@ -35,6 +36,7 @@ export {
 export {
   createTelemetryAlertGateway,
   registerTelemetryAlertContract,
+  registerTelemetryAlertRouteContract,
 } from "./telemetry-alert-gateway.mjs";
 export { createHandoffGateway, registerHandoffContract } from "./handoff-gateway.mjs";
 export { createHeartbeatGateway, registerHeartbeatContract } from "./heartbeat-gateway.mjs";

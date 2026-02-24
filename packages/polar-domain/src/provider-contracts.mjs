@@ -1,9 +1,40 @@
 import {
+  booleanField,
   createStrictObjectSchema,
+  enumField,
+  jsonField,
   numberArrayField,
+  numberField,
   stringArrayField,
   stringField,
 } from "./runtime-contracts.mjs";
+
+const commonInputFields = Object.freeze({
+  providerId: stringField({ minLength: 1 }),
+  model: stringField({ minLength: 1 }),
+  prompt: stringField({ minLength: 1 }),
+  endpointMode: enumField(["responses", "chat", "anthropic_messages", "gemini_generate_content"], { required: false }),
+  system: stringField({ minLength: 1, required: false }),
+  messages: jsonField({ required: false }),
+  maxOutputTokens: numberField({ required: false, min: 1 }),
+  temperature: numberField({ required: false, min: 0 }),
+  topP: numberField({ required: false, min: 0 }),
+  topK: numberField({ required: false, min: 1 }),
+  presencePenalty: numberField({ required: false }),
+  frequencyPenalty: numberField({ required: false }),
+  seed: numberField({ required: false }),
+  stream: booleanField({ required: false }),
+  tools: jsonField({ required: false }),
+  toolChoice: jsonField({ required: false }),
+  responseFormat: jsonField({ required: false }),
+  reasoningEffort: stringField({ minLength: 1, required: false }),
+  reasoningSummary: stringField({ minLength: 1, required: false }),
+  verbosity: stringField({ minLength: 1, required: false }),
+  thinkingEnabled: booleanField({ required: false }),
+  thinkingBudget: numberField({ required: false, min: 1 }),
+  thinkingLevel: stringField({ minLength: 1, required: false }),
+  providerExtensions: jsonField({ required: false }),
+});
 
 export const PROVIDER_ACTIONS = Object.freeze({
   generate: Object.freeze({
@@ -33,9 +64,7 @@ export function createProviderOperationContracts(options = {}) {
       inputSchema: createStrictObjectSchema({
         schemaId: "provider.generate.input",
         fields: {
-          providerId: stringField({ minLength: 1 }),
-          model: stringField({ minLength: 1 }),
-          prompt: stringField({ minLength: 1 }),
+          ...commonInputFields,
         },
       }),
       outputSchema: createStrictObjectSchema({
@@ -59,9 +88,7 @@ export function createProviderOperationContracts(options = {}) {
       inputSchema: createStrictObjectSchema({
         schemaId: "provider.stream.input",
         fields: {
-          providerId: stringField({ minLength: 1 }),
-          model: stringField({ minLength: 1 }),
-          prompt: stringField({ minLength: 1 }),
+          ...commonInputFields,
         },
       }),
       outputSchema: createStrictObjectSchema({

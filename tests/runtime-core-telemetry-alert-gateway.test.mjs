@@ -11,6 +11,7 @@ import {
   createTelemetryAlertGateway,
   createUsageTelemetryCollector,
   registerTelemetryAlertContract,
+  registerTelemetryAlertRouteContract,
 } from "../packages/polar-runtime-core/src/index.mjs";
 
 function createUsageEvent(overrides = {}) {
@@ -39,6 +40,7 @@ function setupTelemetryAlertGateway({
 } = {}) {
   const contractRegistry = createContractRegistry();
   registerTelemetryAlertContract(contractRegistry);
+  registerTelemetryAlertRouteContract(contractRegistry);
 
   const usageTelemetryCollector = createUsageTelemetryCollector({
     now,
@@ -66,10 +68,19 @@ function setupTelemetryAlertGateway({
     },
   });
 
+  const upsertedTasks = [];
+  const taskBoardGateway = {
+    async upsertTask(request) {
+      upsertedTasks.push(request);
+      return { status: "created", taskId: request.taskId };
+    }
+  };
+
   const gateway = createTelemetryAlertGateway({
     middlewarePipeline,
     usageTelemetryCollector,
     handoffTelemetryCollector,
+    taskBoardGateway,
     now,
   });
 
@@ -77,6 +88,7 @@ function setupTelemetryAlertGateway({
     gateway,
     usageTelemetryCollector,
     auditEvents,
+    upsertedTasks,
   };
 }
 
@@ -86,6 +98,14 @@ test("registerTelemetryAlertContract registers telemetry alert contract once", (
   registerTelemetryAlertContract(contractRegistry);
 
   assert.deepEqual(contractRegistry.list(), ["runtime.telemetry.alerts.list@1"]);
+});
+
+test("registerTelemetryAlertRouteContract registers route contract once", () => {
+  const contractRegistry = createContractRegistry();
+  registerTelemetryAlertRouteContract(contractRegistry);
+  registerTelemetryAlertRouteContract(contractRegistry);
+
+  assert.deepEqual(contractRegistry.list(), ["runtime.telemetry.alerts.route@1"]);
 });
 
 test("telemetry alert gateway synthesizes usage and handoff alerts through middleware", async () => {
@@ -322,4 +342,93 @@ test("telemetry alert gateway constructor validates collector shape", () => {
       error instanceof RuntimeExecutionError &&
       error.code === "POLAR_RUNTIME_EXECUTION_ERROR",
   );
+});
+
+test("telemetry alert gateway routes synthesized alerts into tasks", async () => {
+  const { gateway, usageTelemetryCollector, upsertedTasks } = setupTelemetryAlertGateway({
+    handoffListResult: {
+      status: "ok",
+      fromSequence: 1,
+      returnedCount: 5,
+      totalCount: 5,
+      items: [
+        { status: "failed", routeAdjusted: true },
+        { status: "failed", routeAdjusted: true },
+        { status: "completed", routeAdjusted: true },
+        { status: "completed", routeAdjusted: true },
+        { status: "completed", routeAdjusted: true },
+      ],
+    },
+  });
+
+  await usageTelemetryCollector.recordOperation(createUsageEvent({ status: "failed", durationMs: 10_000, traceId: "x-1" }));
+  await usageTelemetryCollector.recordOperation(createUsageEvent({ status: "failed", durationMs: 10_000, traceId: "x-2" }));
+  await usageTelemetryCollector.recordOperation(createUsageEvent({ status: "completed", durationMs: 10_000, traceId: "x-3" }));
+  await usageTelemetryCollector.recordOperation(createUsageEvent({ status: "completed", durationMs: 10_000, traceId: "x-4" }));
+  await usageTelemetryCollector.recordOperation(createUsageEvent({ status: "completed", durationMs: 10_000, traceId: "x-5" }));
+
+  // 1 usage rate error (0.4), 1 usage duration error (10s), 1 handoff error (0.4), 1 handoff adjustment error (1.0). Total 4 alerts.
+
+  const routed = await gateway.routeAlerts({
+    assigneeType: "user",
+    assigneeId: "operator-1",
+    minimumSeverity: "warning",
+    dryRun: false,
+    taskIdPrefix: "triage",
+    usageFailureRateWarning: 0.2,
+    usageAverageDurationMsWarning: 3_000,
+  });
+
+  assert.equal(routed.status, "ok");
+  assert.equal(routed.routedCount, 4);
+  assert.equal(upsertedTasks.length, 4);
+  assert.match(upsertedTasks[0].taskId, /^triage-/);
+  assert.equal(upsertedTasks[0].assigneeId, "operator-1");
+  assert.match(upsertedTasks[0].description, /Automatically routed telemetry alert/);
+});
+
+test("telemetry alert gateway honors minimum severity when routing", async () => {
+  const { gateway, usageTelemetryCollector, upsertedTasks } = setupTelemetryAlertGateway({
+    handoffListResult: {
+      status: "ok",
+      fromSequence: 1,
+      returnedCount: 5,
+      totalCount: 5,
+      items: [
+        { status: "completed", routeAdjusted: false },
+        { status: "completed", routeAdjusted: false },
+        { status: "completed", routeAdjusted: false },
+        { status: "completed", routeAdjusted: false },
+        { status: "completed", routeAdjusted: false },
+      ],
+    },
+  });
+
+  await usageTelemetryCollector.recordOperation(createUsageEvent({ status: "failed", durationMs: 500 }));
+  await usageTelemetryCollector.recordOperation(createUsageEvent({ status: "completed", durationMs: 500 }));
+  await usageTelemetryCollector.recordOperation(createUsageEvent({ status: "completed", durationMs: 500 }));
+  await usageTelemetryCollector.recordOperation(createUsageEvent({ status: "completed", durationMs: 500 }));
+  await usageTelemetryCollector.recordOperation(createUsageEvent({ status: "completed", durationMs: 500 }));
+
+  // usage failure is 0.2 (1/5).
+  // critical threshold 0.35, warning threshold 0.15. So it's "warning" severity.
+
+  const warningRoute = await gateway.routeAlerts({
+    assigneeType: "user",
+    assigneeId: "operator-1",
+    minimumSeverity: "warning",
+    dryRun: true,
+  });
+  assert.equal(warningRoute.previewCount, 1);
+  assert.equal(upsertedTasks.length, 0);
+
+  const criticalRoute = await gateway.routeAlerts({
+    assigneeType: "user",
+    assigneeId: "operator-1",
+    minimumSeverity: "critical",
+    dryRun: false,
+  });
+  assert.equal(criticalRoute.routedCount, 0);
+  assert.equal(criticalRoute.skippedCount, 1);
+  assert.equal(upsertedTasks.length, 0);
 });

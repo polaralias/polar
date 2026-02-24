@@ -1,0 +1,324 @@
+
+> polar@0.1.0 test
+> node --test tests/**/*.test.mjs
+
+Γ£ö web ingress adapter normalizes payload into canonical envelope (5.6769ms)
+Γ£ö telegram ingress adapter derives ids and metadata deterministically (1.3445ms)
+Γ£ö slack ingress adapter derives ids and metadata deterministically (1.2251ms)
+Γ£ö discord ingress adapter derives ids and metadata deterministically (0.9495ms)
+Γ£ö adapters preserve deterministic multi-turn session and thread continuity (1.6451ms)
+Γ£ö web, telegram, slack, and discord adapters reject invalid payloads with deterministic typed errors (2.5272ms)
+Γ£ö channel adapter registry supports register/get/list with deterministic ordering (40.4498ms)
+Γ£ö default ingress health checks report healthy across web, telegram, slack, and discord (1.7818ms)
+Γ£ö extension adapter registry validates adapters and lists ids deterministically (62.3622ms)
+Γ£ö extension adapter registry rejects duplicate ids and invalid adapters (1.2858ms)
+Γ£ö extension adapter registry upsert replaces adapter deterministically (0.531ms)
+Γ£ö createPermissionDeltaReport returns deterministic added/removed/retained sets (134.7941ms)
+Γ£ö createPermissionDeltaReport validates invalid permission inputs (0.6575ms)
+Γ£ö parseSkillManifest reads frontmatter, capabilities, and permissions (5.4745ms)
+Γ£ö verifySkillProvenance enforces hash/pin checks and recommends trust (1.33ms)
+Γ£ö verifySkillProvenance rejects missing pin for remote and hash mismatch (0.758ms)
+Γ£ö createSkillCapabilityAdapter executes known capabilities and rejects unknown ones (1.7017ms)
+Γ£ö mapPluginDescriptor normalizes operations into deterministic plugin capabilities (3.8341ms)
+Γ£ö verifyPluginAuthBindings reports missing required schemes deterministically (0.9573ms)
+Γ£ö createPluginCapabilityAdapter executes known capability and rejects unknown ones (1.5339ms)
+Γ£ö mapMcpToolCatalog maps tools to deterministic capability wrappers (1.9843ms)
+Γ£ö verifyMcpConnectionHealth normalizes health probes deterministically (41.3021ms)
+Γ£ö createMcpConnectionAdapter imports catalog and executes mapped tool capability (2.1775ms)
+Γ£ö createPiProviderAdapter.generate returns typed text output (7.02ms)
+Γ£ö createPiProviderAdapter.stream collects text_delta chunks (1.0647ms)
+Γ£ö createPiProviderAdapter.embed returns vector from configured embedder (0.6763ms)
+Γ£ö createPiProviderAdapter.embed fails deterministically when embedder is not configured (1.7334ms)
+Γ£ö createPiAgentTurnAdapter maps tool lifecycle events to before/after callbacks (2.0911ms)
+Γ£ö createPiAgentTurnAdapter can enforce runtime-core middleware through configured lifecycle handler (132.0676ms)
+Γ£ö allows pi-mono imports inside polar-adapter-pi only (138.5039ms)
+Γ£ö reports pi-mono imports outside polar-adapter-pi (194.0331ms)
+Γ£ö sorts reported violations deterministically (15.9906ms)
+Γ£ö CLI exits with non-zero status when a violation is found (782.1325ms)
+Γ£ö CLI exits with success when no violation is found (612.3301ms)
+Γ£ö control-plane service health reports contract and record counts (69.7165ms)
+Γ£ö control-plane service proxies typed config operations (28.7594ms)
+Γ£ö control-plane service proxies runtime profile resolution with scope precedence (11.2673ms)
+Γ£ö control-plane service proxies chat-management operations (12.1075ms)
+Γ£ö control-plane service proxies ingress health diagnostics (7.4555ms)
+Γ£ö control-plane service proxies task-board operations (19.4476ms)
+Γ£ö control-plane service proxies handoff routing telemetry list operations (33.0755ms)
+Γ£ö control-plane service proxies usage telemetry list operations (7.1854ms)
+Γ£ö control-plane service proxies telemetry alert list operations (13.902ms)
+Γ£ö control-plane service proxies scheduler queue diagnostics operations (15.674ms)
+Γ£ö control-plane service proxies scheduler queue run-action operations (9.9495ms)
+Γ£ö control-plane service proxies scheduler queue retry_now and requeue actions (6.0086ms)
+Γ£ö control-plane service preserves contract validation errors (4.4327ms)
+Γ£ö returns typed environment profiles for supported ids (3.0083ms)
+Γ£ö rejects unsupported environment profile ids (1.4989ms)
+Γ£ö jsonField accepts strict JSON values (3.8602ms)
+Γ£ö jsonField rejects undefined and non-json values (0.7208ms)
+Γ£ö registerAutomationContracts registers draft and run contracts once (69.4961ms)
+Γ£ö automation draft executes through middleware and derives deterministic baseline (12.9939ms)
+Γ£ö automation draft allows controlled authoring overrides (32.7794ms)
+Γ£ö automation run skips when inactive and blocks when approval is missing (7.0969ms)
+Γ£ö automation run executes with escalation and returns executor outcome (36.7699ms)
+Γ£ö automation run maps executor failure to typed failed output (2.2248ms)
+Γ£ö automation run resolves profile when profileId is omitted (2.1509ms)
+Γ£ö automation run blocks with profile_not_resolved when profile is unavailable (1.617ms)
+Γ£ö automation run honors middleware-patched gating and plan fields (5.3234ms)
+Γ£ö automation gateway rejects invalid request shapes deterministically (3.0087ms)
+Γ£ö budget contracts can be registered (5.7398ms)
+Γ£ö budget gateway throws if budgetStateStore is not an object (2.4549ms)
+Γ£ö budget gateway checks budget bypassing when not configured (11.6777ms)
+Γ£ö budget gateway interacts with budgetStateStore (7.7271ms)
+Γ£ö registerChatIngressContract registers ingress contract once (47.9582ms)
+Γ£ö chat ingress gateway normalizes web, telegram, slack, and discord payloads through middleware (45.3854ms)
+Γ£ö chat ingress gateway preserves multi-turn session and thread continuity with channel-native threading fields (7.2964ms)
+Γ£ö chat ingress gateway rejects unknown adapters before execution (2.1561ms)
+Γ£ö chat ingress gateway health checks run through middleware and report healthy adapters (6.4945ms)
+Γ£ö chat ingress gateway health checks report unhealthy when adapter check is missing (1.6154ms)
+Γ£ö chat ingress gateway health checks reject invalid request shapes (0.9359ms)
+Γ£ö chat ingress gateway preserves deterministic validation failure across adapters (24.0565ms)
+Γ£ö registerChatManagementContracts registers chat-management contracts once (57.2918ms)
+Γ£ö chat-management lists sessions with deterministic filtering (29.7955ms)
+Γ£ö chat-management appends messages and rejects invalid append states (15.0011ms)
+Γ£ö chat-management supports history, search, and retention lifecycle (33.3834ms)
+Γ£ö chat-management rejects invalid request shapes deterministically (3.8336ms)
+Γ£ö blocks execution when contract is not registered (9.0438ms)
+Γ£ö runs before middleware in declared order and after middleware in reverse order (19.5264ms)
+Γ£ö rejects unknown input fields and still runs after middleware (1.9362ms)
+Γ£ö fails closed when after middleware attempts to clear an existing error (1.8657ms)
+Γ£ö rejects output mutations that bypass contract schema (1.9773ms)
+Γ£ö maps unknown execution failures to deterministic typed errors (21.6487ms)
+Γ£ö enforces execution-type middleware and trace-correlated audit envelopes for tool/handoff/automation/heartbeat (25.4953ms)
+Γ£ö rejects unknown execution types (1.3442ms)
+Γ£ö keeps provided trace id across every emitted audit event (2.0757ms)
+Γ£ö fails closed when audit sink fails to prevent audit bypass (8.869ms)
+Γ£ö registerControlPlaneContracts registers control-plane contracts once (60.9619ms)
+Γ£ö control-plane upsert applies config through middleware and audit trail (9.0219ms)
+Γ£ö control-plane upsert rejects optimistic lock conflicts deterministically (2.3598ms)
+Γ£ö control-plane get returns typed found and not_found responses (24.7243ms)
+Γ£ö control-plane list is deterministic with cursor pagination (17.4566ms)
+Γ£ö control-plane readConfigRecord returns deterministic snapshots and rejects invalid keys (2.3189ms)
+Γ£ö control-plane gateway rejects invalid request shapes and cursor format (2.3591ms)
+Γ£ö registerExtensionContracts registers lifecycle and execute contracts once (49.6394ms)
+Γ£ö extension lifecycle applies install + enable through middleware (12.9818ms)
+Γ£ö blocked extension trust cannot be enabled (6.4921ms)
+Γ£ö extension lifecycle rejects extension type mutation for an existing extension id (2.8599ms)
+Γ£ö extension execute succeeds after install+enable and forwards scoped request (56.8843ms)
+Γ£ö extension execute rejects trust level overrides that differ from persisted state (5.1541ms)
+Γ£ö extension execute returns deterministic failed payload for adapter errors (3.2946ms)
+Γ£ö extension execute respects policy denial and rejects invalid request shape (33.4304ms)
+Γ£ö registerHandoffContract registers handoff contract once (32.216ms)
+Γ£ö routing policy engine deterministically selects direct/delegate/fanout-fanin (4.7975ms)
+Γ£ö routing policy engine applies resolved-profile handoff mode and fanout constraints (1.3687ms)
+Γ£ö routing policy engine rejects preferred mode blocked by resolved profile policy (1.7587ms)
+Γ£ö handoff gateway enforces middleware path and fanout capability projection (9.3942ms)
+Γ£ö handoff gateway returns deterministic failed payload when delegated execution throws (2.0042ms)
+Γ£ö handoff gateway rejects invalid delegate envelope before execution (1.8336ms)
+Γ£ö handoff gateway supports custom routing policy overrides (2.0461ms)
+Γ£ö handoff gateway resolves profile and projects delegated scope using profile constraints (3.1072ms)
+Γ£ö handoff gateway merges routing diagnostics into provided policy and trace contexts (3.6071ms)
+Γ£ö handoff gateway applies resolved-profile routing constraints before fanout execution (51.625ms)
+Γ£ö handoff gateway can reroute delegated request to direct when profile policy allows only direct mode (1.9634ms)
+Γ£ö handoff gateway returns typed failure when delegated profile cannot be resolved (14.6226ms)
+Γ£ö handoff routing telemetry collector captures resolver-aware routing events and supports filtering (53.334ms)
+Γ£ö handoff routing telemetry collector captures not_resolved profile diagnostics on failed delegated handoff (2.3072ms)
+Γ£ö handoff routing telemetry collector list request is strictly validated (1.5765ms)
+Γ£ö handoff routing telemetry sink failures fail closed through middleware (2.8562ms)
+Γ£ö registerHandoffRoutingTelemetryContract registers contract once (4.5496ms)
+Γ£ö handoff telemetry gateway lists collected events through middleware and contracts (21.278ms)
+Γ£ö handoff telemetry gateway rejects invalid list request shapes (3.0031ms)
+Γ£ö handoff telemetry gateway constructor validates telemetry collector shape (0.8536ms)
+Γ£ö registerHeartbeatContract registers heartbeat contract once (6.9179ms)
+Γ£ö heartbeat tick executes through middleware and defaults to local model lane (15.0762ms)
+Γ£ö heartbeat tick escalates to worker lane when failure threshold is reached (13.0226ms)
+Γ£ö heartbeat tick skips when policy is inactive (2.6813ms)
+Γ£ö heartbeat tick skips when outside active-hour window (3.3576ms)
+Γ£ö heartbeat tick skips on queue backpressure and budget limit (6.6717ms)
+Γ£ö heartbeat tick forceRun bypasses skip gates (3.5884ms)
+Γ£ö heartbeat tick resolves profile when profileId is omitted (22.4568ms)
+Γ£ö heartbeat tick skips with profile_not_resolved when profile is unavailable (1.8047ms)
+Γ£ö heartbeat tick honors middleware-patched gating fields (86.8473ms)
+Γ£ö heartbeat tick rejects invalid request shapes deterministically (33.1327ms)
+Γ£ö registerMcpConnectorContract registers connector contract once (7.4649ms)
+Γ£ö mcp connector rejects unhealthy connection probes deterministically (21.5875ms)
+Γ£ö mcp connector honors middleware-patched expected tool ids (49.029ms)
+Γ£ö mcp connector sync installs and auto-enables trusted source with wrapped execution (9.9003ms)
+Γ£ö mcp connector enforces approval ticket on high-risk permission delta during upgrade (29.6884ms)
+Γ£ö mcp connector treats removed extensions as fresh install on resync (51.7014ms)
+Γ£ö mcp connector rejects request-level approval policy overrides (4.5007ms)
+Γ£ö mcp connector rejects invalid request shape deterministically (1.1106ms)
+Γ£ö registerMemoryContracts registers memory contracts once (70.6254ms)
+Γ£ö memory search runs through middleware and returns typed completed output (10.0647ms)
+Γ£ö memory get returns typed not_found output when record does not exist (23.912ms)
+Γ£ö memory search returns degraded typed output when provider is unavailable (7.646ms)
+Γ£ö memory get returns degraded typed output when provider times out (2.0935ms)
+Γ£ö memory gateway rejects invalid request shapes deterministically (4.2997ms)
+Γ£ö memory gateway rethrows unexpected provider failures as runtime errors (23.4159ms)
+Γ£ö memory upsert runs through middleware and returns typed completed output (3.2185ms)
+Γ£ö memory compact returns typed completed output (2.9044ms)
+Γ£ö memory upsert and compact return degraded outputs when provider is unavailable (17.5992ms)
+Γ£ö memory upsert and compact reject invalid provider payloads (9.3336ms)
+Γ£ö registerPluginInstallerContract registers plugin installer contract once (8.4474ms)
+Γ£ö plugin installer rejects install when required auth bindings are missing (86.463ms)
+Γ£ö plugin installer honors middleware-patched auth bindings (31.5631ms)
+Γ£ö plugin installer installs trusted plugin, auto-enables, and executes wrapped capability (15.8775ms)
+Γ£ö plugin installer upgrade requires approval for new high-risk permission (21.4948ms)
+Γ£ö plugin installer treats removed extension as fresh install on reinstall (59.1541ms)
+Γ£ö plugin installer rejects request-level approval policy overrides (4.5569ms)
+Γ£ö registerProfileResolutionContract registers profile resolution contract once (6.2868ms)
+Γ£ö profile resolution honors session -> workspace -> global precedence through middleware (82.6303ms)
+Γ£ö profile resolution falls back to workspace and then global pin when higher scopes are absent (5.0754ms)
+Γ£ö profile resolution falls back to default profile when no scoped pin exists (2.2627ms)
+Γ£ö profile resolution returns typed not_found output for missing pinned/default profiles (2.4237ms)
+Γ£ö profile resolution rejects invalid request or pin policy shapes deterministically (17.2246ms)
+Γ£ö registerProviderOperationContracts registers provider actions once (79.3112ms)
+Γ£û generate uses configured provider through middleware pipeline (30.6668ms)
+Γ£û falls back to secondary provider when primary provider fails (1.9087ms)
+Γ£û returns deterministic aggregated error when all fallback providers fail (3.3679ms)
+Γ£û supports stream and embed operations through typed contracts (1.488ms)
+Γ£ö rejects invalid gateway input deterministically before provider execution (1.196ms)
+Γ£ö rejects requests with unknown fields (1.1832ms)
+Γ£ö rejects missing provider adapter before execution (1.5112ms)
+Γ£ö registerSchedulerContracts registers scheduler contracts once (59.1996ms)
+Γ£ö scheduler processes persisted automation events and replays run-links idempotently (108.6606ms)
+Γ£ö scheduler processes persisted heartbeat events and emits linked task-board outcomes (10.4479ms)
+Γ£ö scheduler returns deterministic rejected status for malformed persisted events (6.7388ms)
+Γ£ö scheduler orchestrates retry and dead-letter dispositions for failed runs (23.6251ms)
+Γ£ö scheduler consults persisted event state and validates retry orchestration inputs (5.1103ms)
+Γ£ö scheduler exposes typed queue diagnostics with deterministic filters (35.8955ms)
+Γ£ö scheduler supports typed queue run-actions for retry and dead-letter dismissals (12.4848ms)
+Γ£ö scheduler supports retry_now and requeue queue actions with deterministic queue mutations (139.328ms)
+Γ£ö scheduler queue run-actions reject unsupported action combinations and missing payloads (42.1947ms)
+Γ£ö scheduler queue diagnostics reject invalid queue filter combinations (8.0898ms)
+Γ£ö file scheduler state store persists queue events across gateway instances (444.6854ms)
+Γ£ö scheduler preserves request-level validation failures and replay configuration errors (9.2491ms)
+Γ£ö createFileSchedulerStateStore validates configuration (3.2467ms)
+Γ£ö file scheduler state store persists and validates queue events (1003.9314ms)
+Γ£ö registerSkillInstallerContract registers installer contract once (18.9813ms)
+Γ£ö skill installer rejects permission-delta install without approval ticket (66.1019ms)
+Γ£ö skill installer installs, auto-enables trusted skill, and executes capability (48.7756ms)
+Γ£ö skill installer upgrade requires approval on newly added high-risk permission (120.1868ms)
+Γ£ö skill installer treats removed extensions as fresh install on reinstall (5.9687ms)
+Γ£ö skill installer rejects request-level approval policy overrides (2.4646ms)
+Γ£ö skill installer rejects blocked provenance and invalid manifests deterministically (2.2848ms)
+Γ£ö registerTaskBoardContracts registers task-board contracts once (52.7835ms)
+Γ£ö task-board upsert/transition emits deterministic event stream (19.0118ms)
+Γ£ö task-board transition rejects invalid state changes deterministically (3.9523ms)
+Γ£ö task-board list is deterministic with filtering and cursor pagination (6.0777ms)
+Γ£ö task-board replay run links is idempotent with deterministic replay keys (67.2296ms)
+Γ£ö task-board gateway rejects invalid request shapes and cursor format (4.3423ms)
+Γ£ö task-board run linker records automation run outcomes as linked tasks/events (68.6911ms)
+Γ£ö task-board run linker maps automation skip outcomes to blocked task state (6.3275ms)
+Γ£ö task-board run linker records heartbeat outcomes as linked tasks/events (50.7937ms)
+Γ£ö task-board run linker rejects invalid run-link payloads deterministically (10.6803ms)
+Γ£ö task-board run linker can replay recorded runs idempotently (97.8436ms)
+Γ£ö registerTelemetryAlertContract registers telemetry alert contract once (7.8976ms)
+Γ£ö registerTelemetryAlertRouteContract registers route contract once (47.4555ms)
+Γ£ö telemetry alert gateway synthesizes usage and handoff alerts through middleware (41.047ms)
+Γ£ö telemetry alert gateway honors scope and minimum sample gating (3.5849ms)
+Γ£ö telemetry alert gateway rejects invalid request shapes and threshold pairs (3.8735ms)
+Γ£ö telemetry alert gateway constructor validates collector shape (1.6387ms)
+Γ£ö telemetry alert gateway routes synthesized alerts into tasks (15.5192ms)
+Γ£ö telemetry alert gateway honors minimum severity when routing (23.1213ms)
+Γ£ö registerToolLifecycleContract registers tool lifecycle action once (42.7292ms)
+Γ£ö tool lifecycle gateway runs middleware and returns typed accepted output (17.6989ms)
+Γ£ö tool lifecycle gateway supports handler factory for adapter callbacks (158.117ms)
+Γ£ö tool lifecycle gateway rejects invalid request shape deterministically (1.9926ms)
+Γ£ö tool lifecycle gateway fails deterministically on unserializable payloads (61.6294ms)
+Γ£ö registerUsageTelemetryContract registers telemetry contract once (6.2498ms)
+Γ£û usage telemetry gateway lists provider usage with fallback and summary metrics (12.3932ms)
+Γ£û usage telemetry gateway supports filtering and preserves request validation (2.286ms)
+Γ£ö usage telemetry collector sink failures fail closed through provider gateway (4.4104ms)
+Γ£ö usage telemetry gateway constructor validates telemetry collector shape (0.8311ms)
+Γä╣ tests 226
+Γä╣ suites 0
+Γä╣ pass 220
+Γä╣ fail 6
+Γä╣ cancelled 0
+Γä╣ skipped 0
+Γä╣ todo 0
+Γä╣ duration_ms 6495.0634
+
+Γ£û failing tests:
+
+test at tests\runtime-core-provider-gateway.test.mjs:68:1
+Γ£û generate uses configured provider through middleware pipeline (30.6668ms)
+  Error [ContractValidationError]: Contract input validation failed for provider.generate@1
+      at validateSchemaOrThrow (file:///C:/Users/james.DESKTOP-Q8VOBFS/Documents/Development/polar/packages/polar-domain/src/runtime-contracts.mjs:532:11)
+      at Object.run (file:///C:/Users/james.DESKTOP-Q8VOBFS/Documents/Development/polar/packages/polar-runtime-core/src/middleware-pipeline.mjs:412:25)
+      at async runWithFallback (file:///C:/Users/james.DESKTOP-Q8VOBFS/Documents/Development/polar/packages/polar-runtime-core/src/provider-gateway.mjs:389:24)
+      at async TestContext.<anonymous> (file:///C:/Users/james.DESKTOP-Q8VOBFS/Documents/Development/polar/tests/runtime-core-provider-gateway.test.mjs:87:18)
+      at async Test.run (node:internal/test_runner/test:1113:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:788:7) {
+    code: 'POLAR_CONTRACT_VALIDATION_ERROR',
+    details: { actionId: 'provider.generate', version: 1, direction: 'input', schemaId: 'provider.generate.input', errors: [ 'provider.generate.input.endpointMode must be a string', 'provider.generate.input.system must be a string', 'provider.generate.input.messages value must be a JSON value', 'provider.generate.input.maxOutputTokens must be a number', 'provider.generate.input.temperature must be a number', 'provider.generate.input.topP must be a number', 'provider.generate.input.topK must be a number', 'provider.generate.input.presencePenalty must be a number', 'provider.generate.input.frequencyPenalty must be a number', 'provider.generate.input.seed must be a number', 'provider.generate.input.stream must be a boolean', 'provider.generate.input.tools value must be a JSON value', 'provider.generate.input.toolChoice value must be a JSON value', 'provider.generate.input.responseFormat value must be a JSON value', 'provider.generate.input.reasoningEffort must be a string', 'provider.generate.input.reasoningSummary must be a string', 'provider.generate.input.verbosity must be a string', 'provider.generate.input.thinkingEnabled must be a boolean', 'provider.generate.input.thinkingBudget must be a number', 'provider.generate.input.thinkingLevel must be a string', 'provider.generate.input.providerExtensions value must be a JSON value' ] }
+  }
+
+test at tests\runtime-core-provider-gateway.test.mjs:102:1
+Γ£û falls back to secondary provider when primary provider fails (1.9087ms)
+  Error [RuntimeExecutionError]: All providers failed for generate
+      at runWithFallback (file:///C:/Users/james.DESKTOP-Q8VOBFS/Documents/Development/polar/packages/polar-runtime-core/src/provider-gateway.mjs:452:17)
+      at async TestContext.<anonymous> (file:///C:/Users/james.DESKTOP-Q8VOBFS/Documents/Development/polar/tests/runtime-core-provider-gateway.test.mjs:112:18)
+      at async Test.run (node:internal/test_runner/test:1113:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:788:7) {
+    code: 'POLAR_RUNTIME_EXECUTION_ERROR',
+    details: { operation: 'generate', attempts: [ [Object] ] }
+  }
+
+test at tests\runtime-core-provider-gateway.test.mjs:126:1
+Γ£û returns deterministic aggregated error when all fallback providers fail (3.3679ms)
+  AssertionError [ERR_ASSERTION]: The validation function is expected to return "true". Received false
+  
+  Caught error:
+  
+  RuntimeExecutionError: All providers failed for generate
+      at async TestContext.<anonymous> (file:///C:/Users/james.DESKTOP-Q8VOBFS/Documents/Development/polar/tests/runtime-core-provider-gateway.test.mjs:140:3)
+      at async Test.run (node:internal/test_runner/test:1113:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:788:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: RuntimeExecutionError: All providers failed for generate
+        at runWithFallback (file:///C:/Users/james.DESKTOP-Q8VOBFS/Documents/Development/polar/packages/polar-runtime-core/src/provider-gateway.mjs:452:17)
+        at async waitForActual (node:assert:621:5)
+        at async strict.rejects (node:assert:744:25)
+        at async TestContext.<anonymous> (file:///C:/Users/james.DESKTOP-Q8VOBFS/Documents/Development/polar/tests/runtime-core-provider-gateway.test.mjs:140:3)
+        at async Test.run (node:internal/test_runner/test:1113:7)
+        at async Test.processPendingSubtests (node:internal/test_runner/test:788:7),
+    operator: 'rejects',
+    diff: 'simple'
+  }
+
+test at tests\runtime-core-provider-gateway.test.mjs:157:1
+Γ£û supports stream and embed operations through typed contracts (1.488ms)
+  Error [ContractValidationError]: Contract input validation failed for provider.stream@1
+      at validateSchemaOrThrow (file:///C:/Users/james.DESKTOP-Q8VOBFS/Documents/Development/polar/packages/polar-domain/src/runtime-contracts.mjs:532:11)
+      at Object.run (file:///C:/Users/james.DESKTOP-Q8VOBFS/Documents/Development/polar/packages/polar-runtime-core/src/middleware-pipeline.mjs:412:25)
+      at async runWithFallback (file:///C:/Users/james.DESKTOP-Q8VOBFS/Documents/Development/polar/packages/polar-runtime-core/src/provider-gateway.mjs:389:24)
+      at async TestContext.<anonymous> (file:///C:/Users/james.DESKTOP-Q8VOBFS/Documents/Development/polar/tests/runtime-core-provider-gateway.test.mjs:162:24)
+      at async Test.run (node:internal/test_runner/test:1113:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:788:7) {
+    code: 'POLAR_CONTRACT_VALIDATION_ERROR',
+    details: { actionId: 'provider.stream', version: 1, direction: 'input', schemaId: 'provider.stream.input', errors: [ 'provider.stream.input.endpointMode must be a string', 'provider.stream.input.system must be a string', 'provider.stream.input.messages value must be a JSON value', 'provider.stream.input.maxOutputTokens must be a number', 'provider.stream.input.temperature must be a number', 'provider.stream.input.topP must be a number', 'provider.stream.input.topK must be a number', 'provider.stream.input.presencePenalty must be a number', 'provider.stream.input.frequencyPenalty must be a number', 'provider.stream.input.seed must be a number', 'provider.stream.input.stream must be a boolean', 'provider.stream.input.tools value must be a JSON value', 'provider.stream.input.toolChoice value must be a JSON value', 'provider.stream.input.responseFormat value must be a JSON value', 'provider.stream.input.reasoningEffort must be a string', 'provider.stream.input.reasoningSummary must be a string', 'provider.stream.input.verbosity must be a string', 'provider.stream.input.thinkingEnabled must be a boolean', 'provider.stream.input.thinkingBudget must be a number', 'provider.stream.input.thinkingLevel must be a string', 'provider.stream.input.providerExtensions value must be a JSON value' ] }
+  }
+
+test at tests\runtime-core-usage-telemetry-gateway.test.mjs:96:1
+Γ£û usage telemetry gateway lists provider usage with fallback and summary metrics (12.3932ms)
+  Error [RuntimeExecutionError]: All providers failed for generate
+      at runWithFallback (file:///C:/Users/james.DESKTOP-Q8VOBFS/Documents/Development/polar/packages/polar-runtime-core/src/provider-gateway.mjs:452:17)
+      at async TestContext.<anonymous> (file:///C:/Users/james.DESKTOP-Q8VOBFS/Documents/Development/polar/tests/runtime-core-usage-telemetry-gateway.test.mjs:130:3)
+      at async Test.run (node:internal/test_runner/test:1113:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:788:7) {
+    code: 'POLAR_RUNTIME_EXECUTION_ERROR',
+    details: { operation: 'generate', attempts: [ [Object] ] }
+  }
+
+test at tests\runtime-core-usage-telemetry-gateway.test.mjs:314:1
+Γ£û usage telemetry gateway supports filtering and preserves request validation (2.286ms)
+  Error [ContractValidationError]: Contract input validation failed for provider.generate@1
+      at validateSchemaOrThrow (file:///C:/Users/james.DESKTOP-Q8VOBFS/Documents/Development/polar/packages/polar-domain/src/runtime-contracts.mjs:532:11)
+      at Object.run (file:///C:/Users/james.DESKTOP-Q8VOBFS/Documents/Development/polar/packages/polar-runtime-core/src/middleware-pipeline.mjs:412:25)
+      at async runWithFallback (file:///C:/Users/james.DESKTOP-Q8VOBFS/Documents/Development/polar/packages/polar-runtime-core/src/provider-gateway.mjs:389:24)
+      at async TestContext.<anonymous> (file:///C:/Users/james.DESKTOP-Q8VOBFS/Documents/Development/polar/tests/runtime-core-usage-telemetry-gateway.test.mjs:326:3)
+      at async Test.run (node:internal/test_runner/test:1113:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:788:7) {
+    code: 'POLAR_CONTRACT_VALIDATION_ERROR',
+    details: { actionId: 'provider.generate', version: 1, direction: 'input', schemaId: 'provider.generate.input', errors: [ 'provider.generate.input.endpointMode must be a string', 'provider.generate.input.system must be a string', 'provider.generate.input.messages value must be a JSON value', 'provider.generate.input.maxOutputTokens must be a number', 'provider.generate.input.temperature must be a number', 'provider.generate.input.topP must be a number', 'provider.generate.input.topK must be a number', 'provider.generate.input.presencePenalty must be a number', 'provider.generate.input.frequencyPenalty must be a number', 'provider.generate.input.seed must be a number', 'provider.generate.input.stream must be a boolean', 'provider.generate.input.tools value must be a JSON value', 'provider.generate.input.toolChoice value must be a JSON value', 'provider.generate.input.responseFormat value must be a JSON value', 'provider.generate.input.reasoningEffort must be a string', 'provider.generate.input.reasoningSummary must be a string', 'provider.generate.input.verbosity must be a string', 'provider.generate.input.thinkingEnabled must be a boolean', 'provider.generate.input.thinkingBudget must be a number', 'provider.generate.input.thinkingLevel must be a string', 'provider.generate.input.providerExtensions value must be a JSON value' ] }
+  }

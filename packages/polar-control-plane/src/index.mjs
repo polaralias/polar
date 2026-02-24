@@ -7,6 +7,7 @@ import {
   createChatManagementGateway,
   createContractRegistry,
   createControlPlaneGateway,
+  createBudgetGateway,
   createHandoffRoutingTelemetryCollector,
   createHandoffRoutingTelemetryGateway,
   createSchedulerGateway,
@@ -16,6 +17,7 @@ import {
   createMiddlewarePipeline,
   createProfileResolutionGateway,
   createTaskBoardGateway,
+  registerBudgetContracts,
   registerChatIngressContract,
   registerChatManagementContracts,
   registerControlPlaneContracts,
@@ -23,6 +25,7 @@ import {
   registerProfileResolutionContract,
   registerSchedulerContracts,
   registerTelemetryAlertContract,
+  registerTelemetryAlertRouteContract,
   registerTaskBoardContracts,
   registerUsageTelemetryContract,
 } from "../../polar-runtime-core/src/index.mjs";
@@ -67,12 +70,14 @@ export function createControlPlaneService(config = {}) {
   const contractRegistry = createContractRegistry();
   registerControlPlaneContracts(contractRegistry);
   registerProfileResolutionContract(contractRegistry);
+  registerBudgetContracts(contractRegistry);
   registerChatIngressContract(contractRegistry);
   registerChatManagementContracts(contractRegistry);
   registerTaskBoardContracts(contractRegistry);
   registerHandoffRoutingTelemetryContract(contractRegistry);
   registerUsageTelemetryContract(contractRegistry);
   registerTelemetryAlertContract(contractRegistry);
+  registerTelemetryAlertRouteContract(contractRegistry);
   registerSchedulerContracts(contractRegistry);
 
   const handoffRoutingTelemetryCollector =
@@ -99,6 +104,10 @@ export function createControlPlaneService(config = {}) {
     middlewarePipeline,
     initialRecords: config.initialRecords,
     now: config.now,
+  });
+  const budgetGateway = createBudgetGateway({
+    middlewarePipeline,
+    budgetStateStore: config.budgetStateStore,
   });
   const chatIngressGateway = createChatIngressGateway({
     middlewarePipeline,
@@ -137,6 +146,7 @@ export function createControlPlaneService(config = {}) {
     middlewarePipeline,
     usageTelemetryCollector,
     handoffTelemetryCollector: handoffRoutingTelemetryCollector,
+    taskBoardGateway,
   });
   const schedulerGateway = createSchedulerGateway({
     middlewarePipeline,
@@ -193,6 +203,30 @@ export function createControlPlaneService(config = {}) {
      */
     async listConfigs(request) {
       return gateway.listConfigs(request);
+    },
+
+    /**
+     * @param {unknown} request
+     * @returns {Promise<Record<string, unknown>>}
+     */
+    async checkInitialBudget(request) {
+      return budgetGateway.checkBudget(request);
+    },
+
+    /**
+     * @param {unknown} request
+     * @returns {Promise<Record<string, unknown>>}
+     */
+    async upsertBudgetPolicy(request) {
+      return budgetGateway.upsertPolicy(request);
+    },
+
+    /**
+     * @param {unknown} request
+     * @returns {Promise<Record<string, unknown>>}
+     */
+    async getBudgetPolicy(request) {
+      return budgetGateway.getPolicy(request);
     },
 
     /**
@@ -313,6 +347,14 @@ export function createControlPlaneService(config = {}) {
      */
     async listTelemetryAlerts(request = {}) {
       return telemetryAlertGateway.listAlerts(request);
+    },
+
+    /**
+     * @param {unknown} [request]
+     * @returns {Promise<Record<string, unknown>>}
+     */
+    async routeTelemetryAlerts(request = {}) {
+      return telemetryAlertGateway.routeAlerts(request);
     },
 
     /**

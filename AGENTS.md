@@ -65,6 +65,7 @@ Implement in this order unless explicitly directed otherwise:
 3. Do not introduce file-based canonical config for runtime controls.
 4. Preserve deterministic error behavior and explicit failure typing.
 5. Update docs when behavior or architecture decisions change.
+6. Never use git to commit changes, ask the user to commit once changes are complete.
 
 ## Agent Message Format
 

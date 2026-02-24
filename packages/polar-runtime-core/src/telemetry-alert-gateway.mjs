@@ -155,36 +155,36 @@ function validateThresholdRelationships(input) {
   const errors = [];
 
   validateThresholdPair(
-    /** @type {number|undefined} */ (input.usageFailureRateWarning),
-    /** @type {number|undefined} */ (input.usageFailureRateCritical),
+    /** @type {number|undefined} */(input.usageFailureRateWarning),
+    /** @type {number|undefined} */(input.usageFailureRateCritical),
     "usageFailureRateWarning",
     "usageFailureRateCritical",
     errors,
   );
   validateThresholdPair(
-    /** @type {number|undefined} */ (input.usageFallbackRateWarning),
-    /** @type {number|undefined} */ (input.usageFallbackRateCritical),
+    /** @type {number|undefined} */(input.usageFallbackRateWarning),
+    /** @type {number|undefined} */(input.usageFallbackRateCritical),
     "usageFallbackRateWarning",
     "usageFallbackRateCritical",
     errors,
   );
   validateThresholdPair(
-    /** @type {number|undefined} */ (input.usageAverageDurationMsWarning),
-    /** @type {number|undefined} */ (input.usageAverageDurationMsCritical),
+    /** @type {number|undefined} */(input.usageAverageDurationMsWarning),
+    /** @type {number|undefined} */(input.usageAverageDurationMsCritical),
     "usageAverageDurationMsWarning",
     "usageAverageDurationMsCritical",
     errors,
   );
   validateThresholdPair(
-    /** @type {number|undefined} */ (input.handoffFailureRateWarning),
-    /** @type {number|undefined} */ (input.handoffFailureRateCritical),
+    /** @type {number|undefined} */(input.handoffFailureRateWarning),
+    /** @type {number|undefined} */(input.handoffFailureRateCritical),
     "handoffFailureRateWarning",
     "handoffFailureRateCritical",
     errors,
   );
   validateThresholdPair(
-    /** @type {number|undefined} */ (input.handoffRouteAdjustedRateWarning),
-    /** @type {number|undefined} */ (input.handoffRouteAdjustedRateCritical),
+    /** @type {number|undefined} */(input.handoffRouteAdjustedRateWarning),
+    /** @type {number|undefined} */(input.handoffRouteAdjustedRateCritical),
     "handoffRouteAdjustedRateWarning",
     "handoffRouteAdjustedRateCritical",
     errors,
@@ -258,6 +258,17 @@ export function registerTelemetryAlertContract(contractRegistry) {
     )
   ) {
     contractRegistry.register(createTelemetryAlertContract());
+  }
+}
+
+export function registerTelemetryAlertRouteContract(contractRegistry) {
+  if (
+    !contractRegistry.has(
+      TELEMETRY_ALERT_ROUTE_ACTION.actionId,
+      TELEMETRY_ALERT_ROUTE_ACTION.version,
+    )
+  ) {
+    contractRegistry.register(createTelemetryAlertRouteContract());
   }
 }
 
@@ -377,7 +388,7 @@ function appendAlert(alerts, item) {
 function buildUsageWindow(usageListResult) {
   const summary =
     typeof usageListResult.summary === "object" &&
-    usageListResult.summary !== null
+      usageListResult.summary !== null
       ? /** @type {Record<string, unknown>} */ (usageListResult.summary)
       : {};
   const totalOperations =
@@ -443,6 +454,7 @@ export function createTelemetryAlertGateway({
   middlewarePipeline,
   usageTelemetryCollector,
   handoffTelemetryCollector,
+  taskBoardGateway,
   defaultExecutionType = "tool",
   now = () => Date.now(),
 }) {
@@ -517,21 +529,21 @@ export function createTelemetryAlertGateway({
           const usageWindow = usageListResult
             ? buildUsageWindow(usageListResult)
             : {
-                totalOperations: 0,
-                failedCount: 0,
-                fallbackCount: 0,
-                totalDurationMs: 0,
-                averageDurationMs: 0,
-              };
+              totalOperations: 0,
+              failedCount: 0,
+              fallbackCount: 0,
+              totalDurationMs: 0,
+              averageDurationMs: 0,
+            };
           const handoffWindow = handoffListResult
             ? buildHandoffWindow(handoffListResult)
             : {
-                evaluatedCount: 0,
-                failedCount: 0,
-                routeAdjustedCount: 0,
-                failureRate: 0,
-                routeAdjustedRate: 0,
-              };
+              evaluatedCount: 0,
+              failedCount: 0,
+              routeAdjustedCount: 0,
+              failureRate: 0,
+              routeAdjustedRate: 0,
+            };
 
           /** @type {Record<string, unknown>[]} */
           const alerts = [];
@@ -691,6 +703,134 @@ export function createTelemetryAlertGateway({
             }),
           };
         },
+      );
+    },
+
+    /**
+     * @param {unknown} [request]
+     * @returns {Promise<Record<string, unknown>>}
+     */
+    async routeAlerts(request = {}) {
+      const parsed = (() => {
+        const validation = routeTelemetryAlertsRequestSchema.validate(request);
+        if (!validation.ok) {
+          throw new ContractValidationError("Invalid telemetry alert route request", {
+            schemaId: routeTelemetryAlertsRequestSchema.schemaId,
+            errors: validation.errors ?? [],
+          });
+        }
+        const value = /** @type {Record<string, unknown>} */ (validation.value);
+        validateThresholdRelationships(value);
+        return value;
+      })();
+
+      return middlewarePipeline.run(
+        {
+          executionType: /** @type {"tool"|"handoff"|"automation"|"heartbeat"|undefined} */ (parsed.executionType) ?? defaultExecutionType,
+          traceId: /** @type {string|undefined} */ (parsed.traceId),
+          actionId: TELEMETRY_ALERT_ROUTE_ACTION.actionId,
+          version: TELEMETRY_ALERT_ROUTE_ACTION.version,
+          input: (() => {
+            const input = {};
+            for (const [key, value] of Object.entries(parsed)) {
+              if (key === "executionType" || key === "traceId") {
+                continue;
+              }
+              input[key] = value;
+            }
+            return input;
+          })(),
+        },
+        async (input) => {
+          if (!taskBoardGateway && input.dryRun !== true) {
+            throw new RuntimeExecutionError("taskBoardGateway is required for routing alerts without dryRun=true");
+          }
+
+          const self = /** @type {any} */ (this);
+          const listRequest = {};
+          if (input.traceId) { listRequest.traceId = input.traceId + "-list"; }
+          if (input.executionType) { listRequest.executionType = input.executionType; }
+          for (const key of Object.keys(telemetryAlertRequestFields)) {
+            if (key in input) {
+              listRequest[key] = input[key];
+            }
+          }
+          const listResponse = await self.listAlerts(listRequest);
+
+          let routedCount = 0;
+          let previewCount = 0;
+          let skippedCount = 0;
+          let rejectedCount = 0;
+          const items = [];
+          const minimumSeverity = input.minimumSeverity ?? "warning";
+          const maxAlerts = input.maxAlerts ?? 50;
+
+          const allAlerts = /** @type {Record<string, unknown>[]} */ (listResponse.alerts);
+          let filteredAlerts = [];
+          for (const alert of allAlerts) {
+            if (minimumSeverity === "critical" && alert.severity !== "critical") {
+              skippedCount++;
+              continue;
+            }
+            filteredAlerts.push(alert);
+          }
+
+          if (filteredAlerts.length > maxAlerts) {
+            skippedCount += (filteredAlerts.length - maxAlerts);
+            filteredAlerts = filteredAlerts.slice(0, maxAlerts);
+          }
+
+          for (const alert of filteredAlerts) {
+            if (input.dryRun === true) {
+              previewCount++;
+              items.push({ alertId: alert.alertId });
+              continue;
+            }
+
+            const metricDesc = alert.metrics ? `\nMetric Value: ${Number(alert.metrics.metricValue).toFixed(3)}\nCritical Threshold: ${alert.metrics.criticalThreshold}\nSample Size: ${alert.metrics.sampleSize}` : "";
+            const taskRequest = {
+              taskId: `${input.taskIdPrefix ?? "alert"}-${alert.alertId}-${input.runId || Date.now()}`,
+              title: `${input.titlePrefix ? input.titlePrefix + " " : ""}${alert.message}`,
+              status: input.taskStatus ?? "open",
+              assigneeType: input.assigneeType,
+              assigneeId: input.assigneeId,
+              description: `Automatically routed telemetry alert.\nSource: ${alert.source}\nCode: ${alert.code}\nSeverity: ${alert.severity}${metricDesc}`,
+            };
+            if (input.actorId) { taskRequest.actorId = input.actorId; }
+            if (input.sessionId) { taskRequest.sessionId = input.sessionId; }
+            if (input.metadata) { taskRequest.metadata = input.metadata; }
+
+            try {
+              const upsertResult = await taskBoardGateway.upsertTask(taskRequest);
+              if (upsertResult.status === "created" || upsertResult.status === "updated") {
+                routedCount++;
+                items.push({ alertId: alert.alertId, taskId: taskRequest.taskId });
+              } else {
+                rejectedCount++;
+              }
+            } catch (e) {
+              rejectedCount++;
+            }
+          }
+
+          return {
+            status: "ok",
+            evaluatedAtMs: listResponse.evaluatedAtMs,
+            scope: listResponse.scope,
+            minimumSampleSize: listResponse.minimumSampleSize,
+            minimumSeverity,
+            maxAlerts,
+            alertCount: listResponse.alertCount,
+            routedCount,
+            previewCount,
+            skippedCount,
+            rejectedCount,
+            items: Object.freeze(items),
+            alerts: listResponse.alerts,
+            usageWindow: listResponse.usageWindow,
+            handoffWindow: listResponse.handoffWindow,
+          };
+        }
       );
     },
   });
