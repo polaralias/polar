@@ -46,7 +46,7 @@ Each session can bind to a pinned `Agent Profile` containing:
 7. Safety mode and approval settings.
 8. Strictly populated `allowedHandoffTargets` boundaries to explicitly govern privilege expansion downstream.
 
-These configurations are fully portable—managed via the operator Web UI or declaratively seeded via `polar.config.json` CLI bootstraps up into the Control Plane state.
+These configurations are fully portable—managed via the operator Web UI or dynamically injected via `polar config set` CLI deployments straight into the Control Plane state.
 
 Profiles can be:
 

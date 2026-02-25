@@ -55,7 +55,7 @@ Operators can pin agent defaults at multiple scopes:
 2. Workspace profile.
 3. Session-specific override.
 
-Pinned settings are exclusively governed by the unified Control Plane state (upserted interactively via the Web UI or a portable `polar.config.json` startup bootstrap) and include:
+Pinned settings are exclusively governed by the unified Control Plane state (upserted interactively via the Web UI or portable `polar config set` CLI commands) and include:
 
 1. Pinned LLM Provider and Model identities (e.g., Anthropic for writing, Gemini for research) to enforce role-based execution domains.
 2. Primary and fallback model policy.

@@ -32,7 +32,7 @@ Record completed work in reverse chronological order (newest first).
 
 1. Status: Done
 2. Owner: Antigravity
-3. Summary: Overhauled the canonical documentation (`README.md`) to reflect a portable "Quick Run" startup. Shifted the focus away from hardcoded `.js` runtime initializations to scalable Web UI interfaces and declarative `polar.config.json` CLI deployments. Explicit configuration mappings were authored for:
+3. Summary: Overhauled the canonical documentation (`README.md`) to reflect a portable, zero-file "Quick Run" startup. Shifted the focus away from hardcoded `.js` runtime initializations to scalable Web UI interfaces and dynamic `polar config set` CLI parameter deployments avoiding plain-text files explicitly. Explicit configuration mappings were authored for:
    - **LLM Providers**: (e.g. OpenAI, Anthropic, Ollama, vLLM)
    - **Agent Profiles & Handoffs**: Sub-agent pinning (Anthropic for writing, Gemini for research) and strictly governing `allowedHandoffTargets`.
    - **Extension Fabric**: Installed skills and `stdio`/SSE-based MCP connections.
