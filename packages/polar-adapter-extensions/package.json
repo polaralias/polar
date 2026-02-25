@@ -5,5 +5,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.mjs"
+  },
+  "scripts": {
+    "test": "node --test ../../tests/*adapter-extensions*.test.mjs"
   }
 }

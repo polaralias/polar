@@ -1,4 +1,15 @@
 import {
+  createExtensionAdapterRegistry,
+  parseSkillManifest,
+  verifySkillProvenance,
+  createSkillCapabilityAdapter,
+  mapMcpToolCatalog,
+  createMcpConnectionAdapter,
+  mapPluginDescriptor,
+  verifyPluginAuthBindings,
+  createPluginCapabilityAdapter,
+} from "../../polar-adapter-extensions/src/index.mjs";
+import {
   createDefaultIngressHealthChecks,
   createDefaultIngressNormalizers,
 } from "../../polar-adapter-channels/src/index.mjs";
@@ -32,6 +43,14 @@ import {
   registerUsageTelemetryContract,
   createProviderGateway,
   registerProviderOperationContracts,
+  createExtensionGateway,
+  registerExtensionContracts,
+  createSkillInstallerGateway,
+  registerSkillInstallerContract,
+  createMcpConnectorGateway,
+  registerMcpConnectorContract,
+  createPluginInstallerGateway,
+  registerPluginInstallerContract,
 } from "../../polar-runtime-core/src/index.mjs";
 
 /**
@@ -84,6 +103,10 @@ export function createControlPlaneService(config = {}) {
   registerTelemetryAlertRouteContract(contractRegistry);
   registerSchedulerContracts(contractRegistry);
   registerProviderOperationContracts(contractRegistry);
+  registerExtensionContracts(contractRegistry);
+  registerSkillInstallerContract(contractRegistry);
+  registerMcpConnectorContract(contractRegistry);
+  registerPluginInstallerContract(contractRegistry);
 
   const handoffRoutingTelemetryCollector =
     config.handoffRoutingTelemetryCollector ??
@@ -106,6 +129,47 @@ export function createControlPlaneService(config = {}) {
   });
 
   const cryptoVault = createCryptoVault();
+
+  const extensionRegistry = createExtensionAdapterRegistry();
+  const extensionGateway = createExtensionGateway({
+    middlewarePipeline,
+    extensionRegistry,
+    initialStates: config.initialExtensionStates,
+    policy: config.extensionPolicy,
+  });
+  const skillInstallerGateway = createSkillInstallerGateway({
+    middlewarePipeline,
+    extensionGateway,
+    extensionRegistry,
+    skillAdapter: {
+      parseSkillManifest,
+      verifySkillProvenance,
+      createSkillCapabilityAdapter,
+    },
+    policy: config.skillPolicy,
+  });
+  const mcpConnectorGateway = createMcpConnectorGateway({
+    middlewarePipeline,
+    extensionGateway,
+    extensionRegistry,
+    mcpAdapter: config.mcpAdapter ?? {
+      async probeConnection() { throw new Error("mcpAdapter not configured"); },
+      async importToolCatalog() { throw new Error("mcpAdapter not configured"); },
+      createCapabilityAdapter() { throw new Error("mcpAdapter not configured"); },
+    },
+    policy: config.mcpPolicy,
+  });
+  const pluginInstallerGateway = createPluginInstallerGateway({
+    middlewarePipeline,
+    extensionGateway,
+    extensionRegistry,
+    pluginAdapter: {
+      mapPluginDescriptor,
+      verifyPluginAuthBindings,
+      createPluginCapabilityAdapter,
+    },
+    policy: config.pluginPolicy,
+  });
 
   const gateway = createControlPlaneGateway({
     middlewarePipeline,
@@ -195,6 +259,7 @@ export function createControlPlaneService(config = {}) {
       const handoffRoutingTelemetryEvents =
         handoffRoutingTelemetryCollector.listState();
       const usageTelemetryEvents = usageTelemetryCollector.listState();
+      const extensions = extensionGateway.listStates();
       return Object.freeze({
         status: "ok",
         contractCount: contractRegistry.list().length,
@@ -205,6 +270,7 @@ export function createControlPlaneService(config = {}) {
         taskReplayKeyCount: replayKeys.length,
         handoffRoutingTelemetryCount: handoffRoutingTelemetryEvents.length,
         usageTelemetryCount: usageTelemetryEvents.length,
+        extensionCount: extensions.length,
       });
     },
 
@@ -423,5 +489,52 @@ export function createControlPlaneService(config = {}) {
     async embedText(request) {
       return providerGateway.embed(request);
     },
+
+    /**
+     * @param {unknown} request
+     * @returns {Promise<Record<string, unknown>>}
+     */
+    async executeExtension(request) {
+      return extensionGateway.execute(request);
+    },
+
+    /**
+     * @param {unknown} request
+     * @returns {Promise<Record<string, unknown>>}
+     */
+    async applyExtensionLifecycle(request) {
+      return extensionGateway.applyLifecycle(request);
+    },
+
+    /**
+     * @returns {readonly Record<string, unknown>[]}
+     */
+    listExtensionStates() {
+      return extensionGateway.listStates();
+    },
+
+    /**
+     * @param {unknown} request
+     * @returns {Promise<Record<string, unknown>>}
+     */
+    async installSkill(request) {
+      return skillInstallerGateway.install(request);
+    },
+
+    /**
+     * @param {unknown} request
+     * @returns {Promise<Record<string, unknown>>}
+     */
+    async syncMcpServer(request) {
+      return mcpConnectorGateway.sync(request);
+    },
+
+    /**
+     * @param {unknown} request
+     * @returns {Promise<Record<string, unknown>>}
+     */
+    async installPlugin(request) {
+      return pluginInstallerGateway.install(request);
+    }
   });
 }

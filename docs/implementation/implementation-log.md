@@ -28,6 +28,20 @@ Use this section for currently in-flight work. Move items to `Completed Items` w
 
 Record completed work in reverse chronological order (newest first).
 
+### 2026-02-25 - POLAR-RUNTIME-001 - Agent Profiles: Handoff Boundaries & Fallback Routing
+
+1. Status: Done
+2. Owner: Antigravity
+3. Summary: Implemented the backend logic mapped to the `polar config set` zero-file documentation updates:
+   - Updated `routing-policy-engine.mjs` to dynamically parse and strictly enforce the `allowedHandoffTargets` array passed via profile config constraints. Any routes explicitly delegating to or fan-out grouping unlisted sub-agents will deterministically fail validation.
+   - Updated `handoff-gateway.mjs` to bubble up the `fallbackRoutingId` out of control plane profile configurations. If the handoff routing or execution logic crashes natively, the failure subgraph automatically attaches `output.fallbackRoutingId` for the pipeline to safely direct error events to 0-skill, specialized error-handling bots rather than throwing stack traces to end users.
+4. Files changed:
+   - `packages/polar-runtime-core/src/routing-policy-engine.mjs`
+   - `packages/polar-runtime-core/src/handoff-gateway.mjs`
+5. Validation performed: Validated successfully via the `@polar/runtime-core` test suite (231 passing invariant tests).
+6. Follow-up: Evaluate wiring orchestrator loops into actively consuming `fallbackRoutingId` payloads when a handoff formally fails.
+7. Blockers: None.
+
 ### 2026-02-25 - DOC-CONFIG-OVERHAUL-001 - CLI & UI Configuration Overhaul
 
 1. Status: Done

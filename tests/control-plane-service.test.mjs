@@ -7,10 +7,9 @@ import { createControlPlaneService } from "../packages/polar-control-plane/src/i
 test("control-plane service health reports contract and record counts", async () => {
   const service = createControlPlaneService();
 
-  const initialHealth = service.health();
-  assert.deepEqual(initialHealth, {
+  assert.deepEqual(service.health(), {
     status: "ok",
-    contractCount: 30,
+    contractCount: 35,
     recordCount: 0,
     sessionCount: 0,
     taskCount: 0,
@@ -18,6 +17,7 @@ test("control-plane service health reports contract and record counts", async ()
     taskReplayKeyCount: 0,
     handoffRoutingTelemetryCount: 0,
     usageTelemetryCount: 0,
+    extensionCount: 0,
   });
 
   await service.upsertConfig({
@@ -30,7 +30,7 @@ test("control-plane service health reports contract and record counts", async ()
 
   assert.deepEqual(service.health(), {
     status: "ok",
-    contractCount: 30,
+    contractCount: 35,
     recordCount: 1,
     sessionCount: 0,
     taskCount: 0,
@@ -38,6 +38,7 @@ test("control-plane service health reports contract and record counts", async ()
     taskReplayKeyCount: 0,
     handoffRoutingTelemetryCount: 0,
     usageTelemetryCount: 0,
+    extensionCount: 0,
   });
 });
 
@@ -447,7 +448,7 @@ test("control-plane service proxies task-board operations", async () => {
 
   assert.deepEqual(service.health(), {
     status: "ok",
-    contractCount: 30,
+    contractCount: 35,
     recordCount: 0,
     sessionCount: 0,
     taskCount: 2,
@@ -455,6 +456,7 @@ test("control-plane service proxies task-board operations", async () => {
     taskReplayKeyCount: 1,
     handoffRoutingTelemetryCount: 0,
     usageTelemetryCount: 0,
+    extensionCount: 0,
   });
 });
 
