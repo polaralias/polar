@@ -132,11 +132,50 @@ function normalizeOptionalIntegerMin(value, fieldName, min) {
 }
 
 /**
+ * @param {unknown} value
+ * @param {string} fieldName
+ * @returns {readonly string[]|undefined}
+ */
+function normalizeOptionalStringArray(value, fieldName) {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (!Array.isArray(value)) {
+    throw new ContractValidationError(`Invalid ${fieldName}`, {
+      fieldName,
+      reason: "must be an array of non-empty strings",
+      value,
+    });
+  }
+
+  const normalized = [];
+  const seen = new Set();
+  for (let index = 0; index < value.length; index += 1) {
+    const item = value[index];
+    if (typeof item !== "string" || item.length === 0) {
+      throw new ContractValidationError(`Invalid ${fieldName}[${index}]`, {
+        fieldName,
+        index,
+        reason: "must be a non-empty string",
+      });
+    }
+    if (!seen.has(item)) {
+      seen.add(item);
+      normalized.push(item);
+    }
+  }
+
+  return Object.freeze(normalized);
+}
+
+/**
  * @param {Record<string, unknown>} request
  * @returns {{
  *   allowedHandoffModes?: readonly ("direct"|"delegate"|"fanout-fanin")[],
  *   defaultHandoffMode?: "direct"|"delegate"|"fanout-fanin",
  *   maxFanoutAgents?: number,
+ *   allowedHandoffTargets?: readonly string[],
  * }}
  */
 function parseResolvedProfileRoutingConstraints(request) {
@@ -159,6 +198,11 @@ function parseResolvedProfileRoutingConstraints(request) {
     2,
   );
 
+  const allowedHandoffTargets = normalizeOptionalStringArray(
+    profileConfig.allowedHandoffTargets,
+    "resolvedProfileConfig.allowedHandoffTargets",
+  );
+
   if (
     defaultHandoffMode !== undefined &&
     allowedHandoffModes !== undefined &&
@@ -177,6 +221,7 @@ function parseResolvedProfileRoutingConstraints(request) {
     allowedHandoffModes,
     defaultHandoffMode,
     maxFanoutAgents,
+    allowedHandoffTargets,
   });
 }
 
@@ -314,6 +359,41 @@ function applyMaxFanoutConstraint(route, maxFanoutAgents) {
     mode: route.mode,
     targetAgentIds: Object.freeze(route.targetAgentIds.slice(0, maxFanoutAgents)),
   });
+}
+
+/**
+ * @param {Record<string, unknown>} route
+ * @param {readonly string[]|undefined} allowedHandoffTargets
+ * @returns {Record<string, unknown>}
+ */
+function applyAllowedHandoffTargetsConstraint(route, allowedHandoffTargets) {
+  if (allowedHandoffTargets === undefined || route.mode === "direct") {
+    return route;
+  }
+
+  const allowedSet = new Set(allowedHandoffTargets);
+
+  if (route.mode === "delegate") {
+    if (typeof route.targetAgentId === "string" && !allowedSet.has(route.targetAgentId)) {
+      throw new ContractValidationError("Target agent is not in allowedHandoffTargets", {
+        targetAgentId: route.targetAgentId,
+        allowedHandoffTargets,
+      });
+    }
+    return route;
+  }
+
+  if (route.mode === "fanout-fanin" && Array.isArray(route.targetAgentIds)) {
+    const invalidTargets = route.targetAgentIds.filter(id => !allowedSet.has(id));
+    if (invalidTargets.length > 0) {
+      throw new ContractValidationError("One or more target agents are not in allowedHandoffTargets", {
+        invalidTargets,
+        allowedHandoffTargets,
+      });
+    }
+  }
+
+  return route;
 }
 
 /**
@@ -470,8 +550,12 @@ export function createRoutingPolicyEngine(config = {}) {
       }
 
       const validatedRoute = validateRoute(route);
-      const modeConstrainedRoute = applyAllowedHandoffModesConstraint(
+      const targetConstrainedRoute = applyAllowedHandoffTargetsConstraint(
         validatedRoute,
+        constraints.allowedHandoffTargets,
+      );
+      const modeConstrainedRoute = applyAllowedHandoffModesConstraint(
+        targetConstrainedRoute,
         parsed,
         constraints.allowedHandoffModes,
         constraints.defaultHandoffMode,

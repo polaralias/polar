@@ -580,6 +580,11 @@ function toHandoffInput(
         : request.traceMetadata;
   }
 
+  const fallbackRoutingId = resolvedProfile?.profileConfig?.fallbackRoutingId;
+  if (typeof fallbackRoutingId === "string" && fallbackRoutingId.length > 0) {
+    input.fallbackRoutingId = fallbackRoutingId;
+  }
+
   return input;
 }
 
@@ -612,6 +617,10 @@ function createHandoffOutputBase(status, input, projectedScope) {
   }
   if (input.routingDiagnostics !== undefined) {
     output.routingDiagnostics = input.routingDiagnostics;
+  }
+  
+  if (input.fallbackRoutingId !== undefined) {
+    output.fallbackRoutingId = input.fallbackRoutingId;
   }
 
   return output;
