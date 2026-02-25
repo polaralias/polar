@@ -28,6 +28,22 @@ Use this section for currently in-flight work. Move items to `Completed Items` w
 
 Record completed work in reverse chronological order (newest first).
 
+### 2026-02-25 - DOC-CONFIG-OVERHAUL-001 - CLI & UI Configuration Overhaul
+
+1. Status: Done
+2. Owner: Antigravity
+3. Summary: Overhauled the canonical documentation (`README.md`) to reflect a portable "Quick Run" startup. Shifted the focus away from hardcoded `.js` runtime initializations to scalable Web UI interfaces and declarative `polar.config.json` CLI deployments. Explicit configuration mappings were authored for:
+   - **LLM Providers**: (e.g. OpenAI, Anthropic, Ollama, vLLM)
+   - **Agent Profiles & Handoffs**: Sub-agent pinning (Anthropic for writing, Gemini for research) and strictly governing `allowedHandoffTargets`.
+   - **Extension Fabric**: Installed skills and `stdio`/SSE-based MCP connections.
+   - **Automations**: Cron triggers bound to `agentProfileId`.
+   - **Channels / Ingress**: Slack `signingSecret`, Discord `publicKey`, and Telegram Webhooks.
+4. Files changed:
+   - `README.md`
+5. Validation performed: n/a
+6. Follow-up: Evaluate expanding the `polar init` CLI tooling in reality to parse standard config mapping arrays internally.
+7. Blockers: None.
+
 ### 2026-02-24 - SECURITY-HARDENING-001 - Phase 7 Crypto/Vault controls and secrets parity
 
 1. Status: Done
