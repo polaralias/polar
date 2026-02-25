@@ -455,6 +455,7 @@ export function createTelemetryAlertGateway({
   usageTelemetryCollector,
   handoffTelemetryCollector,
   taskBoardGateway,
+  budgetGateway,
   defaultExecutionType = "tool",
   now = () => Date.now(),
 }) {
@@ -798,7 +799,25 @@ export function createTelemetryAlertGateway({
             };
             if (input.actorId) { taskRequest.actorId = input.actorId; }
             if (input.sessionId) { taskRequest.sessionId = input.sessionId; }
+
             if (input.metadata) { taskRequest.metadata = input.metadata; }
+
+            // Execute Policy Actions based on Alert Code (Cost/Telemetry Workflows)
+            if (alert.source === "usage" && alert.severity === "critical" && budgetGateway) {
+              try {
+                // Automatically restrict the budget pipeline upon critical cost warnings/fallback thrashing
+                await budgetGateway.upsertPolicy({
+                  scope: "workspace",
+                  targetId: input.workspaceId || "global-fallback",
+                  maxLimitUsd: 15.00, // Clamp expenditure threshold
+                  enforceBlocking: true,
+                  resetIntervalMs: 86400000 // 24 hours
+                });
+                taskRequest.description += "\n\n**Automated Action Taken**: System automatically enforced a hard budget boundary of $15.00 due to critical usage anomalies.";
+              } catch (e) {
+                // Non-fatal if state-store is unconfigured
+              }
+            }
 
             try {
               const upsertResult = await taskBoardGateway.upsertTask(taskRequest);

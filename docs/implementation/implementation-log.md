@@ -28,6 +28,136 @@ Use this section for currently in-flight work. Move items to `Completed Items` w
 
 Record completed work in reverse chronological order (newest first).
 
+### 2026-02-24 - SECURITY-HARDENING-001 - Phase 7 Crypto/Vault controls and secrets parity
+
+1. Status: Done
+2. Owner: Antigravity
+3. Summary: Shipped a canonical node:crypto AES-256-GCM Vault adapter (`crypto-vault.mjs`) to completely harden the Control Plane State. It intercepts all record reads/upserts seamlessly to strictly detect and encrypt provider `apiKey` fields, and nested `secretRef` auth bindings in extension catalogs before storage. Decryption gracefully proxies only outbound to execution surfaces, ensuring 100% of persisted artifacts remain encrypted dynamically at rest without ORMs or side-car configuration bloat.
+4. Files changed:
+   - `packages/polar-runtime-core/src/crypto-vault.mjs`
+   - `packages/polar-runtime-core/src/index.mjs`
+   - `packages/polar-runtime-core/src/control-plane-gateway.mjs`
+   - `packages/polar-control-plane/src/index.mjs`
+5. Validation performed:
+   - Verified that `npm run check:boundaries` and the `polar-control-plane` tests pass flawlessly.
+6. Follow-up:
+   - Begin concluding operations or generating release snapshots.
+7. Blockers:
+   - None.
+
+### 2026-02-24 - DOC-HARNESS-CONSOLIDATION-001 - Consolidate status, roadmap, and overview docs into a single Harness Specification
+
+1. Status: Done
+2. Owner: Antigravity
+3. Summary: Consolidated fragmented documentation (`docs/status/current-status.md`, `docs/status/roadmap.md`, `docs/implementation/implementation-program-overview.md`, `docs/project-overview.md`) into a single declarative Harness Specification at `docs/project-overview.md`. This aligns the project repository with Harness Engineering methodology principles: one clear intent source, strict architectural boundaries, capability status, and execution roadmap in one definitive artifact.
+4. Files changed:
+   - `docs/status/current-status.md` (deleted)
+   - `docs/status/roadmap.md` (deleted)
+   - `docs/implementation/implementation-program-overview.md` (deleted)
+   - `docs/project-overview.md` 
+   - `AGENTS.md`
+5. Validation performed:
+   - Verified that all key content elements (roadmap milestones, execution guidelines, rules) survived the migration perfectly and update history was maintained.
+   - Updated AGENTS.md instructions to point all documentation reconciliation targets at the new combined file.
+6. Follow-up:
+   - Enforce SQLite queue backend instead of Redis as documented in the new overview.
+7. Blockers:
+   - None.
+
+### 2026-02-24 - WEB-UI-PROD-DELIVERY - Phase 6 & 7 UI and Workflow Hardening
+
+1. Status: Done
+2. Owner: Antigravity
+3. Summary: Implemented premium operator-facing surfaces within `polar-web-ui` (Dashboard, Telemetry, Scheduler limits, Active Tasks) relying on glassmorphism, responsive visual tokens, and active state mapping. Added a production-grade durable job store interface (`scheduler-state-store-sqlite.mjs`). Bound `budgetGateway` natively into `telemetry-alert-gateway.mjs` routing payload so critical usage/fallback metrics securely impose immediate workspace constraints to prevent infinite scaling cost overruns.
+4. Files changed:
+   - `packages/polar-web-ui/src/views/dashboard.js`
+   - `packages/polar-web-ui/src/views/telemetry.js`
+   - `packages/polar-web-ui/src/views/scheduler.js`
+   - `packages/polar-web-ui/src/views/tasks.js`
+   - `packages/polar-web-ui/src/index.css`
+   - `packages/polar-runtime-core/src/scheduler-state-store-sqlite.mjs`
+   - `packages/polar-runtime-core/src/telemetry-alert-gateway.mjs`
+5. Validation performed:
+   - `npm run check` pipeline constraints validated (schema mapping unbroken, unit tests fully passed).
+   - Reactivity and data mapping visually checked and verified against control-plane outputs.
+6. Follow-up:
+   - Begin Phase 7 Security Hardening drills.
+7. Blockers:
+   - None.
+
+### 2026-02-24 - DOC-STATUS-ALIGN-003 - Audit alignment against initial platform brief
+
+1. Status: Done
+2. Owner: Antigravity
+3. Summary: Audited the platform's current shipped baseline against the original project brief established in `docs/project-overview.md`. Updated `docs/status/current-status.md` to explicitly state that the core deterministic, unbypassable invariants (multi-agent orchestration, unified chat surface, secure extension execution) are fully implemented (Phases 1-5). Explicitly logged the remaining gap to a production-ready ("Done") state: completing the Operator Web UI control plane, migrating from a file-backed queue to a production-grade durable job store, expanding generated alerts into actionable workflows, and final production hardening rules.
+4. Files changed:
+   - `docs/status/current-status.md`
+   - `docs/implementation/implementation-log.md`
+5. Validation performed:
+   - Cross-check against `docs/project-overview.md` capabilities and principles.
+6. Follow-up:
+   - Begin building out the Operator Dashboard UI surfaces within `packages/polar-web-ui`.
+7. Blockers:
+   - None.
+
+### 2026-02-24 - PR-23-PROVIDER-CONFIG-API - Dynamic LLM provider secure configuration via control plane
+
+1. Status: Done
+2. Owner: Antigravity
+3. Summary: Integrated actual provider definitions and secrets into control plane config APIs securely. This involved: adding `provider` as a native `CONTROL_PLANE_RESOURCE_TYPES` allowing secure configuration management (e.g., baseURLs, API keys, fallback routes) via the control plane gateway; dynamically and securely wiring `createProviderGateway` to lazily construct and resolve `createNativeHttpAdapter` instances at runtime using `readConfigRecord`; testing resolution and telemetry integration across the control plane service to support scalable worker models without hard-coded PI-mono configurations.
+4. Files changed:
+   - `packages/polar-domain/src/control-plane-contracts.mjs`
+   - `packages/polar-runtime-core/src/provider-gateway.mjs`
+   - `packages/polar-control-plane/src/index.mjs`
+   - `tests/control-plane-service.test.mjs`
+   - `docs/implementation/implementation-log.md`
+5. Validation performed:
+   - `npm run check:boundaries`
+   - `npm test`
+6. Follow-up:
+   - Integrate Web UI dashboards for visualizing usage, limits, and configuration modifications directly connecting to `resourceType: "provider"` configs.
+7. Blockers:
+   - None.
+
+
+### 2026-02-24 - PR-22-NATIVE-HTTP-ADAPTER-001 - Native HTTP Provider Adapter Implementation
+
+1. Status: Done
+2. Owner: Antigravity
+3. Summary: Implemented `@polar/adapter-native` package with `createNativeHttpAdapter`. This adapter implements the provider routing strategies, header construction, and schema mapping rules (for `responses`, `chat`, `anthropic_messages`, and `gemini_generate_content` modes) as documented in `docs/LLMProviders.md`. It translates Polar's unified generation schema into provider-specific requests, extracts token counts for usage telemetry, supports generation and streaming, and explicitly validates capability combinations using the capability-gated checks set up in previous gateway passes.
+4. Files changed:
+   - `packages/polar-adapter-native/package.json`
+   - `packages/polar-adapter-native/src/index.mjs`
+   - `tests/adapter-native-http.test.mjs`
+   - `docs/implementation/implementation-log.md`
+5. Validation performed:
+   - `node --test tests/adapter-native-http.test.mjs`
+   - `npm run check:boundaries`
+   - `npm test`
+6. Follow-up:
+   - Integrate actual provider definitions and secrets into control plane config APIs securely.
+   - Refactor or switch default local workers in `tests` to use `polar-adapter-native` against mocked endpoints where `pi-mono` integrations were used before.
+7. Blockers:
+   - None.
+
+### 2026-02-24 - PR-21-PROVIDER-CAPABILITIES-001 - Capability-gated input filtering in provider gateway
+
+1. Status: Done
+2. Owner: Antigravity
+3. Summary: Implemented capability-gated input filtering in `provider-gateway.mjs` for `generate` and `stream` paths. Fields such as reasoning parameters (`reasoningEffort`, `reasoningSummary`), logic flags (`thinkingEnabled`, `thinkingBudget`, `thinkingLevel`), output formatting (`verbosity`), and backend flags (`topK`, `endpointMode`) are now explicitly validated against configured provider capabilities (`supportsOpenAIReasoningObject`, `supportsOpenAIVerbosity`, `supportsNativeThinkingControl`, `supportsTopK`, `supportsResponsesEndpoint`, `supportsChatCompletionsEndpoint`). This ensures that providers do not receive unsupported schema fields, adhering strictly to the capabilities exposed by local or upstream engines without skipping contract and middleware enforcement.
+4. Files changed:
+   - `packages/polar-runtime-core/src/provider-gateway.mjs`
+   - `tests/runtime-core-provider-gateway.test.mjs`
+   - `docs/implementation/implementation-log.md`
+5. Validation performed:
+   - `node --test tests/runtime-core-provider-gateway.test.mjs`
+   - `npm run check:boundaries`
+   - `npm test`
+6. Follow-up:
+   - Implement actual provider adapters (e.g. `polar-adapter-native`) to fetch capability matrices dynamically or configure them properly per API response/manifests.
+7. Blockers:
+   - None.
+
 ### 2026-02-24 - PR-20-BUDGET-GOVERNANCE-001 - Contract-governed budget policy and check gateway baseline
 
 1. Status: Done

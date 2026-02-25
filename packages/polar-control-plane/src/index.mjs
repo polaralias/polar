@@ -2,11 +2,13 @@ import {
   createDefaultIngressHealthChecks,
   createDefaultIngressNormalizers,
 } from "../../polar-adapter-channels/src/index.mjs";
+import { createNativeHttpAdapter } from "../../polar-adapter-native/src/index.mjs";
 import {
   createChatIngressGateway,
   createChatManagementGateway,
   createContractRegistry,
   createControlPlaneGateway,
+  createCryptoVault,
   createBudgetGateway,
   createHandoffRoutingTelemetryCollector,
   createHandoffRoutingTelemetryGateway,
@@ -28,6 +30,8 @@ import {
   registerTelemetryAlertRouteContract,
   registerTaskBoardContracts,
   registerUsageTelemetryContract,
+  createProviderGateway,
+  registerProviderOperationContracts,
 } from "../../polar-runtime-core/src/index.mjs";
 
 /**
@@ -79,6 +83,7 @@ export function createControlPlaneService(config = {}) {
   registerTelemetryAlertContract(contractRegistry);
   registerTelemetryAlertRouteContract(contractRegistry);
   registerSchedulerContracts(contractRegistry);
+  registerProviderOperationContracts(contractRegistry);
 
   const handoffRoutingTelemetryCollector =
     config.handoffRoutingTelemetryCollector ??
@@ -100,9 +105,12 @@ export function createControlPlaneService(config = {}) {
     auditSink: config.auditSink,
   });
 
+  const cryptoVault = createCryptoVault();
+
   const gateway = createControlPlaneGateway({
     middlewarePipeline,
     initialRecords: config.initialRecords,
+    cryptoVault,
     now: config.now,
   });
   const budgetGateway = createBudgetGateway({
@@ -156,6 +164,25 @@ export function createControlPlaneService(config = {}) {
   const profileResolutionGateway = createProfileResolutionGateway({
     middlewarePipeline,
     readConfigRecord: gateway.readConfigRecord,
+  });
+  const providerGateway = createProviderGateway({
+    middlewarePipeline,
+    usageTelemetryCollector,
+    now: config.now,
+    resolveProvider: async (providerId) => {
+      const record = gateway.readConfigRecord("provider", providerId);
+      if (!record || !record.config) {
+        return undefined;
+      }
+      return createNativeHttpAdapter({
+        providerId,
+        endpointMode: record.config.endpointMode || "chat",
+        baseUrl: record.config.baseUrl,
+        apiKey: record.config.apiKey,
+        defaultHeaders: record.config.defaultHeaders,
+        capabilities: record.config.capabilities,
+      });
+    },
   });
 
   return Object.freeze({
@@ -371,6 +398,30 @@ export function createControlPlaneService(config = {}) {
      */
     async runSchedulerQueueAction(request = {}) {
       return schedulerGateway.runQueueAction(request);
+    },
+
+    /**
+     * @param {unknown} request
+     * @returns {Promise<Record<string, unknown>>}
+     */
+    async generateOutput(request) {
+      return providerGateway.generate(request);
+    },
+
+    /**
+     * @param {unknown} request
+     * @returns {Promise<Record<string, unknown>>}
+     */
+    async streamOutput(request) {
+      return providerGateway.stream(request);
+    },
+
+    /**
+     * @param {unknown} request
+     * @returns {Promise<Record<string, unknown>>}
+     */
+    async embedText(request) {
+      return providerGateway.embed(request);
     },
   });
 }

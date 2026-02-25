@@ -16,7 +16,6 @@ Read these first before implementing:
 2. `docs/project-overview.md`
 3. `docs/architecture/runtime-topology.md`
 4. `docs/architecture/tooling-contract-middleware.md`
-5. `docs/implementation/implementation-program-overview.md`
 
 ## Non-Negotiable Runtime Invariants
 
@@ -77,7 +76,7 @@ Implement in this order unless explicitly directed otherwise:
 ## Documentation Reconciliation Lessons (2026-02-22)
 
 1. Treat `docs/implementation/implementation-log.md` plus passing tests as the implementation truth source when reconciling status documents.
-2. Keep `docs/status/current-status.md`, `docs/status/roadmap.md`, and `docs/implementation/implementation-program-overview.md` synchronized in the same pass when baseline delivery state changes.
+2. Keep `docs/project-overview.md` synchronized when baseline delivery state changes.
 3. Convert stale `Planned` or pre-implementation wording to execution-aware language once gateway baselines are shipped, while clearly calling out remaining integration/hardening work.
 4. When documentation drift is found, log it as explicit audit work and close it with a completed implementation-log entry after reconciliation.
 

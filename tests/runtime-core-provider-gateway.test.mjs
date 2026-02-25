@@ -248,3 +248,36 @@ test("rejects missing provider adapter before execution", async () => {
       error.code === "POLAR_RUNTIME_EXECUTION_ERROR",
   );
 });
+
+test("strips unsupported capability fields from input", async () => {
+  let receivedInput;
+  const gateway = setupGateway({
+    primary: createProvider("primary", {
+      capabilities: {
+        supportsOpenAIReasoningObject: false,
+        supportsOpenAIVerbosity: true,
+      },
+      async generate(input) {
+        receivedInput = input;
+        return {
+          providerId: "primary",
+          model: "m-1",
+          text: "cap-check",
+        };
+      },
+    }),
+  });
+
+  await gateway.generate({
+    providerId: "primary",
+    model: "m-1",
+    prompt: "hello",
+    reasoningEffort: "high",
+    verbosity: "high",
+    topK: 50,
+  });
+
+  assert.equal(receivedInput.reasoningEffort, undefined);
+  assert.equal(receivedInput.topK, undefined);
+  assert.equal(receivedInput.verbosity, "high");
+});

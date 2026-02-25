@@ -1,4 +1,5 @@
 export { createContractKey, createContractRegistry } from "./contract-registry.mjs";
+export { createCryptoVault } from "./crypto-vault.mjs";
 export { createMiddlewarePipeline } from "./middleware-pipeline.mjs";
 export { createAutomationGateway, registerAutomationContracts } from "./automation-gateway.mjs";
 export { createBudgetGateway, registerBudgetContracts } from "./budget-gateway.mjs";

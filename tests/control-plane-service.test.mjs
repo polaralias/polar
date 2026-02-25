@@ -10,7 +10,7 @@ test("control-plane service health reports contract and record counts", async ()
   const initialHealth = service.health();
   assert.deepEqual(initialHealth, {
     status: "ok",
-    contractCount: 27,
+    contractCount: 30,
     recordCount: 0,
     sessionCount: 0,
     taskCount: 0,
@@ -30,7 +30,7 @@ test("control-plane service health reports contract and record counts", async ()
 
   assert.deepEqual(service.health(), {
     status: "ok",
-    contractCount: 27,
+    contractCount: 30,
     recordCount: 1,
     sessionCount: 0,
     taskCount: 0,
@@ -447,7 +447,7 @@ test("control-plane service proxies task-board operations", async () => {
 
   assert.deepEqual(service.health(), {
     status: "ok",
-    contractCount: 27,
+    contractCount: 30,
     recordCount: 0,
     sessionCount: 0,
     taskCount: 2,

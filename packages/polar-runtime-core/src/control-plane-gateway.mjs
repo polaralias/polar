@@ -152,12 +152,14 @@ export function registerControlPlaneContracts(contractRegistry) {
  *   middlewarePipeline: ReturnType<import("./middleware-pipeline.mjs").createMiddlewarePipeline>,
  *   initialRecords?: readonly Record<string, unknown>[],
  *   defaultExecutionType?: "tool"|"handoff"|"automation"|"heartbeat",
+ *   cryptoVault?: { encryptSecretsInObject: (val: unknown) => unknown, decryptSecretsInObject: (val: unknown) => unknown },
  *   now?: () => number
  * }} config
  */
 export function createControlPlaneGateway({
   middlewarePipeline,
   initialRecords = [],
+  cryptoVault,
   defaultExecutionType = "tool",
   now = () => Date.now(),
 }) {
@@ -173,10 +175,10 @@ export function createControlPlaneGateway({
       storedRecordSchema.schemaId,
     );
     const key = createResourceKey(
-      /** @type {"profile"|"channel"|"extension"|"policy"|"automation"} */ (
+      /** @type {"profile"|"channel"|"extension"|"policy"|"automation"} */(
         validated.resourceType
       ),
-      /** @type {string} */ (validated.resourceId),
+      /** @type {string} */(validated.resourceId),
     );
     records.set(key, validated);
   }
@@ -244,17 +246,21 @@ export function createControlPlaneGateway({
           }
 
           const nextVersion = previousVersion + 1;
+          const configToStore = cryptoVault
+            ? cryptoVault.encryptSecretsInObject(input.config)
+            : input.config;
+
           const stored = validateRequest(
             {
               resourceType,
               resourceId,
               version: nextVersion,
-              config: input.config,
+              config: configToStore,
               updatedAtMs: now(),
               ...(input.actorId !== undefined
                 ? {
-                    updatedBy: input.actorId,
-                  }
+                  updatedBy: input.actorId,
+                }
                 : {}),
             },
             storedRecordSchema.schemaId,
@@ -315,7 +321,7 @@ export function createControlPlaneGateway({
             resourceType,
             resourceId,
             version: record.version,
-            config: record.config,
+            config: cryptoVault ? cryptoVault.decryptSecretsInObject(record.config) : record.config,
           };
         },
       );
@@ -353,7 +359,7 @@ export function createControlPlaneGateway({
           const includeValues = input.includeValues === true;
           const limit = /** @type {number|undefined} */ (input.limit) ?? 50;
           const offset = parseCursor(
-            /** @type {string|undefined} */ (input.cursor),
+            /** @type {string|undefined} */(input.cursor),
           );
 
           const typedRecords = [...records.values()]
@@ -368,7 +374,7 @@ export function createControlPlaneGateway({
               Object.freeze({
                 resourceId: record.resourceId,
                 version: record.version,
-                ...(includeValues ? { config: record.config } : {}),
+                ...(includeValues ? { config: cryptoVault ? cryptoVault.decryptSecretsInObject(record.config) : record.config } : {}),
               }),
             ),
           );
@@ -380,8 +386,8 @@ export function createControlPlaneGateway({
             totalCount,
             ...(nextOffset < totalCount
               ? {
-                  nextCursor: String(nextOffset),
-                }
+                nextCursor: String(nextOffset),
+              }
               : {}),
           };
         },
@@ -414,7 +420,10 @@ export function createControlPlaneGateway({
         return undefined;
       }
 
-      return Object.freeze({ ...record });
+      return Object.freeze({
+        ...record,
+        config: cryptoVault ? cryptoVault.decryptSecretsInObject(record.config) : record.config
+      });
     },
 
     /**
@@ -423,7 +432,10 @@ export function createControlPlaneGateway({
     listStoredRecords() {
       return Object.freeze(
         [...records.values()]
-          .map((record) => Object.freeze({ ...record }))
+          .map((record) => Object.freeze({
+            ...record,
+            config: cryptoVault ? cryptoVault.decryptSecretsInObject(record.config) : record.config
+          }))
           .sort((left, right) => {
             const leftKey = createResourceKey(left.resourceType, left.resourceId);
             const rightKey = createResourceKey(right.resourceType, right.resourceId);

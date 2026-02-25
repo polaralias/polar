@@ -13,6 +13,7 @@ export const CONTROL_PLANE_RESOURCE_TYPES = Object.freeze([
   "extension",
   "policy",
   "automation",
+  "provider",
 ]);
 
 export const CONTROL_PLANE_UPSERT_STATUSES = Object.freeze([

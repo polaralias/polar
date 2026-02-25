@@ -1,0 +1,7 @@
+npm error Lifecycle script `test` failed with error:
+npm error workspace @polar/runtime-core@0.1.0
+npm error location C:\Users\james.DESKTOP-Q8VOBFS\Documents\Development\polar\packages\polar-runtime-core
+npm error Missing script: "test"
+npm error
+npm error To see a list of scripts, run:
+npm error   npm run --workspace=@polar/runtime-core@0.1.0

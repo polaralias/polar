@@ -163,10 +163,18 @@ function validateRequest(value, schemaId) {
 /**
  * @param {Map<string, ProviderEngine>} providers
  * @param {string} providerId
- * @returns {ProviderEngine}
+ * @param {((id: string) => Promise<ProviderEngine|undefined>)|undefined} resolveProvider
+ * @returns {Promise<ProviderEngine>}
  */
-function getProviderOrThrow(providers, providerId) {
-  const provider = providers.get(providerId);
+async function getProviderOrThrow(providers, providerId, resolveProvider) {
+  let provider = providers.get(providerId);
+  if (!provider && resolveProvider) {
+    provider = await resolveProvider(providerId);
+    if (provider) {
+      providers.set(providerId, provider);
+    }
+  }
+
   if (!provider) {
     throw new RuntimeExecutionError(`Provider adapter is not configured: ${providerId}`, {
       providerId,
@@ -179,9 +187,10 @@ function getProviderOrThrow(providers, providerId) {
 /**
  * @param {Map<string, ProviderEngine>} providers
  * @param {{ providerId: string, fallbackProviderIds?: readonly string[] }} request
- * @returns {readonly string[]}
+ * @param {((id: string) => Promise<ProviderEngine|undefined>)|undefined} resolveProvider
+ * @returns {Promise<readonly string[]>}
  */
-function resolveProviderOrder(providers, request) {
+async function resolveProviderOrder(providers, request, resolveProvider) {
   const fallbackProviderIds = request.fallbackProviderIds ?? [];
   const orderedProviderIds = [request.providerId, ...fallbackProviderIds];
   const deduplicated = [];
@@ -193,7 +202,7 @@ function resolveProviderOrder(providers, request) {
     }
 
     seen.add(providerId);
-    getProviderOrThrow(providers, providerId);
+    await getProviderOrThrow(providers, providerId, resolveProvider);
     deduplicated.push(providerId);
   }
 
@@ -253,7 +262,8 @@ export function registerProviderOperationContracts(contractRegistry) {
 /**
  * @param {{
  *   middlewarePipeline: ReturnType<import("./middleware-pipeline.mjs").createMiddlewarePipeline>,
- *   providers: Record<string, ProviderEngine>|Map<string, ProviderEngine>,
+ *   providers?: Record<string, ProviderEngine>|Map<string, ProviderEngine>,
+ *   resolveProvider?: (providerId: string) => Promise<ProviderEngine|undefined>,
  *   resolveFallbackOrder?: (request: {
  *     operation: "generate"|"stream"|"embed",
  *     providerId: string,
@@ -283,7 +293,8 @@ export function registerProviderOperationContracts(contractRegistry) {
  */
 export function createProviderGateway({
   middlewarePipeline,
-  providers,
+  providers = new Map(),
+  resolveProvider,
   resolveFallbackOrder,
   usageTelemetryCollector = { async recordOperation() { } },
   now = Date.now,
@@ -334,7 +345,7 @@ export function createProviderGateway({
    *   validatedRequest: Record<string, unknown>,
    *   actionId: string,
    *   version: number,
-   *   buildInput: (request: Record<string, unknown>, providerId: string) => Record<string, unknown>
+   *   buildInput: (request: Record<string, unknown>, providerId: string) => Promise<Record<string, unknown>>|Record<string, unknown>
    * }} params
    * @returns {Promise<Record<string, unknown>>}
    */
@@ -360,10 +371,10 @@ export function createProviderGateway({
           fallbackProviderIds: requestFallbackProviderIds,
         })],
       )
-      : resolveProviderOrder(providerMap, {
+      : await resolveProviderOrder(providerMap, {
         providerId: requestProviderId,
         fallbackProviderIds: requestFallbackProviderIds,
-      });
+      }, resolveProvider);
 
     if (!Array.isArray(providerOrder) || providerOrder.length === 0) {
       throw new RuntimeExecutionError(
@@ -382,7 +393,7 @@ export function createProviderGateway({
     const attempts = [];
     for (let index = 0; index < providerOrder.length; index += 1) {
       const providerId = providerOrder[index];
-      const provider = getProviderOrThrow(providerMap, providerId);
+      const provider = await getProviderOrThrow(providerMap, providerId, resolveProvider);
       const isLastProvider = index === providerOrder.length - 1;
 
       try {
@@ -392,7 +403,7 @@ export function createProviderGateway({
             traceId,
             actionId: params.actionId,
             version: params.version,
-            input: params.buildInput(params.validatedRequest, providerId),
+            input: await params.buildInput(params.validatedRequest, providerId),
           },
           async (validatedInput) => {
             const operation = provider[params.operation];
@@ -517,7 +528,9 @@ export function createProviderGateway({
         validatedRequest,
         actionId: PROVIDER_ACTIONS.generate.actionId,
         version: PROVIDER_ACTIONS.generate.version,
-        buildInput: (parsedRequest, providerId) => {
+        buildInput: async (parsedRequest, providerId) => {
+          const provider = await getProviderOrThrow(providerMap, providerId, resolveProvider);
+          const caps = provider.capabilities || {};
           const input = {
             providerId,
             model: parsedRequest.model,
@@ -525,6 +538,17 @@ export function createProviderGateway({
           };
           for (const key of Object.keys(commonGatewayFields)) {
             if (parsedRequest[key] !== undefined) {
+              if (key === "reasoningEffort" && !caps.supportsOpenAIReasoningObject) continue;
+              if (key === "reasoningSummary" && !caps.supportsOpenAIReasoningObject) continue;
+              if (key === "verbosity" && !caps.supportsOpenAIVerbosity) continue;
+              if (key === "thinkingEnabled" && !caps.supportsNativeThinkingControl) continue;
+              if (key === "thinkingBudget" && !caps.supportsNativeThinkingControl) continue;
+              if (key === "thinkingLevel" && !caps.supportsNativeThinkingControl) continue;
+              if (key === "topK" && !caps.supportsTopK) continue;
+              if (key === "endpointMode") {
+                if (parsedRequest[key] === "responses" && !caps.supportsResponsesEndpoint) continue;
+                if (parsedRequest[key] === "chat" && !caps.supportsChatCompletionsEndpoint) continue;
+              }
               input[key] = parsedRequest[key];
             }
           }
@@ -548,7 +572,9 @@ export function createProviderGateway({
         validatedRequest,
         actionId: PROVIDER_ACTIONS.stream.actionId,
         version: PROVIDER_ACTIONS.stream.version,
-        buildInput: (parsedRequest, providerId) => {
+        buildInput: async (parsedRequest, providerId) => {
+          const provider = await getProviderOrThrow(providerMap, providerId, resolveProvider);
+          const caps = provider.capabilities || {};
           const input = {
             providerId,
             model: parsedRequest.model,
@@ -556,6 +582,17 @@ export function createProviderGateway({
           };
           for (const key of Object.keys(commonGatewayFields)) {
             if (parsedRequest[key] !== undefined) {
+              if (key === "reasoningEffort" && !caps.supportsOpenAIReasoningObject) continue;
+              if (key === "reasoningSummary" && !caps.supportsOpenAIReasoningObject) continue;
+              if (key === "verbosity" && !caps.supportsOpenAIVerbosity) continue;
+              if (key === "thinkingEnabled" && !caps.supportsNativeThinkingControl) continue;
+              if (key === "thinkingBudget" && !caps.supportsNativeThinkingControl) continue;
+              if (key === "thinkingLevel" && !caps.supportsNativeThinkingControl) continue;
+              if (key === "topK" && !caps.supportsTopK) continue;
+              if (key === "endpointMode") {
+                if (parsedRequest[key] === "responses" && !caps.supportsResponsesEndpoint) continue;
+                if (parsedRequest[key] === "chat" && !caps.supportsChatCompletionsEndpoint) continue;
+              }
               input[key] = parsedRequest[key];
             }
           }
