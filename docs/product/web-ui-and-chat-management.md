@@ -55,15 +55,17 @@ Operators can pin agent defaults at multiple scopes:
 2. Workspace profile.
 3. Session-specific override.
 
-Pinned settings include:
+Pinned settings are exclusively governed by the unified Control Plane state (upserted interactively via the Web UI or a portable `polar.config.json` startup bootstrap) and include:
 
-1. Primary and fallback model policy.
-2. System prompt.
-3. Enabled skills.
-4. Connected MCP servers.
-5. Enabled Claude plugins.
-6. Heartbeat defaults.
-7. Safety and approval mode.
+1. Pinned LLM Provider and Model identities (e.g., Anthropic for writing, Gemini for research) to enforce role-based execution domains.
+2. Primary and fallback model policy.
+3. System prompt.
+4. Enabled skills.
+5. Connected MCP servers.
+6. Enabled Claude plugins.
+7. Heartbeat defaults.
+8. Safety and approval mode.
+9. Strictly bounded `allowedHandoffTargets` to prevent downstream privilege escalation across delegated sub-agent roles.
 
 ## Real-Time Management Expectations
 

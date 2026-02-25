@@ -61,9 +61,9 @@ Implement in this order unless explicitly directed otherwise:
 
 1. Prefer small, reviewable PRs mapped to implementation phases.
 2. Add tests with each feature (unit + integration; add e2e where behavior changes).
-3. Do not introduce file-based canonical config for runtime controls.
+3. Do not introduce file-based canonical config for runtime controls, except via the portable `polar.config.json` CLI bootstrap pipeline, which strictly upserts into the Control Plane state.
 4. Preserve deterministic error behavior and explicit failure typing.
-5. Update docs when behavior or architecture decisions change.
+5. Update docs when behavior or architecture decisions change (e.g. enforcing model-pinned handoff configurations).
 6. Never use git to commit changes, ask the user to commit once changes are complete.
 
 ## Agent Message Format

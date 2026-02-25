@@ -56,7 +56,7 @@ Rationale and boundaries:
 ## Data Boundaries
 
 1. Chat/session store for message history and session metadata.
-2. Agent profile store for pinned defaults and configurations.
+2. Control Plane storage for Agent Profiles, tracking pinned provider role configurations, strictly governed handoff targets, and dynamically upserted policies (e.g. from the `polar.config.json` bootstrap).
 3. Extension catalog for installed skills, MCP servers, and plugins.
 4. Contract registry for all callable operations.
 5. Memory store for structured durable facts and recall indexes.

@@ -37,13 +37,16 @@ Endpoint adapters are transport-specific only. They do not own business logic.
 
 Each session can bind to a pinned `Agent Profile` containing:
 
-1. Default model lane policy and fallback policy.
+1. Pinned LLM provider mapping, establishing role-based capabilities (e.g., Anthropic for writing tasks, Gemini for web research).
 2. System prompt and behavior constraints.
 3. Enabled skill set.
 4. Allowed MCP server bindings.
 5. Enabled Claude plugins.
 6. Heartbeat and automation defaults.
 7. Safety mode and approval settings.
+8. Strictly populated `allowedHandoffTargets` boundaries to explicitly govern privilege expansion downstream.
+
+These configurations are fully portable—managed via the operator Web UI or declaratively seeded via `polar.config.json` CLI bootstraps up into the Control Plane state.
 
 Profiles can be:
 
