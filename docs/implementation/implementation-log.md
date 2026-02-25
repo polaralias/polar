@@ -17,16 +17,26 @@ Use this section for currently in-flight work. Move items to `Completed Items` w
 
 | Date | Task/PR | Owner | Status | Scope | Notes |
 | --- | --- | --- | --- | --- | --- |
-| 2026-02-22 | None | n/a | Superseded | n/a | Replaced by scoped active audit entries below. |
-| 2026-02-22 | AUDIT-RUNTIME-MIDDLEWARE-001 | codex | Done | `packages/polar-runtime-core/src/heartbeat-gateway.mjs`, `packages/polar-runtime-core/src/automation-gateway.mjs` | Fixed and moved to Completed Items entry `PR-HARDENING-MIDDLEWARE-002`. |
-| 2026-02-22 | AUDIT-PLUGIN-AUTH-BINDINGS-001 | codex | Done | `packages/polar-runtime-core/src/plugin-installer-gateway.mjs` | Fixed and moved to Completed Items entry `PR-HARDENING-MIDDLEWARE-002`. |
-| 2026-02-22 | AUDIT-MCP-EXPECTED-TOOL-IDS-001 | codex | Done | `packages/polar-runtime-core/src/mcp-connector-gateway.mjs` | Fixed and moved to Completed Items entry `PR-HARDENING-MIDDLEWARE-002`. |
-| 2026-02-22 | AUDIT-STATUS-DRIFT-001 | codex | Done | `docs/status/current-status.md` | Status snapshot reconciled with implemented runtime gateways and regression-backed capabilities; moved to Completed Items entry `DOC-STATUS-ALIGN-002`. |
-| 2026-02-22 | None | n/a | Clear | n/a | No active entries currently |
+| 2026-02-25 | WEB-UI-DASHBOARDS-001 | n/a | To Do | `packages/polar-web-ui` | Build operator-facing telemetry views, task-board management surfaces, and configuration dashboards. |
+| 2026-02-25 | SCHEDULER-SQLITE-001 | n/a | To Do | `packages/polar-runtime-core` | Harden scheduler durability beyond the file-backed baseline by building a production-grade SQLite queue/storage backend. |
+| 2026-02-25 | OPS-HARDENING-001 | n/a | To Do | System-wide | Budget governance interfaces, memory compaction lifecycles, and production telemetry/alerting workflow routing. |
 
 ## Completed Items
 
 Record completed work in reverse chronological order (newest first).
+
+### 2026-02-25 - POLAR-EXTENSIONS-001 - Control Plane Wiring for Extension Gateways
+
+1. Status: Done
+2. Owner: Antigravity
+3. Summary: Integrated the `skillInstallerGateway`, `mcpConnectorGateway`, and `pluginInstallerGateway` into the `createControlPlaneService`. The platform can now receive installation, sync, and capability execution requests for all three extension layers directly through the control plane API. Also added the missing `test` script in `@polar/adapter-extensions` and verified all tests pass across the monorepo. The framework backend capabilities for Phases 1-5 are completely implemented.
+4. Files changed:
+   - `packages/polar-control-plane/src/index.mjs`
+   - `packages/polar-adapter-extensions/package.json`
+   - `tests/control-plane-service.test.mjs`
+5. Validation performed: Validated successfully via the `@polar/adapter-extensions` test suite and the overall monorepo `npm test` script (231 passing tests).
+6. Follow-up: Implement Operator Web UI dashboards for extension management (Skills, MCP servers, Plugins). Replace file-backed queues with SQLite.
+7. Blockers: None.
 
 ### 2026-02-25 - POLAR-RUNTIME-001 - Agent Profiles: Handoff Boundaries & Fallback Routing
 
