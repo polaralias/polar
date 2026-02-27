@@ -31,6 +31,19 @@ export function createSqliteSchedulerStateStore({ db, now = () => Date.now() }) 
     )
   `);
 
+    db.exec(`
+    CREATE TABLE IF NOT EXISTS polar_scheduler_run_log (
+      runId TEXT PRIMARY KEY,
+      eventId TEXT NOT NULL,
+      traceId TEXT,
+      status TEXT,
+      startedAtMs INTEGER NOT NULL,
+      completedAtMs INTEGER,
+      metadata TEXT
+    )
+  `);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_scheduler_run_trace ON polar_scheduler_run_log(traceId)`);
+
     const statements = {
         hasProcessed: db.prepare(`SELECT 1 FROM polar_scheduler_events WHERE eventId = ? AND queue = 'processed' LIMIT 1`),
         insertProcessed: db.prepare(`INSERT OR IGNORE INTO polar_scheduler_events (eventId, queue, sequence, payload, createdAtMs) VALUES (?, 'processed', ?, ?, ?)`),
@@ -42,7 +55,9 @@ export function createSqliteSchedulerStateStore({ db, now = () => Date.now() }) 
         deleteDeadLetterIdWithSeq: db.prepare(`DELETE FROM polar_scheduler_events WHERE eventId = ? AND queue = 'dead_letter' AND sequence = ?`),
         listByQueue: db.prepare(`SELECT payload FROM polar_scheduler_events WHERE queue = ? ORDER BY sequence ASC, createdAtMs ASC`),
         clear: db.prepare(`DELETE FROM polar_scheduler_events`),
-        drop: db.prepare(`DROP TABLE IF EXISTS polar_scheduler_events`)
+        drop: db.prepare(`DROP TABLE IF EXISTS polar_scheduler_events`),
+        insertRun: db.prepare(`INSERT INTO polar_scheduler_run_log (runId, eventId, traceId, status, startedAtMs, metadata) VALUES (?, ?, ?, ?, ?, ?)`),
+        updateRun: db.prepare(`UPDATE polar_scheduler_run_log SET status = ?, completedAtMs = ?, metadata = ? WHERE runId = ?`)
     };
 
     return Object.freeze({
@@ -116,6 +131,26 @@ export function createSqliteSchedulerStateStore({ db, now = () => Date.now() }) 
 
         async removeFile() {
             statements.drop.run();
+        },
+
+        async recordRunStart(request) {
+            statements.insertRun.run(
+                request.runId,
+                request.eventId,
+                request.traceId,
+                request.status || "started",
+                request.timestampMs || now(),
+                request.metadata ? JSON.stringify(request.metadata) : null
+            );
+        },
+
+        async recordRunComplete(request) {
+            statements.updateRun.run(
+                request.status || "completed",
+                request.timestampMs || now(),
+                request.metadata ? JSON.stringify(request.metadata) : null,
+                request.runId
+            );
         },
     });
 }

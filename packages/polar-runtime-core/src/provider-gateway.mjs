@@ -1,3 +1,4 @@
+import { createModelPolicyEngine } from "./model-policy-engine.mjs";
 import {
   ContractValidationError,
   EXECUTION_TYPES,
@@ -35,6 +36,7 @@ const commonGatewayFields = {
   thinkingEnabled: booleanField({ required: false }),
   thinkingBudget: numberField({ required: false, min: 1 }),
   thinkingLevel: stringField({ minLength: 1, required: false }),
+  workspaceId: stringField({ minLength: 1, required: false }),
   providerExtensions: jsonField({ required: false }),
 };
 
@@ -81,6 +83,18 @@ const embedRequestSchema = createStrictObjectSchema({
     text: stringField({ minLength: 1 }),
     modelLane: enumField(["local", "worker", "brain"], { required: false }),
     estimatedCostUsd: numberField({ min: 0, required: false }),
+    workspaceId: stringField({ minLength: 1, required: false }),
+  },
+});
+
+const listModelsRequestSchema = createStrictObjectSchema({
+  schemaId: "provider.gateway.listModels.request",
+  fields: {
+    executionType: enumField(executionTypes, { required: false }),
+    traceId: stringField({ minLength: 1, required: false }),
+    providerId: stringField({ minLength: 1 }),
+    fallbackProviderIds: stringArrayField({ minItems: 1, required: false }),
+    workspaceId: stringField({ minLength: 1, required: false }),
   },
 });
 
@@ -135,6 +149,7 @@ const embedRequestSchema = createStrictObjectSchema({
  * @property {(input: ProviderGenerateInput) => Promise<Record<string, unknown>>} generate
  * @property {(input: ProviderStreamInput) => Promise<Record<string, unknown>>} stream
  * @property {(input: ProviderEmbedInput) => Promise<Record<string, unknown>>} embed
+ * @property {(input: { providerId: string }) => Promise<Record<string, unknown>>} [listModels]
  */
 
 /**
@@ -147,6 +162,7 @@ function validateRequest(value, schemaId) {
     [generateRequestSchema.schemaId]: generateRequestSchema,
     [streamRequestSchema.schemaId]: streamRequestSchema,
     [embedRequestSchema.schemaId]: embedRequestSchema,
+    [listModelsRequestSchema.schemaId]: listModelsRequestSchema,
   }[schemaId];
 
   const result = schema.validate(value);
@@ -248,6 +264,8 @@ function createProviderTraceId(now) {
     .slice(2, 10)}`;
 }
 
+import { createContractKey } from "./contract-registry.mjs";
+
 /**
  * @param {ReturnType<import("./contract-registry.mjs").createContractRegistry>} contractRegistry
  */
@@ -292,17 +310,23 @@ export function registerProviderOperationContracts(contractRegistry) {
  * }} config
  */
 export function createProviderGateway({
+  registry,
   middlewarePipeline,
+  telemetry,
+  modelPolicyEngine = createModelPolicyEngine(),
   providers = new Map(),
   resolveProvider,
   resolveFallbackOrder,
   usageTelemetryCollector = { async recordOperation() { } },
   now = Date.now,
+  cooldownDurationMs = 60_000,
 }) {
   const providerEntries =
     providers instanceof Map ? [...providers.entries()] : Object.entries(providers);
 
   const providerMap = new Map(providerEntries);
+  /** @type {Map<string, number>} */
+  const cooldownEntries = new Map();
   for (const [providerId, provider] of providerMap.entries()) {
     if (typeof providerId !== "string" || providerId.length === 0) {
       throw new RuntimeExecutionError("Provider id must be a non-empty string");
@@ -386,15 +410,27 @@ export function createProviderGateway({
       );
     }
 
+    const cooldownTimestamp = now();
+    const activeProviderOrder = providerOrder.filter((id) => {
+      const cooldownUntil = cooldownEntries.get(id);
+      if (cooldownUntil !== undefined && cooldownTimestamp < cooldownUntil) {
+        return false;
+      }
+      return true;
+    });
+
+    // If all providers are in cooldown, use the full list as a last-resort recovery
+    const effectiveOrder = activeProviderOrder.length > 0 ? activeProviderOrder : providerOrder;
+
     const fallbackProviderIds = requestFallbackProviderIds
       ? Object.freeze([...requestFallbackProviderIds])
       : undefined;
 
     const attempts = [];
-    for (let index = 0; index < providerOrder.length; index += 1) {
-      const providerId = providerOrder[index];
+    for (let index = 0; index < effectiveOrder.length; index += 1) {
+      const providerId = effectiveOrder[index];
       const provider = await getProviderOrThrow(providerMap, providerId, resolveProvider);
-      const isLastProvider = index === providerOrder.length - 1;
+      const isLastProvider = index === effectiveOrder.length - 1;
 
       try {
         const output = await middlewarePipeline.run(
@@ -407,9 +443,15 @@ export function createProviderGateway({
           },
           async (validatedInput) => {
             const operation = provider[params.operation];
+            if (typeof operation !== "function") {
+              throw new RuntimeExecutionError(`Operation ${params.operation} not supported by this provider setup`, { providerId });
+            }
             return await operation(validatedInput);
           },
         );
+
+        // Success on this provider -> clear its cooldown if any
+        cooldownEntries.delete(providerId);
 
         const attemptedProviderIds = Object.freeze([
           ...attempts.map((attempt) => attempt.providerId),
@@ -426,7 +468,7 @@ export function createProviderGateway({
           fallbackUsed: providerId !== requestProviderId || attempts.length > 0,
           status: "completed",
           durationMs: Math.max(0, now() - operationStartedAtMs),
-          model: /** @type {string} */ (params.validatedRequest.model),
+          model: /** @type {string|undefined} */ (params.validatedRequest.model) || "N/A",
         };
 
         if (fallbackProviderIds !== undefined) {
@@ -456,6 +498,11 @@ export function createProviderGateway({
           }),
         );
 
+        // Failure -> put in cooldown unless it's a validation error
+        if (shouldTryFallback(normalized)) {
+          cooldownEntries.set(providerId, now() + cooldownDurationMs);
+        }
+
         if (isLastProvider || !shouldTryFallback(normalized)) {
           const terminalError =
             attempts.length === 1 && isLastProvider
@@ -480,7 +527,7 @@ export function createProviderGateway({
             fallbackUsed: providerId !== requestProviderId || attempts.length > 1,
             status: "failed",
             durationMs: Math.max(0, now() - operationStartedAtMs),
-            model: /** @type {string} */ (params.validatedRequest.model),
+            model: /** @type {string|undefined} */ (params.validatedRequest.model) || "N/A",
             errorCode: terminalError.code,
           };
 
@@ -523,9 +570,16 @@ export function createProviderGateway({
         generateRequestSchema.schemaId,
       );
 
+      const resolved = modelPolicyEngine.resolve(validatedRequest);
+      const effectiveRequest = {
+        ...validatedRequest,
+        providerId: resolved.providerId,
+        model: resolved.model,
+      };
+
       return runWithFallback({
         operation: "generate",
-        validatedRequest,
+        validatedRequest: effectiveRequest,
         actionId: PROVIDER_ACTIONS.generate.actionId,
         version: PROVIDER_ACTIONS.generate.version,
         buildInput: async (parsedRequest, providerId) => {
@@ -546,11 +600,15 @@ export function createProviderGateway({
               if (key === "thinkingLevel" && !caps.supportsNativeThinkingControl) continue;
               if (key === "topK" && !caps.supportsTopK) continue;
               if (key === "endpointMode") {
-                if (parsedRequest[key] === "responses" && !caps.supportsResponsesEndpoint) continue;
-                if (parsedRequest[key] === "chat" && !caps.supportsChatCompletionsEndpoint) continue;
+                // BUG-028 fix: Always pass endpointMode through as a routing hint
+                input[key] = parsedRequest[key];
+                continue;
               }
               input[key] = parsedRequest[key];
             }
+          }
+          if (parsedRequest.estimatedCostUsd !== undefined) {
+            input.estimatedCostUsd = parsedRequest.estimatedCostUsd;
           }
           return input;
         },
@@ -567,9 +625,16 @@ export function createProviderGateway({
         streamRequestSchema.schemaId,
       );
 
+      const resolved = modelPolicyEngine.resolve(validatedRequest);
+      const effectiveRequest = {
+        ...validatedRequest,
+        providerId: resolved.providerId,
+        model: resolved.model,
+      };
+
       return runWithFallback({
         operation: "stream",
-        validatedRequest,
+        validatedRequest: effectiveRequest,
         actionId: PROVIDER_ACTIONS.stream.actionId,
         version: PROVIDER_ACTIONS.stream.version,
         buildInput: async (parsedRequest, providerId) => {
@@ -590,11 +655,15 @@ export function createProviderGateway({
               if (key === "thinkingLevel" && !caps.supportsNativeThinkingControl) continue;
               if (key === "topK" && !caps.supportsTopK) continue;
               if (key === "endpointMode") {
-                if (parsedRequest[key] === "responses" && !caps.supportsResponsesEndpoint) continue;
-                if (parsedRequest[key] === "chat" && !caps.supportsChatCompletionsEndpoint) continue;
+                // BUG-028 fix: Always pass endpointMode through as a routing hint
+                input[key] = parsedRequest[key];
+                continue;
               }
               input[key] = parsedRequest[key];
             }
+          }
+          if (parsedRequest.estimatedCostUsd !== undefined) {
+            input.estimatedCostUsd = parsedRequest.estimatedCostUsd;
           }
           return input;
         },
@@ -611,15 +680,48 @@ export function createProviderGateway({
         embedRequestSchema.schemaId,
       );
 
+      const resolved = modelPolicyEngine.resolve(validatedRequest);
+      const effectiveRequest = {
+        ...validatedRequest,
+        providerId: resolved.providerId,
+        model: resolved.model,
+      };
+
       return runWithFallback({
         operation: "embed",
-        validatedRequest,
+        validatedRequest: effectiveRequest,
         actionId: PROVIDER_ACTIONS.embed.actionId,
         version: PROVIDER_ACTIONS.embed.version,
+        buildInput: (parsedRequest, providerId) => {
+          const input = {
+            providerId,
+            model: parsedRequest.model,
+            text: parsedRequest.text,
+          };
+          if (parsedRequest.workspaceId !== undefined) input.workspaceId = parsedRequest.workspaceId;
+          if (parsedRequest.estimatedCostUsd !== undefined) input.estimatedCostUsd = parsedRequest.estimatedCostUsd;
+          return input;
+        },
+      });
+    },
+
+    /**
+     * @param {unknown} request
+     * @returns {Promise<Record<string, unknown>>}
+     */
+    async listModels(request) {
+      const validatedRequest = validateRequest(
+        request,
+        listModelsRequestSchema.schemaId,
+      );
+
+      return runWithFallback({
+        operation: "listModels",
+        validatedRequest,
+        actionId: PROVIDER_ACTIONS.listModels.actionId,
+        version: PROVIDER_ACTIONS.listModels.version,
         buildInput: (parsedRequest, providerId) => ({
           providerId,
-          model: parsedRequest.model,
-          text: parsedRequest.text,
         }),
       });
     },

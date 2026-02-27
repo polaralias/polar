@@ -6,8 +6,36 @@ const VALID_RESOURCE_TYPES = ["provider", "channel", "extension", "automation", 
 const ENDPOINT = "http://127.0.0.1:5173/api/upsertConfig";
 
 async function main() {
+    if (command === "models") {
+        const providerId = action;
+        if (!providerId) {
+            console.error("Usage: polar models <providerId>");
+            process.exit(1);
+        }
+        try {
+            const res = await fetch("http://127.0.0.1:5173/api/listModels", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ providerId }),
+            });
+            const data = await res.json();
+            if (!res.ok || data.error) {
+                console.error("Failed to list models:", data.error || data);
+                process.exit(1);
+            }
+            console.log(`Models for provider '${providerId}':`);
+            console.log(JSON.stringify(data.models, null, 2));
+        } catch (error) {
+            console.error("Connection error.", error.message);
+            process.exit(1);
+        }
+        process.exit(0);
+    }
+
     if (command !== "config" || action !== "set") {
-        console.error("Usage: polar config set <resourceType> <resourceId> [options]");
+        console.error("Usage:");
+        console.error("  polar config set <resourceType> <resourceId> [options]");
+        console.error("  polar models <providerId>");
         process.exit(1);
     }
 

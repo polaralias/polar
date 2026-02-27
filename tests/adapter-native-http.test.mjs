@@ -32,7 +32,7 @@ test("creates chat request correctly", async () => {
     });
 
     assert.equal(result.text, "hello world");
-    assert.equal(result.usageTelemetry.totalTokens, 15);
+    assert.equal(result.usage.totalTokens, 15);
 
     assert.equal(fetchArgs.url, "https://api.openai.com/v1/chat/completions");
     assert.equal(fetchArgs.init.headers["Authorization"], "Bearer test-key");
@@ -76,11 +76,11 @@ test("creates anthropic request correctly", async () => {
     });
 
     assert.equal(result.text, "claude response");
-    assert.equal(result.usageTelemetry.promptTokens, 12);
+    assert.equal(result.usage.promptTokens, 12);
 
     assert.equal(fetchArgs.url, "https://api.anthropic.com/v1/messages");
     assert.equal(fetchArgs.init.headers["x-api-key"], "anthropic-key");
-    assert.equal(fetchArgs.init.headers["anthropic-version"], "2023-06-01");
+    assert.equal(fetchArgs.init.headers["anthropic-version"], "2024-10-22");
 
     const body = JSON.parse(fetchArgs.init.body);
     assert.equal(body.system, "sys");
@@ -138,7 +138,14 @@ test("creates responses API request correctly", async () => {
             return {
                 ok: true,
                 json: async () => ({
-                    choices: [{ message: { content: "responses result" } }]
+                    output: [
+                        {
+                            type: "message",
+                            role: "assistant",
+                            content: [{ type: "output_text", text: "responses result" }]
+                        }
+                    ],
+                    usage: { prompt_tokens: 5, completion_tokens: 3, total_tokens: 8 }
                 })
             };
         }
@@ -157,8 +164,8 @@ test("creates responses API request correctly", async () => {
     assert.equal(result.text, "responses result");
     const body = JSON.parse(fetchArgs.init.body);
     assert.deepEqual(body.input, [
-        { role: "system", content: [{ type: "input_text", text: "sys rep" }] },
-        { role: "user", content: [{ type: "input_text", text: "yo" }] }
+        { type: "message", role: "developer", content: [{ type: "input_text", text: "sys rep" }] },
+        { type: "message", role: "user", content: [{ type: "input_text", text: "yo" }] }
     ]);
     assert.deepEqual(body.reasoning, { effort: "high", summary: "detailed" });
     assert.deepEqual(body.text, { verbosity: "low" });

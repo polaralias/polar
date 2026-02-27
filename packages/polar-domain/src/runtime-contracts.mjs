@@ -14,7 +14,7 @@ export const EXECUTION_TYPES = Object.freeze([
 ]);
 const executionTypes = new Set(EXECUTION_TYPES);
 
-function isPlainObject(value) {
+export function isPlainObject(value) {
   return (
     typeof value === "object" &&
     value !== null &&

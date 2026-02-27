@@ -7,9 +7,9 @@ import { createControlPlaneService } from "../packages/polar-control-plane/src/i
 test("control-plane service health reports contract and record counts", async () => {
   const service = createControlPlaneService();
 
-  assert.deepEqual(service.health(), {
+  assert.deepEqual(await service.health(), {
     status: "ok",
-    contractCount: 35,
+    contractCount: 40,
     recordCount: 0,
     sessionCount: 0,
     taskCount: 0,
@@ -18,6 +18,7 @@ test("control-plane service health reports contract and record counts", async ()
     handoffRoutingTelemetryCount: 0,
     usageTelemetryCount: 0,
     extensionCount: 0,
+    vaultStatus: { isEphemeral: true, algorithm: "aes-256-gcm" },
   });
 
   await service.upsertConfig({
@@ -28,9 +29,9 @@ test("control-plane service health reports contract and record counts", async ()
     },
   });
 
-  assert.deepEqual(service.health(), {
+  assert.deepEqual(await service.health(), {
     status: "ok",
-    contractCount: 35,
+    contractCount: 40,
     recordCount: 1,
     sessionCount: 0,
     taskCount: 0,
@@ -39,6 +40,7 @@ test("control-plane service health reports contract and record counts", async ()
     handoffRoutingTelemetryCount: 0,
     usageTelemetryCount: 0,
     extensionCount: 0,
+    vaultStatus: { isEphemeral: true, algorithm: "aes-256-gcm" },
   });
 });
 
@@ -446,9 +448,9 @@ test("control-plane service proxies task-board operations", async () => {
     ],
   });
 
-  assert.deepEqual(service.health(), {
+  assert.deepEqual(await service.health(), {
     status: "ok",
-    contractCount: 35,
+    contractCount: 40,
     recordCount: 0,
     sessionCount: 0,
     taskCount: 2,
@@ -457,6 +459,7 @@ test("control-plane service proxies task-board operations", async () => {
     handoffRoutingTelemetryCount: 0,
     usageTelemetryCount: 0,
     extensionCount: 0,
+    vaultStatus: { isEphemeral: true, algorithm: "aes-256-gcm" },
   });
 });
 

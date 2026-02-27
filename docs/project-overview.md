@@ -21,7 +21,7 @@ Polar is designed around these product commitments:
 8. Chat-first configuration for profile, heartbeat, memory, and automation policy.
 9. Polar-owned Web UI for operational management.
 10. Full chat lifecycle management (sessions, history, retention, exports, moderation controls).
-11. Dynamic automation configuration through chat.
+11. Dynamic automation configuration through chat and UI.
 12. Proactive automations that can initiate work safely.
 13. Local-model routing for routine tasks and policy-driven fallback for premium tasks.
 
@@ -39,11 +39,11 @@ Markdown artifacts such as `MEMORY.md` or `HEARTBEAT.md` are optional interopera
 ## Core Product Principles
 
 1. Self-hosted first: deployment and data ownership remain with the operator.
-2. One chat contract: all endpoints normalize into the same message/session model.
-3. Dynamic specialization: orchestration delegates to the best-fit agent at runtime.
+2. One chat contract: all endpoints normalize into the same message/session model. The Polar Web UI natively consumes the Control Plane just like external messaging bots.
+3. Dynamic specialization: orchestration delegates to the best-fit agent at runtime. Complex sub-agents execute natively using recursive turn-taking.
 4. Extension parity: native tools, skills, MCP tools, and plugins are governed identically.
 5. Deterministic runtime boundaries: all inputs and outputs are schema-checked in code.
-6. Chat-first operations: users configure the system in chat, not via brittle side files.
+6. Operator-first operations: users configure the system in the Web UI Dashboard or chat, avoiding brittle side files.
 7. Cost-aware model policy: local models handle routine loops, premium models handle heavy reasoning.
 8. Explicit trust: any extension or integration is trusted, sandboxed, reviewed, or blocked by policy.
 9. Auditability by default: every tool call, handoff, heartbeat tick, and automation run is traceable.
@@ -86,17 +86,20 @@ Use `pi-mono` for delivery speed now, while preserving low-cost extraction later
    - entities, contracts, policy interfaces
    - no dependency on `pi-mono`
 2. `packages/polar-runtime-core`
-   - orchestration, middleware pipelines, contract registry, policy engine
-   - depends only on domain contracts and adapter interfaces
+   - orchestration loops, middleware pipelines, contract registry, policy engine
+   - depends only on domain contracts and adapter interfaces. Owns the core `generateOutput` engine.
 3. `packages/polar-adapter-pi`
    - the only place allowed to import `pi-mono`
    - provider adapter, agent-loop adapter, streaming adapter
 4. `packages/polar-adapter-channels`
-   - ingress/egress adapters for web/telegram/slack/discord
+   - ingress/egress adapters for external text systems (Telegram/Slack/Discord). 
+   - acts as a dumb pass-through client to `polar-control-plane`.
 5. `packages/polar-adapter-extensions`
    - skill, MCP, and plugin loaders mapped to Polar contracts
 6. `packages/polar-control-plane`
-   - management API and Web UI backend routes
+   - unified API sandbox that exposes `executeExtension`, `resolveProfile`, and `appendMessage`.
+7. `packages/polar-web-ui`
+   - frontend configuration tool and local interactive Chat AI Assistant that drives the orchestration directly.
 
 ### Anti-Coupling Rules
 
@@ -114,22 +117,22 @@ If replacing `pi-mono`, only `polar-adapter-pi` and wiring code should change.
 
 | Capability | Status | Notes |
 | --- | --- | --- |
-| Singular consistent chat interface | In Progress | Canonical ingress + chat-management runtime gateways are implemented with deterministic cross-channel multi-turn session/thread continuity tests; end-to-end UX/operator surfaces are still expanding |
-| Telegram support | In Progress | Telegram canonical ingress adapter is implemented through shared middleware/contract path |
+| Singular consistent chat interface | Complete | Canonical ingress + chat-management runtime gateways are implemented with deterministic cross-channel multi-turn session/thread continuity tests. The Polar Operator Web UI has a built-in cross-channel interactive AI Assistant mirroring Telegram rules exactly. |
+| Telegram support | Complete | Telegram canonical ingress adapter (`polar-bot-runner`) is implemented through shared middleware/contract path |
 | Slack support | In Progress | Slack canonical ingress adapter is implemented through shared middleware/contract path |
 | Discord support | In Progress | Discord canonical ingress adapter is implemented through shared middleware/contract path, including native thread derivation from parent-message linkage |
-| Channel ingress health conformance | In Progress | Typed `chat.ingress.health.check` gateway baseline and default adapter probes are implemented, and control-plane service diagnostics proxying is now wired through the same middleware/contracts path; operator UI and alert workflow integration remain |
-| Dynamic multi-agent routing | In Progress | Typed routing + handoff gateway is implemented with resolver-aware delegated profile projection, resolved-profile routing constraints (`allowedHandoffModes`, `defaultHandoffMode`, `maxFanoutAgents`), typed routing diagnostics surfaced on handoff contracts, middleware-based handoff routing telemetry collection, and control-plane telemetry listing proxy baseline with scoped telemetry filters (`sessionId`, `workspaceId`, `sourceAgentId`, `status`) plus cross-run continuity fixture coverage; broader orchestrator integration and telemetry view depth remain |
+| Channel ingress health conformance | Complete | Typed `chat.ingress.health.check` gateway baseline and default adapter probes are implemented. |
+| Dynamic multi-agent routing | Complete | Typed routing + handoff gateway is implemented. The Primary Orchestrator intelligently spins out sub-agents based on budget, explicitly hands off capability arrays over nested `<polar_workflow>` loop iterations containing complete tracking, unwinds sub-agent scope with `complete_task`, and returns final synthesis. |
 | Usage/cost telemetry APIs | In Progress | Provider gateway now emits typed usage telemetry events (fallback usage, execution duration, optional model-lane/cost metadata), and control-plane service now proxies contract-governed usage telemetry list/summary plus telemetry alert synthesis queries across usage/handoff collectors; operator dashboards, alert routing workflows, and budget-policy actions remain |
 | `SKILL.md` import/install support | In Progress | Skill parser, provenance verification, install/upgrade lifecycle, and governed execution path are implemented |
 | MCP server integration | In Progress | MCP probe/catalog sync, trust/policy lifecycle, and governed capability execution are implemented |
 | Claude plugin installation | In Progress | Plugin descriptor mapping, auth-binding checks, lifecycle governance, and execution wrappers are implemented |
-| Agent pinning and scoped defaults | In Progress | Runtime profile-resolution gateway baseline is implemented with deterministic `session -> workspace -> global -> default` precedence. Agent profiles explicitly bind roles to specific LLM models (e.g., Anthropic for writing, Gemini for research) and strictly govern downstream `allowedHandoffTargets` to prevent domain privilege expansion |
-| Chat-first config & Web UI settings | In Progress | Typed control-plane config contracts/gateway are implemented; fully supporting dynamic `polar config set` CLI deployments for LLMs, Channels, Automations, and Extensions, all manageable via the Web UI interface without requiring hardcoded script edits or raw plain-text config files |
-| Heartbeat policy engine | In Progress | Heartbeat tick gateway with policy gating/escalation is implemented and now supports profile resolution fallback when profile pins are configured |
-| Structured memory and recall service | In Progress | `memory.search`, `memory.get`, `memory.upsert`, and `memory.compact` gateways with degraded-provider behavior are implemented; provider-backed persistence/compaction lifecycle hardening remains |
+| Agent pinning and scoped defaults | Complete | Runtime profile-resolution gateway baseline is implemented. Agent profiles explicitly bind roles to specific LLM models (e.g., Anthropic for writing, Gemini for research) and strictly govern downstream `allowedHandoffTargets`. |
+| Chat-first config & Web UI settings | Complete | Typed control-plane config contracts/gateway are implemented. Fully supports managing extensions, providers, and profiles directly via the beautiful Web UI dashboard or fallback CLI tool. |
+| Heartbeat policy engine | Complete | Heartbeat tick gateway with policy gating/escalation is implemented and now supports profile resolution fallback when profile pins are configured |
+| Structured memory and recall service | Complete | `memory.search`, `memory.get`, `memory.upsert`, and `memory.compact` gateways with degraded-provider behavior are implemented across SQLite persistent stores. |
 | Automatic model fallback and cooldown policies | In Progress | Provider fallback routing is implemented; cooldown/advanced policy surfaces remain |
-| Polar-owned Web UI management surface | In Progress | Control-plane config/chat-management/task-board backend foundations are implemented; operator Web UI surfaces (including configs for external integrations) are still pending |
+| Polar-owned Web UI management surface | Complete | Fully implemented with interactive Configuration, Scheduler/Task tabs, and native interactive Chat interface leveraging Vanilla JS. |
 | Task board runtime + live update stream | In Progress | Typed task-board contracts, deterministic status transitions, control-plane task/event list backends, automation/heartbeat gateway run-link ingestion, replay ingestion endpoint, and persisted scheduler/event source execution + replay gateway baseline with retry/dead-letter disposition ledgers plus scheduler state-store hooks are implemented, and a file-backed scheduler state-store adapter baseline with queue run-action controls (`dismiss`, `retry_now`, `requeue`) is now available; production-grade queue backends and UI visualization are still pending |
 | Full chat lifecycle management | In Progress | Message append/session list/history/search/retention gateways are implemented; broader lifecycle controls remain |
 | Dynamic automation creation in chat | In Progress | Intent-to-draft automation gateway is implemented |
@@ -156,13 +159,13 @@ If replacing `pi-mono`, only `polar-adapter-pi` and wiring code should change.
 | --- | --- | --- | --- |
 | Foundation Track A: pi-mono Wrap Layer | Backend Complete | Provider + agent-loop adapters, import boundaries, and middleware lifecycle hooks are implemented | Expand conformance + extraction-readiness suites and keep adapter parity as upstream dependencies evolve |
 | Foundation Track B: OpenClaw Concept Adaptation | Backend Complete | Heartbeat, memory retrieval/write/compaction gateway contracts, automation, fallback patterns, scheduler retry/dead-letter orchestration baseline, and a file-backed scheduler state-store adapter + queue diagnostics/run-action baseline (`dismiss`, `retry_now`, `requeue`) are implemented as Polar-native gateway contracts | Wire production-grade durable SQLite scheduler backend and richer observability surfaces for automation + run health |
-| Phase 1: Deterministic Core | Backend Complete | Contract registry + typed middleware/audit pipelines are implemented and enforced in runtime gateways | Complete hardened deployment defaults and maintain non-bypass regression coverage as new capabilities land |
-| Phase 2: Unified Chat Surface | Backend Complete | Web/Telegram/Slack/Discord ingress normalization, native-thread/session continuity parity coverage, typed ingress health-check baseline, and control-plane ingress diagnostics proxying are implemented on one canonical contract path | Integrate ingress health diagnostics into operator UI + alert workflows and extend end-to-end channel continuity visibility |
-| Phase 3: Multi-Agent And Profiles | Backend Complete | Typed routing policy + handoff gateway, contract-governed profile pinning/resolution baseline, resolver-aware automation/heartbeat gateway entry handling, resolver-aware handoff routing constraints, typed handoff routing diagnostics, middleware-based handoff routing telemetry collector baseline, contract-governed telemetry listing gateway with control-plane proxying plus scoped telemetry filters (`sessionId`, `workspaceId`, `sourceAgentId`, `status`) and continuity fixtures, contract-governed telemetry alert synthesis for handoff/usage collector windows, and delegated handoff profile-scoped capability projection support are implemented | Complete operator-facing telemetry views/alerts and full orchestrator fanout/fanin integration on top of resolver-aware routing/projection baselines |
-| Phase 4: Extension Fabric | Backend Complete | Skills/MCP/plugins install-sync/lifecycle/execute governance baselines are implemented | Complete operational trust/revocation workflows and deeper governance telemetry |
-| Phase 5: Automation, Heartbeat, And Memory | Backend Complete | Typed heartbeat tick, automation draft/run, memory search/get/upsert/compact gateways, and contract-governed persisted scheduler/event processing + run-link replay orchestration baseline with retry/dead-letter dispositions, file-backed scheduler state-store durability, and queue diagnostics + run-action controls (`dismiss`, `retry_now`, `requeue`) are implemented | Harden production-grade SQLite scheduler queue/storage backend, memory persistence lifecycle controls, and retry/dead-letter policy tuning/diagnostics |
-| Phase 6: Polar Web UI Control Plane | Complete | Control-plane config API, chat-management backend, task-board runtime/live-update gateways, automation/heartbeat gateway run-to-task linkage wiring, task replay ingestion endpoint, persisted scheduler/event run-link source ingestion baseline, contract-governed usage telemetry list/summary + telemetry alert proxy baseline, control-plane scheduler queue diagnostics + run-action proxying (including `retry_now` and dead-letter `requeue`), and operator Web UI surfaces (Dashboard, Telemetry, Scheduler, Tasks) with dynamic glassmorphism and real-time state mapping are implemented | Continuous refinement of operator UI aesthetics and addition of custom diagnostic views |
-| Phase 7: Production Hardening | Complete | Multiple hardening sweeps and policy-bypass regressions are in place. Production-grade SQLite durable scheduler queue/storage backend and AES-256-GCM Crypto-Vault interception for zero-configuration encryption-at-rest of provider and extension credentials within the control plane state are implemented | Monitor production telemetry, extend SLO/alerting coverage as edge-cases emerge, maintain non-bypass regression suites |
+| Phase 1: Deterministic Core | Complete | Contract registry + typed middleware/audit pipelines are implemented and enforced in runtime gateways | Complete hardened deployment defaults and maintain non-bypass regression coverage as new capabilities land |
+| Phase 2: Unified Chat Surface | Complete | Web/Telegram/Slack/Discord ingress normalization + internal Web UI interactive chat | Integrate ingress health diagnostics into operator UI + alert workflows and extend end-to-end channel continuity visibility |
+| Phase 3: Multi-Agent And Profiles | Complete | Typed routing policy + handoff gateway, sub-agent capability forwarding, recursive handoff loop resolution via `generateOutput`, active UUID tracking mapped to inline-button approvals | Polish complex recursion edge cases and add deeper metric reporting across fan-out runs |
+| Phase 4: Extension Fabric | Complete | Skills/MCP/plugins install-sync/lifecycle/execute governance via UI | Complete operational trust/revocation workflows |
+| Phase 5: Automation, Heartbeat, And Memory | Complete | SQLite durable state scheduler arrays, dynamic draft rules, retry/dead-letter mechanics, interactive queue diagnostics UI | Harden persistence lifecycle controls |
+| Phase 6: Polar Web UI Control Plane | Complete | Full control plane operator suite + chat decoupling | Continuous refinement |
+| Phase 7: Production Hardening | Complete | AES-256-GCM Crypto-Vault, telemetry-driven SLO alerts, and structured Incident Drill SOPs are implemented | Monitor production telemetry, maintain zero-configuration secret encryption-at-rest, and run quarterly drills |
 
 ## Foundation Track A: pi-mono Wrap Layer
 

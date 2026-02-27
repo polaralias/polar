@@ -61,6 +61,7 @@ test("registerProviderOperationContracts registers provider actions once", () =>
   assert.deepEqual(registry.list(), [
     "provider.embed@1",
     "provider.generate@1",
+    "provider.listModels@1",
     "provider.stream@1",
   ]);
 });
@@ -280,4 +281,110 @@ test("strips unsupported capability fields from input", async () => {
   assert.equal(receivedInput.reasoningEffort, undefined);
   assert.equal(receivedInput.topK, undefined);
   assert.equal(receivedInput.verbosity, "high");
+});
+
+test("skips provider in cooldown and honors recovery period", async () => {
+  let primaryCalls = 0;
+  let nowValue = 1000;
+
+  const registry = createContractRegistry();
+  registerProviderOperationContracts(registry);
+  const pipeline = createMiddlewarePipeline({
+    contractRegistry: registry,
+    middleware: [],
+  });
+
+  const gateway = createProviderGateway({
+    middlewarePipeline: pipeline,
+    providers: {
+      primary: createProvider("primary", {
+        async generate() {
+          primaryCalls += 1;
+          throw new Error("primary temporary failure");
+        },
+      }),
+      secondary: createProvider("secondary"),
+    },
+    now: () => nowValue,
+    cooldownDurationMs: 1000,
+  });
+
+  // 1. First call fails on primary, falls back to secondary
+  const output1 = await gateway.generate({
+    providerId: "primary",
+    fallbackProviderIds: ["secondary"],
+    model: "m-1",
+    prompt: "h1",
+  });
+  assert.equal(output1.providerId, "secondary");
+  assert.equal(primaryCalls, 1);
+
+  // 2. Second call (same timestamp) should skip primary and go straight to secondary
+  const output2 = await gateway.generate({
+    providerId: "primary",
+    fallbackProviderIds: ["secondary"],
+    model: "m-1",
+    prompt: "h2",
+  });
+  assert.equal(output2.providerId, "secondary");
+  assert.equal(primaryCalls, 1); // No new call to primary
+
+  // 3. Advance time beyond cooldown
+  nowValue += 1001;
+
+  // 4. Third call should try primary again
+  const output3 = await gateway.generate({
+    providerId: "primary",
+    fallbackProviderIds: ["secondary"],
+    model: "m-1",
+    prompt: "h3",
+  });
+  assert.equal(output3.providerId, "secondary");
+  assert.equal(primaryCalls, 2); // Primary was tried again
+});
+
+test("uses provider in cooldown as last resort if no alternatives exist", async () => {
+  let primaryCalls = 0;
+  const gateway = createProviderGateway({
+    middlewarePipeline: createMiddlewarePipeline({
+      contractRegistry: createContractRegistry(),
+      middleware: [],
+    }),
+    providers: {
+      primary: createProvider("primary", {
+        async generate() {
+          primaryCalls += 1;
+          return { providerId: "primary", text: "ok" };
+        },
+      }),
+    },
+    cooldownDurationMs: 1000,
+  });
+
+  // Manually put primary in cooldown (simulated failure could also do this)
+  // Since we don't have direct access to cooldownEntries, we trigger a failure.
+  const failingRegistry = createContractRegistry();
+  registerProviderOperationContracts(failingRegistry);
+  const failingGateway = createProviderGateway({
+    middlewarePipeline: createMiddlewarePipeline({
+      contractRegistry: failingRegistry,
+      middleware: [],
+    }),
+    providers: {
+      primary: createProvider("primary", {
+        async generate() {
+          primaryCalls += 1;
+          throw new Error("fail");
+        },
+      }),
+    },
+    cooldownDurationMs: 10000,
+  });
+
+  await assert.rejects(() => failingGateway.generate({ providerId: "primary", model: "m", prompt: "h" }));
+  assert.equal(primaryCalls, 1);
+
+  // Next call should still try primary because it's the ONLY provider
+  await assert.rejects(() => failingGateway.generate({ providerId: "primary", model: "m", prompt: "h" }));
+  assert.equal(primaryCalls, 2);
 });

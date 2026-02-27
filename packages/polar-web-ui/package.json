@@ -12,6 +12,7 @@
     "vite": "^7.3.1"
   },
   "dependencies": {
-    "@polar/control-plane": "*"
+    "@polar/control-plane": "*",
+    "better-sqlite3": "^12.6.2"
   }
 }

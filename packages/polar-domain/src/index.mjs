@@ -11,6 +11,7 @@ export {
   createStrictObjectSchema,
   enumField,
   idField,
+  isPlainObject,
   jsonField,
   numberArrayField,
   numberField,

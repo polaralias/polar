@@ -30,6 +30,7 @@ const executionTypes = new Set(EXECUTION_TYPES);
  * @property {readonly ExecutionType[]} [appliesTo]
  * @property {(context: MiddlewareContext) => Promise<Partial<MiddlewareContext>|void>|Partial<MiddlewareContext>|void} [before]
  * @property {(context: MiddlewareContext) => Promise<Partial<MiddlewareContext>|void>|Partial<MiddlewareContext>|void} [after]
+ * @property {(context: MiddlewareContext) => Promise<Partial<MiddlewareContext>|void>|Partial<MiddlewareContext>|void} [transformStream]
  */
 
 /**
@@ -82,14 +83,15 @@ function normalizeError(error, stage, actionId, version, executionType) {
     );
   }
 
+  const causeMessage = error instanceof Error ? error.message : String(error);
   return new MiddlewareExecutionError(
-    `Middleware ${stage} stage failed for ${executionType}:${actionId}@${version}`,
+    `Middleware ${stage} stage failed for ${executionType}:${actionId}@${version}: ${causeMessage}`,
     {
       executionType,
       actionId,
       version,
       stage,
-      cause: error instanceof Error ? error.message : String(error),
+      cause: causeMessage,
     },
   );
 }
@@ -150,7 +152,7 @@ function validateMiddleware(middleware, scope) {
 /**
  * @param {MiddlewareContext} context
  * @param {Partial<MiddlewareContext>|void} nextValue
- * @param {{ stage: "before"|"after", middlewareId: string }} patchContext
+ * @param {{ stage: "before"|"after"|"transform", middlewareId: string }} patchContext
  * @returns {MiddlewareContext}
  */
 function applyContextPatch(context, nextValue, patchContext) {
@@ -269,7 +271,7 @@ export function createMiddlewarePipeline({
   contractRegistry,
   middleware = [],
   middlewareByExecutionType = {},
-  auditSink = () => {},
+  auditSink = () => { },
 }) {
   if (typeof auditSink !== "function") {
     throw new MiddlewareExecutionError("auditSink must be a function");
@@ -521,6 +523,48 @@ export function createMiddlewarePipeline({
             stage: "execution",
             outcome: "ok",
           });
+
+          // Part D: Stream Transformation Hook execution
+          // Only triggers if the output appears to be a stream (contains chunks)
+          if (context.output && Array.isArray(context.output.chunks)) {
+            for (const entry of selectedMiddleware) {
+              if (typeof entry.transformStream === "function") {
+                try {
+                  const patch = await entry.transformStream(context);
+                  context = applyContextPatch(context, patch, {
+                    stage: "transform",
+                    middlewareId: entry.id,
+                  });
+                  await emitAudit({
+                    checkpoint: "middleware.transform",
+                    stage: "execution",
+                    outcome: "ok",
+                    middlewareId: entry.id,
+                  });
+                } catch (error) {
+                  const normalizedError = normalizeError(
+                    error,
+                    "execution",
+                    request.actionId,
+                    request.version,
+                    executionType,
+                  );
+
+                  if (!context.error) {
+                    context.error = normalizedError;
+                  }
+
+                  await emitAudit({
+                    checkpoint: "middleware.transform",
+                    stage: "execution",
+                    outcome: "error",
+                    middlewareId: entry.id,
+                    error: normalizedError,
+                  });
+                }
+              }
+            }
+          }
         } catch (error) {
           context.error = normalizeError(
             error,

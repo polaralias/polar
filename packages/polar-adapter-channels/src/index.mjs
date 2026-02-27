@@ -290,7 +290,7 @@ export function createTelegramIngressAdapter(options = {}) {
         (parsed.messageThreadId
           ? `telegram:topic:${chatId}:${parsed.messageThreadId}`
           : parsed.replyToMessageId
-            ? `telegram:thread:${chatId}:${parsed.replyToMessageId}`
+            ? `telegram:reply:${chatId}:${parsed.replyToMessageId}`
             : undefined);
       if (threadId !== undefined) {
         envelope.threadId = threadId;

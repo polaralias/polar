@@ -4,12 +4,16 @@ import { renderDashboard } from './views/dashboard.js';
 import { renderTasks } from './views/tasks.js';
 import { renderTelemetry } from './views/telemetry.js';
 import { renderScheduler } from './views/scheduler.js';
+import { renderConfig } from './views/config.js';
+import { renderChat } from './views/chat.js';
 
 const VIEW_MAP = {
   dashboard: renderDashboard,
+  chat: renderChat,
   tasks: renderTasks,
   telemetry: renderTelemetry,
-  scheduler: renderScheduler
+  scheduler: renderScheduler,
+  config: renderConfig,
 };
 
 let currentView = 'dashboard';

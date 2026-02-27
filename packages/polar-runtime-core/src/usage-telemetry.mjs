@@ -270,7 +270,7 @@ export function createUsageTelemetryCollector(config = {}) {
     throw new RuntimeExecutionError("now must be a function when provided");
   }
 
-  const telemetrySink = config.telemetrySink ?? (() => {});
+  const telemetrySink = config.telemetrySink ?? (() => { });
   if (typeof telemetrySink !== "function") {
     throw new RuntimeExecutionError(
       "telemetrySink must be a function when provided",
@@ -322,7 +322,7 @@ export function createUsageTelemetryCollector(config = {}) {
       const limit = /** @type {number|undefined} */ (parsed.limit) ?? 50;
 
       const filtered = filterEvents(events, parsed).filter(
-        (event) => /** @type {number} */ (event.sequence) >= fromSequence,
+        (event) => /** @type {number} */(event.sequence) >= fromSequence,
       );
       const items = filtered.slice(0, limit);
       const nextFromSequence =
@@ -348,6 +348,7 @@ export function createUsageTelemetryCollector(config = {}) {
 
     clear() {
       events.length = 0;
+      sequence = 0;
     },
 
     /**

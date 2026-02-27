@@ -353,5 +353,37 @@ export function createBudgetGateway({
                 },
             );
         },
+        /**
+         * Records budget usage. This intentionally bypasses the middleware pipeline
+         * because it is a fire-and-forget telemetry operation that must not block
+         * the request path. Input is still validated for safety.
+         *
+         * @param {unknown} request
+         * @returns {Promise<void>}
+         */
+        async recordUsage(request) {
+            if (!budgetStateStore?.recordUsage) return;
+
+            // Validate input even though we bypass middleware (BUG-010 mitigation)
+            if (!isPlainObject(request)) {
+                console.warn("[budget-gateway] recordUsage called with non-object request, skipping");
+                return;
+            }
+            const { scope, costUsd } = /** @type {Record<string, unknown>} */ (request);
+            if (typeof scope !== "string" || scope.length === 0) {
+                console.warn("[budget-gateway] recordUsage called without a valid scope, skipping");
+                return;
+            }
+            if (typeof costUsd !== "number" || costUsd < 0) {
+                console.warn("[budget-gateway] recordUsage called without a valid costUsd, skipping");
+                return;
+            }
+
+            try {
+                await budgetStateStore.recordUsage(request);
+            } catch (err) {
+                console.warn(`[budget-gateway] Failed to record budget usage: ${err instanceof Error ? err.message : String(err)}`);
+            }
+        },
     });
 }

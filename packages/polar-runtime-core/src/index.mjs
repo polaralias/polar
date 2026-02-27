@@ -3,6 +3,8 @@ export { createCryptoVault } from "./crypto-vault.mjs";
 export { createMiddlewarePipeline } from "./middleware-pipeline.mjs";
 export { createAutomationGateway, registerAutomationContracts } from "./automation-gateway.mjs";
 export { createBudgetGateway, registerBudgetContracts } from "./budget-gateway.mjs";
+export { createSqliteBudgetStateStore } from "./budget-state-store-sqlite.mjs";
+export { createBudgetMiddleware } from "./budget-middleware.mjs";
 export {
   createControlPlaneGateway,
   registerControlPlaneContracts,
@@ -50,7 +52,14 @@ export {
   registerSchedulerContracts,
 } from "./scheduler-gateway.mjs";
 export { createFileSchedulerStateStore } from "./scheduler-state-store-file.mjs";
+export { createSqliteSchedulerStateStore } from "./scheduler-state-store-sqlite.mjs";
 export {
   createPluginInstallerGateway,
   registerPluginInstallerContract,
 } from "./plugin-installer-gateway.mjs";
+export { createOrchestrator } from "./orchestrator.mjs";
+export { createModelPolicyEngine } from "./model-policy-engine.mjs";
+export { createMemoryExtractionMiddleware } from "./memory-extraction-middleware.mjs";
+export { createMemoryRecallMiddleware } from "./memory-recall-middleware.mjs";
+export { createToolSynthesisMiddleware } from "./tool-synthesis-middleware.mjs";
+export { createSqliteMemoryProvider } from "./memory-provider-sqlite.mjs";

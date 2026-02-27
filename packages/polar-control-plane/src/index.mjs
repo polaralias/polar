@@ -51,6 +51,14 @@ import {
   registerMcpConnectorContract,
   createPluginInstallerGateway,
   registerPluginInstallerContract,
+  createMemoryGateway,
+  registerMemoryContracts,
+  createBudgetMiddleware,
+  createMemoryExtractionMiddleware,
+  createMemoryRecallMiddleware,
+  createToolSynthesisMiddleware,
+  createOrchestrator,
+  createSqliteSchedulerStateStore,
 } from "../../polar-runtime-core/src/index.mjs";
 
 /**
@@ -107,6 +115,7 @@ export function createControlPlaneService(config = {}) {
   registerSkillInstallerContract(contractRegistry);
   registerMcpConnectorContract(contractRegistry);
   registerPluginInstallerContract(contractRegistry);
+  registerMemoryContracts(contractRegistry);
 
   const handoffRoutingTelemetryCollector =
     config.handoffRoutingTelemetryCollector ??
@@ -119,11 +128,39 @@ export function createControlPlaneService(config = {}) {
       now: config.now,
     });
 
+  let budgetGatewayRef;
+  const budgetMiddleware = createBudgetMiddleware({
+    // Use a proxy-like object to resolve budgetGateway later to avoid circular dependency
+    budgetGateway: {
+      checkBudget: (req) => budgetGatewayRef.checkBudget(req),
+    },
+  });
+
+  let memoryGatewayRef;
+  let providerGatewayRef;
+
+  const memoryExtractionMiddleware = createMemoryExtractionMiddleware({
+    memoryGateway: { upsert: (req) => memoryGatewayRef.upsert(req) },
+    providerGateway: { generate: (req) => providerGatewayRef.generate(req) }
+  });
+
+  const memoryRecallMiddleware = createMemoryRecallMiddleware({
+    memoryGateway: { search: (req) => memoryGatewayRef.search(req) }
+  });
+
+  const toolSynthesisMiddleware = createToolSynthesisMiddleware({
+    providerGateway: { generate: (req) => providerGatewayRef.generate(req) }
+  });
+
   const middlewarePipeline = createMiddlewarePipeline({
     contractRegistry,
     middleware: [
       ...(config.middleware ? [...config.middleware] : []),
       handoffRoutingTelemetryCollector.middleware,
+      budgetMiddleware,
+      memoryRecallMiddleware,
+      toolSynthesisMiddleware,
+      memoryExtractionMiddleware,
     ],
     auditSink: config.auditSink,
   });
@@ -181,6 +218,7 @@ export function createControlPlaneService(config = {}) {
     middlewarePipeline,
     budgetStateStore: config.budgetStateStore,
   });
+  budgetGatewayRef = budgetGateway;
   const chatIngressGateway = createChatIngressGateway({
     middlewarePipeline,
     normalizers:
@@ -222,7 +260,14 @@ export function createControlPlaneService(config = {}) {
   });
   const schedulerGateway = createSchedulerGateway({
     middlewarePipeline,
-    schedulerStateStore: config.schedulerStateStore,
+    schedulerStateStore:
+      config.schedulerStateStore ||
+      (config.schedulerDb
+        ? createSqliteSchedulerStateStore({
+          db: config.schedulerDb,
+          now: config.now,
+        })
+        : undefined),
     now: config.now,
   });
   const profileResolutionGateway = createProfileResolutionGateway({
@@ -234,9 +279,31 @@ export function createControlPlaneService(config = {}) {
     usageTelemetryCollector,
     now: config.now,
     resolveProvider: async (providerId) => {
-      const record = gateway.readConfigRecord("provider", providerId);
+      let record = gateway.readConfigRecord("provider", providerId);
+
+      // Fallback to environment variables if not found in config DB
       if (!record || !record.config) {
-        return undefined;
+        let envKeyMap = {
+          "openai": { key: process.env.OPENAI_API_KEY, mode: "responses", url: "https://api.openai.com/v1/responses" },
+          "anthropic": { key: process.env.ANTHROPIC_API_KEY, mode: "anthropic_messages", url: "https://api.anthropic.com/v1/messages" },
+          "google_gemini": { key: process.env.GEMINI_API_KEY, mode: "gemini_generate_content", url: "https://generativelanguage.googleapis.com/v1beta" },
+          // BUG-014 fix: alias so bot runner's "google" resolves to the same config
+          "google": { key: process.env.GEMINI_API_KEY, mode: "gemini_generate_content", url: "https://generativelanguage.googleapis.com/v1beta" },
+          "groq": { key: process.env.GROQ_API_KEY, mode: "responses", url: "https://api.groq.com/openai/v1/responses" },
+          "openrouter": { key: process.env.OPENROUTER_API_KEY, mode: "chat", url: "https://openrouter.ai/api/v1/chat/completions" },
+          "localai": { key: "localai", mode: "responses", url: "http://localhost:8080/v1/responses" },
+          "ollama": { key: "ollama", mode: "responses", url: "http://localhost:11434/v1/responses" },
+        };
+        const envFallback = envKeyMap[providerId];
+        if (!envFallback) return undefined;
+
+        record = {
+          config: {
+            endpointMode: envFallback.mode,
+            baseUrl: envFallback.url,
+            apiKey: envFallback.key
+          }
+        };
       }
       return createNativeHttpAdapter({
         providerId,
@@ -248,9 +315,31 @@ export function createControlPlaneService(config = {}) {
       });
     },
   });
+  providerGatewayRef = providerGateway;
+
+  const memoryGateway = createMemoryGateway({
+    middlewarePipeline,
+    memoryProvider: config.memoryProvider ?? {
+      async search() { throw new Error("memoryProvider not configured"); },
+      async get() { throw new Error("memoryProvider not configured"); },
+      async upsert() { throw new Error("memoryProvider not configured"); },
+      async compact() { throw new Error("memoryProvider not configured"); },
+    }
+  });
+  memoryGatewayRef = memoryGateway;
+
+  const orchestrator = createOrchestrator({
+    profileResolutionGateway,
+    chatManagementGateway,
+    providerGateway,
+    extensionGateway,
+    gateway,
+    now: config.now,
+  });
 
   return Object.freeze({
-    health() {
+    // BUG-037 fix: async for API surface consistency with all other methods
+    async health() {
       const records = gateway.listStoredRecords();
       const sessions = chatManagementGateway.listSessionsState();
       const tasks = taskBoardGateway.listTasksState();
@@ -271,6 +360,7 @@ export function createControlPlaneService(config = {}) {
         handoffRoutingTelemetryCount: handoffRoutingTelemetryEvents.length,
         usageTelemetryCount: usageTelemetryEvents.length,
         extensionCount: extensions.length,
+        vaultStatus: cryptoVault.getStatus(),
       });
     },
 
@@ -328,6 +418,14 @@ export function createControlPlaneService(config = {}) {
      */
     async resolveProfile(request = {}) {
       return profileResolutionGateway.resolve(request);
+    },
+
+    /**
+     * @param {unknown} request
+     * @returns {Promise<Record<string, unknown>>}
+     */
+    async normalizeIngress(request) {
+      return chatIngressGateway.normalize(request);
     },
 
     /**
@@ -478,6 +576,14 @@ export function createControlPlaneService(config = {}) {
      * @param {unknown} request
      * @returns {Promise<Record<string, unknown>>}
      */
+    async listModels(request) {
+      return providerGateway.listModels(request);
+    },
+
+    /**
+     * @param {unknown} request
+     * @returns {Promise<Record<string, unknown>>}
+     */
     async streamOutput(request) {
       return providerGateway.stream(request);
     },
@@ -535,6 +641,59 @@ export function createControlPlaneService(config = {}) {
      */
     async installPlugin(request) {
       return pluginInstallerGateway.install(request);
+    },
+
+    /**
+     * @param {unknown} request
+     * @returns {Promise<Record<string, unknown>>}
+     */
+    async searchMemory(request) {
+      return memoryGateway.search(request);
+    },
+
+    /**
+     * @param {unknown} request
+     * @returns {Promise<Record<string, unknown>>}
+     */
+    async getMemory(request) {
+      return memoryGateway.get(request);
+    },
+
+    /**
+     * @param {unknown} request
+     * @returns {Promise<Record<string, unknown>>}
+     */
+    async upsertMemory(request) {
+      return memoryGateway.upsert(request);
+    },
+
+    /**
+     * @param {unknown} request
+     * @returns {Promise<Record<string, unknown>>}
+     */
+    async compactMemory(request) {
+      return memoryGateway.compact(request);
+    },
+
+    /**
+     * @param {import("../../polar-runtime-core/src/orchestrator.mjs").PolarEnvelope} request
+     */
+    async orchestrate(request) {
+      return orchestrator.orchestrate(request);
+    },
+
+    /**
+     * @param {string} workflowId
+     */
+    async executeWorkflow(workflowId) {
+      return orchestrator.executeWorkflow(workflowId);
+    },
+
+    /**
+     * @param {string} workflowId
+     */
+    async rejectWorkflow(workflowId) {
+      return orchestrator.rejectWorkflow(workflowId);
     }
   });
 }

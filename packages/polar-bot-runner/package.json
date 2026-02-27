@@ -1,0 +1,20 @@
+{
+    "name": "@polar/bot-runner",
+    "version": "0.1.0",
+    "private": true,
+    "description": "Polar AI Assistant Bot Runner for external messaging platforms",
+    "type": "module",
+    "scripts": {
+        "start": "node --experimental-modules --no-warnings src/index.mjs"
+    },
+    "dependencies": {
+        "@mariozechner/pi-agent-core": "^0.54.2",
+        "@mariozechner/pi-ai": "^0.54.2",
+        "better-sqlite3": "^12.6.2",
+        "dotenv": "^16.6.1",
+        "mcp-client": "^1.13.1",
+        "pdf-parse": "^2.4.5",
+        "telegraf": "^4.16.3",
+        "ws": "^8.19.0"
+    }
+}

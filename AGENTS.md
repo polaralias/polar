@@ -1,21 +1,18 @@
 # AGENTS.md
 
-Last updated: 2026-02-23
+Last updated: 2026-02-25
 
 ## Purpose
 
-This file defines how implementation agents should work in this repository.
+This file defines how implementation agents should work in this repository for the new AI Assistant phase.
 
-Primary goal: deliver Polar from documentation-aligned state to production-ready runtime while preserving strict safety invariants and modularity.
+Primary goal: Go full agentic dev to build the AI assistant leveraging the completed Polar framework.
 
 ## Canonical References
 
 Read these first before implementing:
 
-1. `docs/README.md`
-2. `docs/project-overview.md`
-3. `docs/architecture/runtime-topology.md`
-4. `docs/architecture/tooling-contract-middleware.md`
+1. `docs/project-overview.md`
 
 ## Non-Negotiable Runtime Invariants
 
@@ -46,25 +43,19 @@ Recommended package boundaries:
 
 ## Implementation Priorities
 
-Implement in this order unless explicitly directed otherwise:
-
-1. Contract registry and middleware spine.
-2. Adapter isolation for `pi-mono`.
-3. Unified chat normalization (web, telegram, slack, then discord).
-4. Multi-agent orchestration and typed handoffs.
-5. Extension governance (skills, MCP, plugins).
-6. Structured memory, heartbeat, and automations.
-7. Control plane + Web UI + task board.
-8. Observability, budget governance, and hardening.
+1. We are moving into full agentic dev to build the AI assistant on top of the Polar framework. More documentation will be fleshed out soon.
 
 ## Working Rules
 
-1. Prefer small, reviewable PRs mapped to implementation phases.
-2. Add tests with each feature (unit + integration; add e2e where behavior changes).
-3. Do not introduce file-based canonical config for runtime controls. All configurations must be injected dynamically via the zero-file CLI (`polar config set`) or the Operator Web UI.
-4. Preserve deterministic error behavior and explicit failure typing.
-5. Update docs when behavior or architecture decisions change (e.g. enforcing model-pinned handoff configurations).
-6. Never use git to commit changes, ask the user to commit once changes are complete.
+1. Prioritize as many changes as possible, with as few PRs as possible. Go full agentic dev.
+2. Read the docs carefully.
+3. Ask questions up front if anything is unclear before jumping into execution.
+4. Work until you can't or need to stop.
+5. Log everything you do in `docs/implementation/implementation-log.md`.
+6. Add tests with each feature (unit + integration; add e2e where behavior changes).
+7. Do not introduce file-based canonical config for runtime controls unless necessary.
+8. Update docs when behavior or architecture decisions change.
+9. Never use git to commit changes, ask the user to commit once changes are complete.
 
 ## Agent Message Format
 

@@ -799,7 +799,6 @@ export function createTelemetryAlertGateway({
             };
             if (input.actorId) { taskRequest.actorId = input.actorId; }
             if (input.sessionId) { taskRequest.sessionId = input.sessionId; }
-
             if (input.metadata) { taskRequest.metadata = input.metadata; }
 
             // Execute Policy Actions based on Alert Code (Cost/Telemetry Workflows)
@@ -824,6 +823,24 @@ export function createTelemetryAlertGateway({
               if (upsertResult.status === "created" || upsertResult.status === "updated") {
                 routedCount++;
                 items.push({ alertId: alert.alertId, taskId: taskRequest.taskId });
+
+                // --- ALERTS NOTIFICATION ROUTING ---
+                if (process.env.ALERT_WEBHOOK_URL) {
+                  try {
+                    fetch(process.env.ALERT_WEBHOOK_URL, {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({
+                        text: `📉 *Polar Telemetry Alert* 📉\n\n*Source:* \`${alert.source}\`\n*Severity:* \`${alert.severity}\`\n*Message:* ${alert.message}\n${metricDesc}`,
+                        alert_type: "telemetry",
+                        alert: alert
+                      })
+                    }).catch(err => console.warn("[TELEMETRY] Failed to dispatch Alert Webhook:", err.message));
+                  } catch (e) {
+                    // Suppress fetch errors
+                  }
+                }
+
               } else {
                 rejectedCount++;
               }

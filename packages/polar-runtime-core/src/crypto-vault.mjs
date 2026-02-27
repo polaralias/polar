@@ -19,7 +19,9 @@ export function createCryptoVault(config = {}) {
     }
 
     // Generate an ephemeral key if running in dev/memory modes and no key is explicitly bound
+    let isEphemeral = false;
     if (!activeMasterKey) {
+        isEphemeral = true;
         activeMasterKey = crypto.randomBytes(KEY_LENGTH);
     }
 
@@ -28,7 +30,11 @@ export function createCryptoVault(config = {}) {
         : activeMasterKey;
 
     if (!Buffer.isBuffer(normalizedKey) || normalizedKey.length !== KEY_LENGTH) {
-        throw new RuntimeExecutionError("Vault masterKey must resolve to a valid 32-byte buffer");
+        throw new RuntimeExecutionError(
+            Buffer.isBuffer(config.masterKey)
+                ? `Vault masterKey Buffer must be exactly ${KEY_LENGTH} bytes (received ${normalizedKey.length} bytes). String keys are auto-hashed via SHA-256.`
+                : "Vault masterKey must resolve to a valid 32-byte buffer"
+        );
     }
 
     return Object.freeze({
@@ -111,7 +117,9 @@ export function createCryptoVault(config = {}) {
 
             const result = {};
             for (const [k, v] of Object.entries(value)) {
-                const isSecretField = k.endsWith("Secret") || k.endsWith("Key") || k.endsWith("Token") || k === "apiKey" || k === "secretRef" || k === "password";
+                // BUG-025 fix: case-insensitive field name matching for secret detection
+                const lk = k.toLowerCase();
+                const isSecretField = lk.endsWith("secret") || lk.endsWith("key") || lk.endsWith("token") || lk === "apikey" || lk === "secretref" || lk === "password";
 
                 if (isSecretField && typeof v === "string" && !v.startsWith(PREFIX)) {
                     result[k] = this.encrypt(v);
@@ -152,6 +160,13 @@ export function createCryptoVault(config = {}) {
                 }
             }
             return result;
+        },
+
+        getStatus() {
+            return Object.freeze({
+                isEphemeral,
+                algorithm: DEFAULT_ALGORITHM
+            });
         }
     });
 }

@@ -33,6 +33,8 @@ const commonInputFields = Object.freeze({
   thinkingEnabled: booleanField({ required: false }),
   thinkingBudget: numberField({ required: false, min: 1 }),
   thinkingLevel: stringField({ minLength: 1, required: false }),
+  workspaceId: stringField({ minLength: 1, required: false }),
+  estimatedCostUsd: numberField({ min: 0, required: false }),
   providerExtensions: jsonField({ required: false }),
 });
 
@@ -47,6 +49,10 @@ export const PROVIDER_ACTIONS = Object.freeze({
   }),
   embed: Object.freeze({
     actionId: "provider.embed",
+    version: 1,
+  }),
+  listModels: Object.freeze({
+    actionId: "provider.listModels",
     version: 1,
   }),
 });
@@ -72,7 +78,9 @@ export function createProviderOperationContracts(options = {}) {
         fields: {
           providerId: stringField({ minLength: 1 }),
           model: stringField({ minLength: 1 }),
-          text: stringField({ minLength: 1 }),
+          text: stringField({ required: false }),
+          toolCalls: jsonField({ required: false }),
+          usage: jsonField({ required: false }),
         },
       }),
       riskClass,
@@ -115,6 +123,8 @@ export function createProviderOperationContracts(options = {}) {
           providerId: stringField({ minLength: 1 }),
           model: stringField({ minLength: 1 }),
           text: stringField({ minLength: 1 }),
+          workspaceId: stringField({ minLength: 1, required: false }),
+          estimatedCostUsd: numberField({ min: 0, required: false }),
         },
       }),
       outputSchema: createStrictObjectSchema({
@@ -130,6 +140,29 @@ export function createProviderOperationContracts(options = {}) {
       timeoutMs: 90_000,
       retryPolicy: {
         maxAttempts: 1,
+      },
+    }),
+    Object.freeze({
+      actionId: PROVIDER_ACTIONS.listModels.actionId,
+      version: PROVIDER_ACTIONS.listModels.version,
+      inputSchema: createStrictObjectSchema({
+        schemaId: "provider.listModels.input",
+        fields: {
+          providerId: stringField({ minLength: 1 }),
+        },
+      }),
+      outputSchema: createStrictObjectSchema({
+        schemaId: "provider.listModels.output",
+        fields: {
+          providerId: stringField({ minLength: 1 }),
+          models: stringArrayField({ minItems: 1, itemMinLength: 1 }),
+        },
+      }),
+      riskClass: "low", // Safe operation
+      trustClass,
+      timeoutMs: 15_000,
+      retryPolicy: {
+        maxAttempts: 2,
       },
     }),
   ]);

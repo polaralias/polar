@@ -296,7 +296,7 @@ function normalizeQueueEvents(queue, events) {
       .map((event, index) => normalizeQueueEvent(queue, event, index))
       .sort(
         (left, right) =>
-          /** @type {number} */ (left.sequence) -
+          /** @type {number} */(left.sequence) -
           /** @type {number} */ (right.sequence),
       ),
   );
@@ -314,7 +314,7 @@ function buildEventQueueSummary(queue, events) {
   for (const event of events) {
     const source = /** @type {string} */ (event.source);
     sourceCounts.set(source, (sourceCounts.get(source) ?? 0) + 1);
-    runIds.add(/** @type {string} */ (event.runId));
+    runIds.add(/** @type {string} */(event.runId));
   }
 
   const summary = {
@@ -363,7 +363,7 @@ function buildEventQueueSummary(queue, events) {
   }
 
   if (queue === "retry" && events.length > 0) {
-    const retryAtValues = events.map((event) => /** @type {number} */ (event.retryAtMs));
+    const retryAtValues = events.map((event) => /** @type {number} */(event.retryAtMs));
     summary.nextRetryAtMs = Math.min(...retryAtValues);
     summary.latestRetryAtMs = Math.max(...retryAtValues);
   }
@@ -787,6 +787,24 @@ export function createSchedulerGateway({
     });
     deadLetterEventLedger.push(ledgerEntry);
 
+    // --- ALERTS NOTIFICATION ROUTING ---
+    // If an external webhook is configured (Slack/PagerDuty/Email bridge), dispatch the dead letter alert immediately.
+    if (process.env.ALERT_WEBHOOK_URL) {
+      try {
+        fetch(process.env.ALERT_WEBHOOK_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            text: `🚨 *Polar Alert: Dead Letter Task* 🚨\n\n*Event ID:* \`${entry.eventId}\`\n*Source:* \`${entry.source}\`\n*Reason:* ${entry.reason}\n*Error:* ${entry.failure ? JSON.stringify(entry.failure) : "None"}`,
+            alert_type: "dead_letter",
+            event: ledgerEntry
+          })
+        }).catch(err => console.warn("[SCHEDULER] Failed to dispatch Dead Letter Webhook:", err.message));
+      } catch (e) {
+        // Suppress sync fetch errors so we don't crash the scheduler
+      }
+    }
+
     return {
       sequence: ledgerEntry.sequence,
       eventId: ledgerEntry.eventId,
@@ -1180,8 +1198,8 @@ export function createSchedulerGateway({
                 : undefined;
             const runStatus = processableRunStatuses.has(outputStatus)
               ? /** @type {"executed"|"skipped"|"blocked"|"failed"} */ (
-                  outputStatus
-                )
+                outputStatus
+              )
               : undefined;
             const outputRecord = isPlainObject(output) ? output : undefined;
             const retryEligible =
@@ -1570,11 +1588,11 @@ export function createSchedulerGateway({
         "processed";
       assertQueueFilterCompatibility(
         queue,
-        /** @type {"processed"|"rejected"|"failed"|undefined} */ (parsed.status),
-        /** @type {"executed"|"skipped"|"blocked"|"failed"|undefined} */ (
+        /** @type {"processed"|"rejected"|"failed"|undefined} */(parsed.status),
+        /** @type {"executed"|"skipped"|"blocked"|"failed"|undefined} */(
           parsed.runStatus
         ),
-        /** @type {"none"|"retry_scheduled"|"dead_lettered"|undefined} */ (
+        /** @type {"none"|"retry_scheduled"|"dead_lettered"|undefined} */(
           parsed.disposition
         ),
       );
