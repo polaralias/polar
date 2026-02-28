@@ -31,7 +31,7 @@ export function createCryptoVault(config = {}) {
 
     if (!Buffer.isBuffer(normalizedKey) || normalizedKey.length !== KEY_LENGTH) {
         throw new RuntimeExecutionError(
-            Buffer.isBuffer(config.masterKey)
+            Buffer.isBuffer(activeMasterKey)
                 ? `Vault masterKey Buffer must be exactly ${KEY_LENGTH} bytes (received ${normalizedKey.length} bytes). String keys are auto-hashed via SHA-256.`
                 : "Vault masterKey must resolve to a valid 32-byte buffer"
         );
