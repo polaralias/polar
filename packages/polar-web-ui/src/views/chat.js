@@ -102,6 +102,71 @@ export async function renderChat(container) {
             return;
         }
 
+        if (result.status === 'repair_question' && result.correlationId) {
+            const optionA = (result.options || []).find((option) => option.id === 'A');
+            const optionB = (result.options || []).find((option) => option.id === 'B');
+            const safeCorrelationId = String(result.correlationId).replace(/[^a-zA-Z0-9_-]/g, '_');
+            const questionText = result.question || 'I found multiple possible contexts. Which one should I continue?';
+            const repairHtml = `
+                <strong>Need clarification</strong><br>
+                <span>${questionText.replace(/\n/g, '<br>')}</span>
+                <div style="margin-top: 12px; display:flex; gap:8px;">
+                    <button id="repair-select-btn-A-${safeCorrelationId}" class="action-btn outline" style="font-size: 12px; padding: 6px 12px;">🅰️ ${optionA?.label || 'Option A'}</button>
+                    <button id="repair-select-btn-B-${safeCorrelationId}" class="action-btn outline" style="font-size: 12px; padding: 6px 12px;">🅱️ ${optionB?.label || 'Option B'}</button>
+                </div>
+            `;
+
+            const repairDiv = addBubble('assistant', repairHtml, {
+                reaction: '⚡',
+                done: false
+            });
+
+            const disableRepairButtons = () => {
+                repairDiv.querySelectorAll('button').forEach((button) => {
+                    button.disabled = true;
+                });
+            };
+            const clearRepairButtons = () => {
+                repairDiv.querySelectorAll('button').forEach((button) => {
+                    button.remove();
+                });
+            };
+
+            repairDiv.querySelector(`#repair-select-btn-A-${safeCorrelationId}`)?.addEventListener('click', async () => {
+                disableRepairButtons();
+                try {
+                    const selectionResult = await fetchApi('handleRepairSelection', {
+                        sessionId,
+                        selection: 'A',
+                        correlationId: result.correlationId
+                    });
+                    clearRepairButtons();
+                    await processOrchestratorResponse(selectionResult);
+                } catch (e) {
+                    clearRepairButtons();
+                    addBubble('system', '<span style="color:var(--danger)">Error: ' + e.message + '</span>');
+                }
+            });
+
+            repairDiv.querySelector(`#repair-select-btn-B-${safeCorrelationId}`)?.addEventListener('click', async () => {
+                disableRepairButtons();
+                try {
+                    const selectionResult = await fetchApi('handleRepairSelection', {
+                        sessionId,
+                        selection: 'B',
+                        correlationId: result.correlationId
+                    });
+                    clearRepairButtons();
+                    await processOrchestratorResponse(selectionResult);
+                } catch (e) {
+                    clearRepairButtons();
+                    addBubble('system', '<span style="color:var(--danger)">Error: ' + e.message + '</span>');
+                }
+            });
+
+            return;
+        }
+
         if (result.text) {
             const isCompleted = result.status === 'completed';
             addBubble('assistant', result.text.replace(/\n/g, '<br>'), {

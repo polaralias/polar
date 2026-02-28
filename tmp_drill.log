@@ -1,0 +1,48 @@
+Γû╢ F5 Reliability Drills
+  Γ£û provider blackout failover: falls back deterministically on stream timeout/error (39.5066ms)
+  Γ£û audit/store degradation behavior: graceful fail-closed behavior when sink fails (0.3838ms)
+  Γ£û multi-agent loop panic containment: timeout prevents runaway capability execution (2.6478ms)
+Γ£û F5 Reliability Drills (44.2813ms)
+Γä╣ tests 4
+Γä╣ suites 0
+Γä╣ pass 0
+Γä╣ fail 4
+Γä╣ cancelled 0
+Γä╣ skipped 0
+Γä╣ todo 0
+Γä╣ duration_ms 185.1156
+
+Γ£û failing tests:
+
+test at tests\runtime-core-drills-automation.test.mjs:5:13
+Γ£û provider blackout failover: falls back deterministically on stream timeout/error (39.5066ms)
+  TypeError: Cannot destructure property 'contractRegistry' of 'undefined' as it is undefined.
+      at createMiddlewarePipeline (file:///C:/Users/james.DESKTOP-Q8VOBFS/Documents/Development/polar/packages/polar-runtime-core/src/middleware-pipeline.mjs:492:3)
+      at TestContext.<anonymous> (file:///C:/Users/james.DESKTOP-Q8VOBFS/Documents/Development/polar/tests/runtime-core-drills-automation.test.mjs:52:33)
+      at async Test.run (node:internal/test_runner/test:1113:7)
+      at async TestContext.<anonymous> (file:///C:/Users/james.DESKTOP-Q8VOBFS/Documents/Development/polar/tests/runtime-core-drills-automation.test.mjs:5:5)
+      at async Test.run (node:internal/test_runner/test:1113:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:358:3)
+
+test at tests\runtime-core-drills-automation.test.mjs:81:13
+Γ£û audit/store degradation behavior: graceful fail-closed behavior when sink fails (0.3838ms)
+  Error [MiddlewareExecutionError]: auditSink must be a function
+      at createMiddlewarePipeline (file:///C:/Users/james.DESKTOP-Q8VOBFS/Documents/Development/polar/packages/polar-runtime-core/src/middleware-pipeline.mjs:500:11)
+      at TestContext.<anonymous> (file:///C:/Users/james.DESKTOP-Q8VOBFS/Documents/Development/polar/tests/runtime-core-drills-automation.test.mjs:93:26)
+      at async Test.run (node:internal/test_runner/test:1113:7)
+      at async TestContext.<anonymous> (file:///C:/Users/james.DESKTOP-Q8VOBFS/Documents/Development/polar/tests/runtime-core-drills-automation.test.mjs:81:5)
+      at async Test.run (node:internal/test_runner/test:1113:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:358:3) {
+    code: 'POLAR_MIDDLEWARE_EXECUTION_ERROR',
+    details: {}
+  }
+
+test at tests\runtime-core-drills-automation.test.mjs:111:13
+Γ£û multi-agent loop panic containment: timeout prevents runaway capability execution (2.6478ms)
+  TypeError: Cannot destructure property 'contractRegistry' of 'undefined' as it is undefined.
+      at createMiddlewarePipeline (file:///C:/Users/james.DESKTOP-Q8VOBFS/Documents/Development/polar/packages/polar-runtime-core/src/middleware-pipeline.mjs:492:3)
+      at TestContext.<anonymous> (file:///C:/Users/james.DESKTOP-Q8VOBFS/Documents/Development/polar/tests/runtime-core-drills-automation.test.mjs:128:33)
+      at async Test.run (node:internal/test_runner/test:1113:7)
+      at async TestContext.<anonymous> (file:///C:/Users/james.DESKTOP-Q8VOBFS/Documents/Development/polar/tests/runtime-core-drills-automation.test.mjs:111:5)
+      at async Test.run (node:internal/test_runner/test:1113:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:358:3)

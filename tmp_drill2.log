@@ -1,0 +1,50 @@
+Γû╢ F5 Reliability Drills
+  Γ£û provider blackout failover: falls back deterministically on stream timeout/error (62.8652ms)
+  Γ£û audit/store degradation behavior: graceful fail-closed behavior when sink fails (1.6312ms)
+  Γ£û multi-agent loop panic containment: timeout prevents runaway capability execution (3.0076ms)
+Γ£û F5 Reliability Drills (69.1666ms)
+Γä╣ tests 4
+Γä╣ suites 0
+Γä╣ pass 0
+Γä╣ fail 4
+Γä╣ cancelled 0
+Γä╣ skipped 0
+Γä╣ todo 0
+Γä╣ duration_ms 203.7283
+
+Γ£û failing tests:
+
+test at tests\runtime-core-drills-automation.test.mjs:5:13
+Γ£û provider blackout failover: falls back deterministically on stream timeout/error (62.8652ms)
+  Error [RuntimeExecutionError]: All providers failed for stream
+      at runWithFallback (file:///C:/Users/james.DESKTOP-Q8VOBFS/Documents/Development/polar/packages/polar-runtime-core/src/provider-gateway.mjs:513:17)
+      at async TestContext.<anonymous> (file:///C:/Users/james.DESKTOP-Q8VOBFS/Documents/Development/polar/tests/runtime-core-drills-automation.test.mjs:68:24)
+      at async Test.run (node:internal/test_runner/test:1113:7)
+      at async TestContext.<anonymous> (file:///C:/Users/james.DESKTOP-Q8VOBFS/Documents/Development/polar/tests/runtime-core-drills-automation.test.mjs:5:5)
+      at async Test.run (node:internal/test_runner/test:1113:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:358:3) {
+    code: 'POLAR_RUNTIME_EXECUTION_ERROR',
+    details: { operation: 'stream', attempts: [ [Object], [Object] ] }
+  }
+
+test at tests\runtime-core-drills-automation.test.mjs:82:13
+Γ£û audit/store degradation behavior: graceful fail-closed behavior when sink fails (1.6312ms)
+  Error [MiddlewareExecutionError]: auditSink must be a function
+      at createMiddlewarePipeline (file:///C:/Users/james.DESKTOP-Q8VOBFS/Documents/Development/polar/packages/polar-runtime-core/src/middleware-pipeline.mjs:500:11)
+      at TestContext.<anonymous> (file:///C:/Users/james.DESKTOP-Q8VOBFS/Documents/Development/polar/tests/runtime-core-drills-automation.test.mjs:95:26)
+      at async Test.run (node:internal/test_runner/test:1113:7)
+      at async TestContext.<anonymous> (file:///C:/Users/james.DESKTOP-Q8VOBFS/Documents/Development/polar/tests/runtime-core-drills-automation.test.mjs:82:5)
+      at async Test.run (node:internal/test_runner/test:1113:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:358:3) {
+    code: 'POLAR_MIDDLEWARE_EXECUTION_ERROR',
+    details: {}
+  }
+
+test at tests\runtime-core-drills-automation.test.mjs:114:13
+Γ£û multi-agent loop panic containment: timeout prevents runaway capability execution (3.0076ms)
+  TypeError: gateway.executeExtensionCapability is not a function
+      at TestContext.<anonymous> (file:///C:/Users/james.DESKTOP-Q8VOBFS/Documents/Development/polar/tests/runtime-core-drills-automation.test.mjs:145:38)
+      at async Test.run (node:internal/test_runner/test:1113:7)
+      at async TestContext.<anonymous> (file:///C:/Users/james.DESKTOP-Q8VOBFS/Documents/Development/polar/tests/runtime-core-drills-automation.test.mjs:114:5)
+      at async Test.run (node:internal/test_runner/test:1113:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:358:3)

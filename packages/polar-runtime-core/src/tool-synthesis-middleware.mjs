@@ -1,3 +1,29 @@
+import {
+    createStrictObjectSchema,
+    stringArrayField
+} from '../../polar-domain/src/index.mjs';
+
+const toolSynthesisResponseSchema = createStrictObjectSchema({
+    schemaId: 'tool.synthesis.response',
+    fields: {
+        selectedToolIds: stringArrayField({ minItems: 0, required: false })
+    }
+});
+
+/**
+ * @param {string} rawText
+ * @returns {Record<string, unknown>}
+ */
+function parseSynthesisResponse(rawText) {
+    const normalized = rawText.replace(/```json?\s*/g, '').replace(/```/g, '').trim();
+    const parsed = JSON.parse(normalized);
+    const validation = toolSynthesisResponseSchema.validate(parsed);
+    if (!validation.ok) {
+        throw new Error(`Invalid ${toolSynthesisResponseSchema.schemaId}: ${(validation.errors || []).join('; ')}`);
+    }
+    return /** @type {Record<string, unknown>} */ (validation.value);
+}
+
 /**
  * Middleware that performs a "Planning" turn to prune the toolset
  * for complex requests, improving LLM accuracy and reducing context bloat.
@@ -43,7 +69,7 @@ Output JSON: { "selectedToolIds": ["id1", "id2"] }`
                         });
 
                         // Provider gateway returns { text: "..." }, not { content: "..." } (BUG-020 fix)
-                        const parsed = JSON.parse(synthesisResult.text || '{}');
+                        const parsed = parseSynthesisResponse(synthesisResult.text || '{}');
                         const selectedIds = Array.isArray(parsed.selectedToolIds) ? parsed.selectedToolIds : [];
 
                         if (selectedIds.length > 0) {

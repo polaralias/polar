@@ -6,6 +6,10 @@ import {
   parseExecutionType,
   validateSchemaOrThrow,
 } from "../../polar-domain/src/index.mjs";
+import {
+  createDurableLineageStore,
+  isRuntimeDevMode,
+} from "./durable-lineage-store.mjs";
 
 const executionTypes = new Set(EXECUTION_TYPES);
 
@@ -245,6 +249,219 @@ function toAuditError(error) {
 }
 
 /**
+ * @param {unknown} value
+ * @returns {value is Record<string, unknown>}
+ */
+function isPlainObject(value) {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    Object.getPrototypeOf(value) === Object.prototype
+  );
+}
+
+/**
+ * @param {unknown} value
+ * @returns {string|undefined}
+ */
+function readString(value) {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+/**
+ * @param {Record<string, unknown>|undefined} input
+ * @param {Record<string, unknown>|undefined} output
+ * @returns {{
+ *   workflowId?: string,
+ *   runId?: string,
+ *   threadId?: string,
+ *   sessionId?: string,
+ *   userId?: string,
+ *   extensionId?: string,
+ *   capabilityId?: string
+ * }}
+ */
+function extractLineageContext(input, output) {
+  const normalizedInput = isPlainObject(input) ? input : {};
+  const normalizedOutput = isPlainObject(output) ? output : {};
+  const metadata = isPlainObject(normalizedInput.metadata)
+    ? normalizedInput.metadata
+    : undefined;
+  const lineageFromMetadata = metadata && isPlainObject(metadata.lineage)
+    ? metadata.lineage
+    : undefined;
+  const approvalContext = metadata && isPlainObject(metadata.approvalContext)
+    ? metadata.approvalContext
+    : undefined;
+
+  return {
+    extensionId:
+      readString(normalizedInput.extensionId) ??
+      readString(normalizedOutput.extensionId),
+    capabilityId:
+      readString(normalizedInput.capabilityId) ??
+      readString(normalizedOutput.capabilityId),
+    workflowId:
+      readString(lineageFromMetadata?.workflowId) ??
+      readString(approvalContext?.workflowId) ??
+      readString(normalizedInput.workflowId) ??
+      readString(normalizedOutput.workflowId),
+    runId:
+      readString(lineageFromMetadata?.runId) ??
+      readString(approvalContext?.runId) ??
+      readString(normalizedInput.runId) ??
+      readString(normalizedOutput.runId),
+    threadId:
+      readString(lineageFromMetadata?.threadId) ??
+      readString(normalizedInput.threadId) ??
+      readString(normalizedOutput.threadId),
+    sessionId:
+      readString(normalizedInput.sessionId) ??
+      readString(normalizedOutput.sessionId),
+    userId:
+      readString(normalizedInput.userId) ??
+      readString(normalizedOutput.userId),
+  };
+}
+
+/**
+ * @param {string} reason
+ * @returns {string}
+ */
+function mapPolicyReasonCode(reason) {
+  if (reason.includes("empty or invalid capability scope")) {
+    return "scope_invalid";
+  }
+  if (reason.includes("is not in session scope")) {
+    return "scope_capability_denied";
+  }
+  if (reason.includes("Approval store is not available")) {
+    return "approval_store_unavailable";
+  }
+  if (reason.includes("requires a destructive-risk approval grant")) {
+    return "destructive_grant_required";
+  }
+  if (reason.includes("require explicit approval")) {
+    return "approval_required";
+  }
+  if (reason.includes("policy denied")) {
+    return "policy_denied";
+  }
+  return "policy_denied_unspecified";
+}
+
+/**
+ * @param {AuditEventEnvelope} auditEvent
+ * @param {{
+ *   checkpoint: string,
+ *   stage: "before"|"execution"|"after",
+ *   outcome: "ok"|"error",
+ *   middlewareId?: string,
+ *   error?: unknown
+ * }} params
+ * @param {MiddlewareContext} context
+ * @returns {Record<string, unknown>}
+ */
+function toLineageAuditRecord(auditEvent, params, context) {
+  const normalizedError = params.error === undefined
+    ? undefined
+    : toAuditError(params.error);
+  const lineageContext = extractLineageContext(context.input, context.output);
+  const record = {
+    eventType: "audit.checkpoint",
+    auditId: auditEvent.auditId,
+    timestamp: auditEvent.timestamp,
+    traceId: auditEvent.traceId,
+    executionType: auditEvent.executionType,
+    actionId: auditEvent.actionId,
+    version: auditEvent.version,
+    stage: auditEvent.stage,
+    checkpoint: auditEvent.checkpoint,
+    outcome: auditEvent.outcome,
+    riskClass: auditEvent.riskClass,
+    trustClass: auditEvent.trustClass,
+    middlewareId: params.middlewareId ?? null,
+    ...lineageContext,
+  };
+
+  if (normalizedError) {
+    record.errorCode = normalizedError.code;
+    record.errorMessage = normalizedError.message;
+  }
+
+  return Object.freeze(record);
+}
+
+/**
+ * @param {MiddlewareContext} context
+ * @param {{ checkpoint: string }} params
+ * @returns {Record<string, unknown>|undefined}
+ */
+function toPolicyDecisionRecord(context, params) {
+  if (
+    context.actionId !== "extension.operation.execute" ||
+    params.checkpoint !== "run.completed"
+  ) {
+    return undefined;
+  }
+
+  const output = isPlainObject(context.output) ? context.output : undefined;
+  if (!output) {
+    return undefined;
+  }
+
+  const lineageContext = extractLineageContext(context.input, output);
+  const status = readString(output.status) ?? "unknown";
+  if (status === "completed") {
+    return Object.freeze({
+      eventType: "policy.decision",
+      decision: "allow",
+      reasonCode: "allowed",
+      reason: "Execution permitted by policy",
+      traceId: context.traceId,
+      executionType: context.executionType,
+      actionId: context.actionId,
+      version: context.version,
+      ...lineageContext,
+    });
+  }
+
+  const error = isPlainObject(output.error) ? output.error : undefined;
+  if (!error || readString(error.code) !== "POLAR_EXTENSION_POLICY_DENIED") {
+    return undefined;
+  }
+
+  const reason =
+    readString(error.message) ??
+    "Extension execution policy denied";
+  return Object.freeze({
+    eventType: "policy.decision",
+    decision: "deny",
+    reasonCode: mapPolicyReasonCode(reason),
+    reason,
+    errorCode: readString(error.code),
+    traceId: context.traceId,
+    executionType: context.executionType,
+    actionId: context.actionId,
+    version: context.version,
+    ...lineageContext,
+  });
+}
+
+/**
+ * @returns {Record<string, unknown>}
+ */
+function createEmptyLineageResponse() {
+  return Object.freeze({
+    status: "ok",
+    fromSequence: 1,
+    returnedCount: 0,
+    totalCount: 0,
+    items: Object.freeze([]),
+  });
+}
+
+/**
  * @param {RuntimeMiddleware[]} middleware
  * @param {ExecutionType} executionType
  * @returns {RuntimeMiddleware[]}
@@ -264,17 +481,41 @@ function filterMiddlewareByExecutionType(middleware, executionType) {
  *   contractRegistry: ReturnType<import("./contract-registry.mjs").createContractRegistry>,
  *   middleware?: RuntimeMiddleware[],
  *   middlewareByExecutionType?: Partial<Record<ExecutionType, RuntimeMiddleware[]>>,
- *   auditSink?: (event: AuditEventEnvelope) => Promise<void>|void
+ *   auditSink?: (event: AuditEventEnvelope) => Promise<void>|void,
+ *   lineageStore?: {
+ *     append: (event: Record<string, unknown>) => Promise<unknown>|unknown,
+ *     query?: (request?: unknown) => Promise<Record<string, unknown>>|Record<string, unknown>
+ *   }
  * }} config
  */
 export function createMiddlewarePipeline({
   contractRegistry,
   middleware = [],
   middlewareByExecutionType = {},
-  auditSink = () => { },
+  auditSink,
+  lineageStore,
 }) {
-  if (typeof auditSink !== "function") {
+  const resolvedAuditSink = auditSink ?? (() => { });
+  if (typeof resolvedAuditSink !== "function") {
     throw new MiddlewareExecutionError("auditSink must be a function");
+  }
+
+  let resolvedLineageStore = lineageStore;
+  if (
+    resolvedLineageStore !== undefined &&
+    (
+      typeof resolvedLineageStore !== "object" ||
+      resolvedLineageStore === null ||
+      typeof resolvedLineageStore.append !== "function"
+    )
+  ) {
+    throw new MiddlewareExecutionError(
+      "lineageStore must expose append(event) when provided",
+    );
+  }
+
+  if (resolvedLineageStore === undefined && !isRuntimeDevMode()) {
+    resolvedLineageStore = createDurableLineageStore();
   }
 
   validateMiddleware(middleware, "global");
@@ -354,8 +595,9 @@ export function createMiddlewarePipeline({
             params.error === undefined ? undefined : toAuditError(params.error),
         });
 
+        const frozenAuditEvent = Object.freeze(auditEvent);
         try {
-          await auditSink(Object.freeze(auditEvent));
+          await resolvedAuditSink(frozenAuditEvent);
         } catch (error) {
           throw new MiddlewareExecutionError("Audit sink rejected event", {
             traceId: context.traceId,
@@ -365,6 +607,28 @@ export function createMiddlewarePipeline({
             checkpoint: params.checkpoint,
             cause: error instanceof Error ? error.message : String(error),
           });
+        }
+
+        if (resolvedLineageStore) {
+          try {
+            await resolvedLineageStore.append(
+              toLineageAuditRecord(frozenAuditEvent, params, context),
+            );
+
+            const policyDecisionRecord = toPolicyDecisionRecord(context, params);
+            if (policyDecisionRecord) {
+              await resolvedLineageStore.append(policyDecisionRecord);
+            }
+          } catch (error) {
+            throw new MiddlewareExecutionError("Lineage store rejected event", {
+              traceId: context.traceId,
+              executionType: context.executionType,
+              actionId: context.actionId,
+              version: context.version,
+              checkpoint: params.checkpoint,
+              cause: error instanceof Error ? error.message : String(error),
+            });
+          }
         }
       };
 
@@ -672,6 +936,31 @@ export function createMiddlewarePipeline({
       }
 
       return context.output;
+    },
+
+    /**
+     * @param {unknown} [request]
+     * @returns {Promise<Record<string, unknown>>}
+     */
+    async queryLineage(request = {}) {
+      if (
+        !resolvedLineageStore ||
+        typeof resolvedLineageStore.query !== "function"
+      ) {
+        return createEmptyLineageResponse();
+      }
+
+      return resolvedLineageStore.query(request);
+    },
+
+    /**
+     * @returns {{
+     *   append: (event: Record<string, unknown>) => Promise<unknown>|unknown,
+     *   query?: (request?: unknown) => Promise<Record<string, unknown>>|Record<string, unknown>
+     * }|undefined}
+     */
+    getLineageStore() {
+      return resolvedLineageStore;
     },
   });
 }

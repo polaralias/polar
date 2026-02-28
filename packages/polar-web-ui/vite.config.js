@@ -45,7 +45,7 @@ const ALLOWED_ACTIONS = new Set([
     'executeExtension', 'applyExtensionLifecycle', 'listExtensionStates',
     'installSkill', 'syncMcpServer', 'installPlugin',
     'searchMemory', 'getMemory', 'upsertMemory', 'compactMemory',
-    'orchestrate', 'executeWorkflow', 'rejectWorkflow'
+    'orchestrate', 'executeWorkflow', 'rejectWorkflow', 'handleRepairSelection'
 ]);
 
 /**

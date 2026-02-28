@@ -14,6 +14,7 @@ import {
   createDefaultIngressNormalizers,
 } from "../../polar-adapter-channels/src/index.mjs";
 import { createNativeHttpAdapter } from "../../polar-adapter-native/src/index.mjs";
+import { computeCapabilityScope } from "../../polar-runtime-core/src/capability-scope.mjs";
 import {
   createChatIngressGateway,
   createChatManagementGateway,
@@ -47,6 +48,7 @@ import {
   registerExtensionContracts,
   createSkillInstallerGateway,
   registerSkillInstallerContract,
+  createSkillRegistry,
   createMcpConnectorGateway,
   registerMcpConnectorContract,
   createPluginInstallerGateway,
@@ -57,7 +59,10 @@ import {
   createMemoryExtractionMiddleware,
   createMemoryRecallMiddleware,
   createToolSynthesisMiddleware,
+  createApprovalStore,
   createOrchestrator,
+  createDurableLineageStore,
+  isRuntimeDevMode,
   createSqliteSchedulerStateStore,
 } from "../../polar-runtime-core/src/index.mjs";
 
@@ -94,6 +99,16 @@ import {
  *     removeDeadLetterEvent?: (request: { eventId: string, sequence?: number }) => Promise<unknown>|unknown
  *   },
  *   auditSink?: (event: unknown) => Promise<void>|void,
+ *   resolveProvider?: (providerId: string) => Promise<{
+ *     generate: (request: Record<string, unknown>) => Promise<Record<string, unknown>>,
+ *     stream: (request: Record<string, unknown>) => Promise<Record<string, unknown>>,
+ *     embed: (request: Record<string, unknown>) => Promise<Record<string, unknown>>,
+ *     listModels?: (request: Record<string, unknown>) => Promise<Record<string, unknown>>
+ *   }|undefined>,
+ *   lineageStore?: {
+ *     append: (event: Record<string, unknown>) => Promise<unknown>|unknown,
+ *     query?: (request?: unknown) => Promise<Record<string, unknown>>|Record<string, unknown>
+ *   },
  *   now?: () => number
  * }} [config]
  */
@@ -127,6 +142,11 @@ export function createControlPlaneService(config = {}) {
     createUsageTelemetryCollector({
       now: config.now,
     });
+  const lineageStore =
+    config.lineageStore ??
+    (!isRuntimeDevMode()
+      ? createDurableLineageStore({ now: config.now })
+      : undefined);
 
   let budgetGatewayRef;
   const budgetMiddleware = createBudgetMiddleware({
@@ -163,6 +183,7 @@ export function createControlPlaneService(config = {}) {
       memoryExtractionMiddleware,
     ],
     auditSink: config.auditSink,
+    lineageStore,
   });
 
   const cryptoVault = createCryptoVault();
@@ -253,10 +274,12 @@ export function createControlPlaneService(config = {}) {
   const handoffRoutingTelemetryGateway = createHandoffRoutingTelemetryGateway({
     middlewarePipeline,
     telemetryCollector: handoffRoutingTelemetryCollector,
+    lineageStore,
   });
   const usageTelemetryGateway = createUsageTelemetryGateway({
     middlewarePipeline,
     telemetryCollector: usageTelemetryCollector,
+    lineageStore,
   });
   const telemetryAlertGateway = createTelemetryAlertGateway({
     middlewarePipeline,
@@ -280,46 +303,51 @@ export function createControlPlaneService(config = {}) {
     middlewarePipeline,
     readConfigRecord: gateway.readConfigRecord,
   });
+  const resolveProvider =
+    typeof config.resolveProvider === "function"
+      ? config.resolveProvider
+      : async (providerId) => {
+        let record = gateway.readConfigRecord("provider", providerId);
+
+        // Fallback to environment variables if not found in config DB
+        if (!record || !record.config) {
+          let envKeyMap = {
+            "openai": { key: process.env.OPENAI_API_KEY, mode: "responses", url: "https://api.openai.com/v1/responses" },
+            "anthropic": { key: process.env.ANTHROPIC_API_KEY, mode: "anthropic_messages", url: "https://api.anthropic.com/v1/messages" },
+            "google_gemini": { key: process.env.GEMINI_API_KEY, mode: "gemini_generate_content", url: "https://generativelanguage.googleapis.com/v1beta" },
+            // BUG-014 fix: alias so bot runner's "google" resolves to the same config
+            "google": { key: process.env.GEMINI_API_KEY, mode: "gemini_generate_content", url: "https://generativelanguage.googleapis.com/v1beta" },
+            "groq": { key: process.env.GROQ_API_KEY, mode: "responses", url: "https://api.groq.com/openai/v1/responses" },
+            "openrouter": { key: process.env.OPENROUTER_API_KEY, mode: "chat", url: "https://openrouter.ai/api/v1/chat/completions" },
+            "localai": { key: "localai", mode: "responses", url: "http://localhost:8080/v1/responses" },
+            "ollama": { key: "ollama", mode: "responses", url: "http://localhost:11434/v1/responses" },
+          };
+          const envFallback = envKeyMap[providerId];
+          if (!envFallback) return undefined;
+
+          record = {
+            config: {
+              endpointMode: envFallback.mode,
+              baseUrl: envFallback.url,
+              apiKey: envFallback.key
+            }
+          };
+        }
+        return createNativeHttpAdapter({
+          providerId,
+          endpointMode: record.config.endpointMode || "chat",
+          baseUrl: record.config.baseUrl,
+          apiKey: record.config.apiKey,
+          defaultHeaders: record.config.defaultHeaders,
+          capabilities: record.config.capabilities,
+        });
+      };
+
   const providerGateway = createProviderGateway({
     middlewarePipeline,
     usageTelemetryCollector,
     now: config.now,
-    resolveProvider: async (providerId) => {
-      let record = gateway.readConfigRecord("provider", providerId);
-
-      // Fallback to environment variables if not found in config DB
-      if (!record || !record.config) {
-        let envKeyMap = {
-          "openai": { key: process.env.OPENAI_API_KEY, mode: "responses", url: "https://api.openai.com/v1/responses" },
-          "anthropic": { key: process.env.ANTHROPIC_API_KEY, mode: "anthropic_messages", url: "https://api.anthropic.com/v1/messages" },
-          "google_gemini": { key: process.env.GEMINI_API_KEY, mode: "gemini_generate_content", url: "https://generativelanguage.googleapis.com/v1beta" },
-          // BUG-014 fix: alias so bot runner's "google" resolves to the same config
-          "google": { key: process.env.GEMINI_API_KEY, mode: "gemini_generate_content", url: "https://generativelanguage.googleapis.com/v1beta" },
-          "groq": { key: process.env.GROQ_API_KEY, mode: "responses", url: "https://api.groq.com/openai/v1/responses" },
-          "openrouter": { key: process.env.OPENROUTER_API_KEY, mode: "chat", url: "https://openrouter.ai/api/v1/chat/completions" },
-          "localai": { key: "localai", mode: "responses", url: "http://localhost:8080/v1/responses" },
-          "ollama": { key: "ollama", mode: "responses", url: "http://localhost:11434/v1/responses" },
-        };
-        const envFallback = envKeyMap[providerId];
-        if (!envFallback) return undefined;
-
-        record = {
-          config: {
-            endpointMode: envFallback.mode,
-            baseUrl: envFallback.url,
-            apiKey: envFallback.key
-          }
-        };
-      }
-      return createNativeHttpAdapter({
-        providerId,
-        endpointMode: record.config.endpointMode || "chat",
-        baseUrl: record.config.baseUrl,
-        apiKey: record.config.apiKey,
-        defaultHeaders: record.config.defaultHeaders,
-        capabilities: record.config.capabilities,
-      });
-    },
+    resolveProvider,
   });
   providerGatewayRef = providerGateway;
 
@@ -342,6 +370,7 @@ export function createControlPlaneService(config = {}) {
     approvalStore,
     gateway,
     now: config.now,
+    lineageStore,
   });
 
   return Object.freeze({
@@ -543,6 +572,14 @@ export function createControlPlaneService(config = {}) {
      * @param {unknown} [request]
      * @returns {Promise<Record<string, unknown>>}
      */
+    async listExecutionLineage(request = {}) {
+      return middlewarePipeline.queryLineage(request);
+    },
+
+    /**
+     * @param {unknown} [request]
+     * @returns {Promise<Record<string, unknown>>}
+     */
     async listTelemetryAlerts(request = {}) {
       return telemetryAlertGateway.listAlerts(request);
     },
@@ -608,6 +645,29 @@ export function createControlPlaneService(config = {}) {
      * @returns {Promise<Record<string, unknown>>}
      */
     async executeExtension(request) {
+      if (
+        typeof request === "object" &&
+        request !== null &&
+        Object.getPrototypeOf(request) === Object.prototype &&
+        typeof request.sessionId === "string"
+      ) {
+        const profile = await profileResolutionGateway.resolve({
+          sessionId: request.sessionId,
+        });
+        const capabilityScope = computeCapabilityScope({
+          sessionProfile: profile,
+          multiAgentConfig: {},
+          activeDelegation: null,
+          installedExtensions: extensionGateway.listStates(),
+          authorityStates: skillRegistry.listAuthorityStates(),
+        });
+
+        return extensionGateway.execute({
+          ...request,
+          capabilityScope,
+        });
+      }
+
       return extensionGateway.execute(request);
     },
 
@@ -632,6 +692,41 @@ export function createControlPlaneService(config = {}) {
      */
     async installSkill(request) {
       return skillInstallerGateway.install(request);
+    },
+
+    /**
+     * @param {unknown} request
+     * @returns {Promise<Record<string, unknown>>}
+     */
+    async proposeSkillManifest(request) {
+      return skillInstallerGateway.proposeManifest(request);
+    },
+
+    /**
+     * @returns {{ status: "ok", items: readonly Record<string, unknown>[], totalCount: number }}
+     */
+    listPendingSkillInstallProposals() {
+      const items = skillRegistry.listPending();
+      return {
+        status: "ok",
+        items,
+        totalCount: items.length,
+      };
+    },
+
+    /**
+     * @param {unknown} request
+     * @returns {Promise<Record<string, unknown>>}
+     */
+    async reviewSkillInstallProposal(request) {
+      return skillInstallerGateway.reviewProposal(request);
+    },
+
+    /**
+     * @returns {readonly Record<string, unknown>[]}
+     */
+    listCapabilityAuthorityStates() {
+      return skillRegistry.listAuthorityStates();
     },
 
     /**

@@ -1,0 +1,38 @@
+Γû╢ F5 Reliability Drills
+  Γ£ö provider blackout failover: falls back deterministically on stream timeout/error (78.5289ms)
+  Γ£û audit/store degradation behavior: graceful fail-closed behavior when sink fails (7.5403ms)
+  Γ£ö multi-agent loop panic containment: timeout prevents runaway capability execution (94.4112ms)
+Γ£û F5 Reliability Drills (183.271ms)
+Γä╣ tests 4
+Γä╣ suites 0
+Γä╣ pass 2
+Γä╣ fail 2
+Γä╣ cancelled 0
+Γä╣ skipped 0
+Γä╣ todo 0
+Γä╣ duration_ms 387.1136
+
+Γ£û failing tests:
+
+test at tests\runtime-core-drills-automation.test.mjs:84:13
+Γ£û audit/store degradation behavior: graceful fail-closed behavior when sink fails (7.5403ms)
+  AssertionError [ERR_ASSERTION]: The expression evaluated to a falsy value:
+  
+    assert.ok(err.message.includes("Middleware post-execution policy/audit write failed") || err.message.includes("Storage degradation"))
+  
+      at Object.<anonymous> (file:///C:/Users/james.DESKTOP-Q8VOBFS/Documents/Development/polar/tests/runtime-core-drills-automation.test.mjs:109:24)
+      at expectedException (node:assert:553:17)
+      at expectsError (node:assert:678:21)
+      at assert.rejects (node:assert:744:3)
+      at async TestContext.<anonymous> (file:///C:/Users/james.DESKTOP-Q8VOBFS/Documents/Development/polar/tests/runtime-core-drills-automation.test.mjs:102:9)
+      at async Test.run (node:internal/test_runner/test:1113:7)
+      at async TestContext.<anonymous> (file:///C:/Users/james.DESKTOP-Q8VOBFS/Documents/Development/polar/tests/runtime-core-drills-automation.test.mjs:84:5)
+      at async Test.run (node:internal/test_runner/test:1113:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:358:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: false,
+    expected: true,
+    operator: '==',
+    diff: 'simple'
+  }

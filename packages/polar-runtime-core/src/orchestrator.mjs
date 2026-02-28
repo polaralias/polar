@@ -1,7 +1,77 @@
 import crypto from 'crypto';
+import {
+    createStrictObjectSchema,
+    enumField,
+    jsonField,
+    stringArrayField,
+    stringField
+} from '../../polar-domain/src/index.mjs';
+import {
+    createDurableLineageStore,
+    isRuntimeDevMode
+} from './durable-lineage-store.mjs';
 import { validateForwardSkills, validateModelOverride, computeCapabilityScope } from './capability-scope.mjs';
 import { classifyUserMessage, applyUserTurn, selectReplyAnchor, detectOfferInText, setOpenOffer, computeRepairDecision, handleRepairSelection } from './routing-policy-engine.mjs';
+import { evaluateCapabilityApprovalRequirement } from './extension-gateway.mjs';
 import { parseModelProposal, expandTemplate, validateSteps } from './workflow-engine.mjs';
+
+const repairPhrasingSchema = createStrictObjectSchema({
+    schemaId: 'orchestrator.repair.phrasing',
+    fields: {
+        question: stringField({ minLength: 1 }),
+        labelA: stringField({ minLength: 1 }),
+        labelB: stringField({ minLength: 1 }),
+        correlationId: stringField({ minLength: 1, required: false }),
+        options: jsonField({ required: false })
+    }
+});
+
+const threadStateSuggestionSchema = createStrictObjectSchema({
+    schemaId: 'orchestrator.thread.state.suggestion',
+    fields: {
+        status: enumField(['done', 'waiting_for_user'], { required: false }),
+        pending_question: stringField({ minLength: 1, required: false }),
+        pendingQuestion: stringField({ minLength: 1, required: false }),
+        slot_key: stringField({ minLength: 1, required: false }),
+        slotKey: stringField({ minLength: 1, required: false }),
+        expected_type: stringField({ minLength: 1, required: false }),
+        expectedType: stringField({ minLength: 1, required: false }),
+        slots: jsonField({ required: false })
+    }
+});
+
+const delegationStateSchema = createStrictObjectSchema({
+    schemaId: 'orchestrator.delegation.state',
+    fields: {
+        agentId: stringField({ minLength: 1 }),
+        task_instructions: stringField({ minLength: 1 }),
+        forward_skills: stringArrayField({ minItems: 0, required: false }),
+        model_override: stringField({ minLength: 1, required: false }),
+        pinnedProvider: stringField({ minLength: 1, required: false })
+    }
+});
+
+/**
+ * @param {string} rawText
+ * @returns {string}
+ */
+function normalizeJsonText(rawText) {
+    return rawText.replace(/```json?\s*/g, '').replace(/```/g, '').trim();
+}
+
+/**
+ * @param {string} rawText
+ * @param {{ validate: (value: unknown) => { ok: boolean, value?: unknown, errors?: string[] }, schemaId: string }} schema
+ * @returns {Record<string, unknown>}
+ */
+function parseJsonWithSchema(rawText, schema) {
+    const parsed = JSON.parse(normalizeJsonText(rawText));
+    const validation = schema.validate(parsed);
+    if (!validation.ok) {
+        throw new Error(`Invalid ${schema.schemaId}: ${(validation.errors || []).join('; ')}`);
+    }
+    return /** @type {Record<string, unknown>} */ (validation.value);
+}
 
 /**
  * @typedef {Object} PolarEnvelope
@@ -22,7 +92,8 @@ export function createOrchestrator({
     extensionGateway,
     approvalStore,
     gateway, // ControlPlaneGateway for config
-    now = Date.now
+    now = Date.now,
+    lineageStore,
 }) {
     const PENDING_WORKFLOWS = new Map();
     const WORKFLOW_TTL_MS = 30 * 60 * 1000;
@@ -32,7 +103,7 @@ export function createOrchestrator({
     const THREAD_TTL_MS = 60 * 60 * 1000;
     const PENDING_REPAIRS = new Map();
     const REPAIR_TTL_MS = 5 * 60 * 1000;
-    setInterval(() => {
+    const cleanupInterval = setInterval(() => {
         const currentTime = now();
         for (const [id, entry] of PENDING_WORKFLOWS) {
             if (currentTime - entry.createdAt > WORKFLOW_TTL_MS) {
@@ -51,6 +122,37 @@ export function createOrchestrator({
             }
         }
     }, 5 * 60 * 1000);
+    if (typeof cleanupInterval.unref === 'function') {
+        cleanupInterval.unref();
+    }
+
+    let resolvedLineageStore = lineageStore;
+    if (
+        resolvedLineageStore !== undefined &&
+        (
+            typeof resolvedLineageStore !== "object" ||
+            resolvedLineageStore === null ||
+            typeof resolvedLineageStore.append !== "function"
+        )
+    ) {
+        throw new Error("lineageStore must expose append(event) when provided");
+    }
+
+    if (resolvedLineageStore === undefined && !isRuntimeDevMode()) {
+        resolvedLineageStore = createDurableLineageStore({ now });
+    }
+
+    /**
+     * @param {Record<string, unknown>} event
+     * @returns {Promise<void>}
+     */
+    async function emitLineageEvent(event) {
+        if (!resolvedLineageStore) {
+            return;
+        }
+
+        await resolvedLineageStore.append(event);
+    }
 
     /**
      * Compute risk summary for a list of workflow steps.
@@ -85,11 +187,20 @@ export function createOrchestrator({
                 // Data Egress: none < network
                 if (cap.dataEgress === 'network') maxEgress = 'network';
 
-                if (cap.sideEffects === 'external' || cap.riskLevel === 'destructive' || cap.dataEgress === 'network') {
+                const approvalRequirement = evaluateCapabilityApprovalRequirement({
+                    riskLevel: cap.riskLevel || 'unknown',
+                    sideEffects: cap.sideEffects || 'unknown',
+                    dataEgress: cap.dataEgress || 'unknown'
+                });
+
+                if (approvalRequirement.required) {
                     requirements.push({
                         extensionId: step.extensionId,
                         capabilityId: step.capabilityId,
-                        riskLevel: cap.riskLevel,
+                        riskLevel:
+                            approvalRequirement.minimumRiskLevel === 'destructive'
+                                ? 'destructive'
+                                : (cap.riskLevel || 'write'),
                         sideEffects: cap.sideEffects,
                         dataEgress: cap.dataEgress
                     });
@@ -115,6 +226,11 @@ export function createOrchestrator({
      */
     function checkGrants(requirements, principal) {
         return requirements.filter(req => {
+            // Destructive actions require per-action approval by default.
+            // Existing grants should not auto-authorize them.
+            if (req.riskLevel === 'destructive') {
+                return true;
+            }
             const match = approvalStore.findMatchingGrant(principal, {
                 extensionId: req.extensionId,
                 capabilityId: req.capabilityId,
@@ -134,6 +250,10 @@ export function createOrchestrator({
             let routingRecommendation = null;
             let currentTurnAnchor = null;
             let currentAnchorMessageId = null;
+            const profile = await profileResolutionGateway.resolve({ sessionId: polarSessionId });
+            const policy = profile.profileConfig?.modelPolicy || {};
+            const providerId = policy.providerId || "openai";
+            const model = policy.modelId || "gpt-4.1-mini";
 
             if (text) {
                 const classification = classifyUserMessage({ text, sessionState });
@@ -158,14 +278,15 @@ export function createOrchestrator({
                             prompt: `The user said: "${text}"\nTwo possible topics exist:\n  A: "${labelA}"\n  B: "${labelB}"\n\nWrite a short, friendly disambiguation question and relabel the options clearly.\nRespond with ONLY this JSON shape:\n{"question": "...", "labelA": "...", "labelB": "..."}`
                         });
                         if (phrasingResult?.text) {
-                            const rawJson = phrasingResult.text.replace(/```json?\s*/g, '').replace(/```/g, '').trim();
-                            const parsed = JSON.parse(rawJson);
-                            if (parsed.question && typeof parsed.question === 'string'
-                                && parsed.labelA && typeof parsed.labelA === 'string'
-                                && parsed.labelB && typeof parsed.labelB === 'string') {
-                                repairedQuestion = parsed.question;
-                                repairedLabels = { A: parsed.labelA, B: parsed.labelB };
-                            }
+                            const parsed = parseJsonWithSchema(
+                                phrasingResult.text,
+                                repairPhrasingSchema
+                            );
+                            repairedQuestion = /** @type {string} */ (parsed.question);
+                            repairedLabels = {
+                                A: /** @type {string} */ (parsed.labelA),
+                                B: /** @type {string} */ (parsed.labelB)
+                            };
                         }
                     } catch {
                         // LLM phrasing failed — use canned fallback (deterministic)
@@ -182,6 +303,20 @@ export function createOrchestrator({
                         ...repairDecision,
                         createdAt: now(),
                         sessionId: polarSessionId
+                    });
+                    await emitLineageEvent({
+                        eventType: "repair.triggered",
+                        sessionId: polarSessionId,
+                        userId,
+                        correlationId: repairDecision.correlationId,
+                        question: repairDecision.question,
+                        reasonCode: "ambiguous_low_information",
+                        classificationType: classification.type,
+                        threadId: sessionState.activeThreadId || undefined,
+                        optionIds: repairDecision.options.map((option) => option.id),
+                        optionThreadIds: repairDecision.options
+                            .map((option) => option.threadId)
+                            .filter((threadId) => typeof threadId === "string"),
                     });
                     return {
                         status: 'repair_question',
@@ -211,11 +346,6 @@ export function createOrchestrator({
                     routingRecommendation = `[ROUTING_HINT] User is asking about a recent error. Thread: ${classification.targetThreadId}. Error: ${ed.capabilityId || 'unknown'} on ${ed.extensionId || 'unknown'}. Output: ${(ed.output || '').slice(0, 200)}. Explain what went wrong.`;
                 }
             }
-
-            const profile = await profileResolutionGateway.resolve({ sessionId: polarSessionId });
-            const policy = profile.profileConfig?.modelPolicy || {};
-            const providerId = policy.providerId || "openai";
-            const model = policy.modelId || "gpt-4.1-mini";
 
             let systemPrompt = profile.profileConfig?.systemPrompt || "You are a helpful Polar AI assistant. Be concise and friendly.";
 
@@ -375,7 +505,10 @@ ${routingRecommendation || ""}`;
 
                 if (stateMatch) {
                     try {
-                        const stateUpdate = JSON.parse(stateMatch[1].trim());
+                        const stateUpdate = parseJsonWithSchema(
+                            stateMatch[1].trim(),
+                            threadStateSuggestionSchema
+                        );
                         let st = SESSION_THREADS.get(polarSessionId) || { threads: [], activeThreadId: null };
                         // RESTRICTED: only active thread, model cannot switch threads
                         const threadRef = st.threads.find(t => t.id === st.activeThreadId);
@@ -480,25 +613,71 @@ ${routingRecommendation || ""}`;
             const { steps: workflowSteps, polarSessionId, userId, multiAgentConfig, threadId: ownerThreadId, risk } = entry;
             PENDING_WORKFLOWS.delete(workflowId);
 
-            // If this was a manual approval, issue grants for the requirements
-            if (!options.isAutoRun && risk?.requirements && risk.requirements.length > 0) {
-                const principal = { userId, sessionId: polarSessionId };
-                const capabilities = risk.requirements.map(req => ({
-                    extensionId: req.extensionId,
-                    capabilityId: req.capabilityId
-                }));
-                const maxTtl = 3600 * 24; // 24h default for plan approval
-                approvalStore.issueGrant(principal, {
-                    capabilities,
-                    riskLevel: risk.riskLevel === 'destructive' ? 'destructive' : 'write',
-                    reason: 'User approved multi-step plan'
-                }, maxTtl, 'Plan Approval');
-            }
-
             // Resolve the target thread — use stored threadId, never rely on activeThreadId drift
             const runId = `run_${crypto.randomUUID()}`;
+            const transientGrantIds = [];
+
+            // If this was a manual approval, issue grants for the requirements.
+            // Write-tier grants may be reusable; destructive grants are run-scoped and revoked in finally.
+            if (!options.isAutoRun) {
+                const principal = { userId, sessionId: polarSessionId };
+                const allRequirements = Array.isArray(risk?.requirements) ? risk.requirements : [];
+                const writeRequirements = allRequirements.filter(req => req.riskLevel !== 'destructive');
+                const destructiveRequirements = allRequirements.filter(req => req.riskLevel === 'destructive');
+
+                if (writeRequirements.length > 0) {
+                    const capabilities = writeRequirements.map(req => ({
+                        extensionId: req.extensionId,
+                        capabilityId: req.capabilityId
+                    }));
+                    const maxTtl = 3600 * 24; // 24h default for plan approval
+                    approvalStore.issueGrant(principal, {
+                        capabilities
+                    }, maxTtl, 'Plan Approval', {
+                        workflowId,
+                        threadId: ownerThreadId,
+                        reason: 'User approved multi-step plan'
+                    }, 'write');
+                }
+
+                for (const requirement of destructiveRequirements) {
+                    const transientGrantId = approvalStore.issueGrant(principal, {
+                        capabilities: [
+                            {
+                                extensionId: requirement.extensionId,
+                                capabilityId: requirement.capabilityId
+                            }
+                        ],
+                        constraints: {
+                            workflowId,
+                            runId
+                        }
+                    }, 300, 'Destructive Step Approval', {
+                        workflowId,
+                        runId,
+                        threadId: ownerThreadId,
+                        reason: 'User approved destructive workflow step'
+                    }, 'destructive');
+                    transientGrantIds.push(transientGrantId);
+                }
+            }
+
             let st = SESSION_THREADS.get(polarSessionId);
             const targetThreadId = ownerThreadId || st?.activeThreadId;
+            const toErrorSnippet = (value, fallback = 'Unknown error') => {
+                if (typeof value === 'string') return value.slice(0, 300);
+                if (value === undefined || value === null) return fallback;
+                try {
+                    return JSON.stringify(value).slice(0, 300);
+                } catch {
+                    return String(value).slice(0, 300);
+                }
+            };
+            const destructiveRequirementKeys = new Set(
+                (Array.isArray(risk?.requirements) ? risk.requirements : [])
+                    .filter(req => req.riskLevel === 'destructive')
+                    .map(req => `${req.extensionId}::${req.capabilityId}`)
+            );
 
             // Mark thread as in-flight and ensure it's active
             if (st && targetThreadId) {
@@ -524,7 +703,15 @@ ${routingRecommendation || ""}`;
                         if (msg.role === 'user') break;
                         if (msg.role === 'system' && msg.text.startsWith('[DELEGATION CLEARED]')) break;
                         if (msg.role === 'system' && msg.text.startsWith('[DELEGATION ACTIVE]')) {
-                            try { msgActiveDelegation = JSON.parse(msg.text.replace('[DELEGATION ACTIVE]', '').trim()); break; } catch (e) { }
+                            try {
+                                msgActiveDelegation = parseJsonWithSchema(
+                                    msg.text.replace('[DELEGATION ACTIVE]', '').trim(),
+                                    delegationStateSchema
+                                );
+                                break;
+                            } catch {
+                                // Ignore invalid persisted delegation metadata.
+                            }
                         }
                     }
                 }
@@ -604,9 +791,26 @@ ${routingRecommendation || ""}`;
                         continue;
                     }
 
+                    const stepKey = `${extensionId}::${capabilityId}`;
+                    const metadata = {
+                        lineage: {
+                            workflowId,
+                            runId,
+                            ...(targetThreadId ? { threadId: targetThreadId } : {}),
+                        },
+                    };
+                    if (destructiveRequirementKeys.has(stepKey) && !options.isAutoRun) {
+                        metadata.approvalContext = { workflowId, runId };
+                    }
                     const output = await extensionGateway.execute({
-                        extensionId, extensionType, capabilityId, sessionId: polarSessionId, userId: "unknown", input: parsedArgs,
-                        capabilityScope
+                        extensionId,
+                        extensionType,
+                        capabilityId,
+                        sessionId: polarSessionId,
+                        userId,
+                        input: parsedArgs,
+                        capabilityScope,
+                        metadata,
                     });
                     const stepStatus = output?.status || "completed";
                     toolResults.push({ tool: capabilityId, status: stepStatus, output: output?.output || output?.error || "Done." });
@@ -620,7 +824,7 @@ ${routingRecommendation || ""}`;
                                 thread.lastError = {
                                     runId, workflowId, threadId: targetThreadId,
                                     extensionId, capabilityId,
-                                    output: (output?.error || output?.output || 'Unknown error').slice(0, 300),
+                                    output: toErrorSnippet(output?.error || output?.output, 'Unknown error'),
                                     messageId: `msg_err_${crypto.randomUUID()}`, timestampMs: now()
                                 };
                                 thread.status = 'failed';
@@ -643,7 +847,7 @@ ${routingRecommendation || ""}`;
                                 runId, workflowId, threadId: targetThreadId,
                                 extensionId: failedStep?.tool || 'unknown',
                                 capabilityId: failedStep?.tool || 'unknown',
-                                output: (failedStep?.output || 'Execution failed').slice(0, 300),
+                                output: toErrorSnippet(failedStep?.output, 'Execution failed'),
                                 messageId: `msg_err_${crypto.randomUUID()}`, timestampMs: now()
                             };
                             thread.status = 'failed';
@@ -688,6 +892,7 @@ ${routingRecommendation || ""}`;
                 };
             } catch (err) {
                 // Crash path: record lastError on the owning thread (using stored threadId)
+                let internalMessageId;
                 st = SESSION_THREADS.get(polarSessionId);
                 if (st && targetThreadId) {
                     const thread = st.threads.find(t => t.id === targetThreadId);
@@ -698,6 +903,7 @@ ${routingRecommendation || ""}`;
                             output: err.message?.slice(0, 300) || 'Unknown crash',
                             messageId: `msg_err_${crypto.randomUUID()}`, timestampMs: now()
                         };
+                        internalMessageId = thread.lastError.messageId;
                         thread.status = 'failed';
                         delete thread.inFlight;
                         thread.lastActivityTs = now();
@@ -705,7 +911,11 @@ ${routingRecommendation || ""}`;
                     // Keep failed thread active — don't let next message spawn a greeting
                     st.activeThreadId = targetThreadId;
                 }
-                return { status: 'error', text: `Crashed: ${err.message}`, internalMessageId: thread?.lastError?.messageId };
+                return { status: 'error', text: `Crashed: ${err.message}`, internalMessageId };
+            } finally {
+                for (const grantId of transientGrantIds) {
+                    approvalStore.revokeGrant(grantId);
+                }
             }
         },
 
@@ -749,23 +959,69 @@ ${routingRecommendation || ""}`;
         async handleRepairSelectionEvent({ sessionId, selection, correlationId }) {
             const repairContext = PENDING_REPAIRS.get(correlationId);
             if (!repairContext) {
+                await emitLineageEvent({
+                    eventType: "repair.outcome",
+                    sessionId,
+                    correlationId,
+                    selection,
+                    status: "error",
+                    reasonCode: "context_missing",
+                });
                 return { status: 'error', text: 'Repair context not found or expired.' };
             }
 
             if (repairContext.sessionId !== sessionId) {
+                await emitLineageEvent({
+                    eventType: "repair.outcome",
+                    sessionId,
+                    correlationId,
+                    selection,
+                    status: "error",
+                    reasonCode: "session_mismatch",
+                    expectedSessionId: repairContext.sessionId,
+                });
                 return { status: 'error', text: 'Session mismatch for repair selection.' };
             }
 
             if (selection !== 'A' && selection !== 'B') {
+                await emitLineageEvent({
+                    eventType: "repair.outcome",
+                    sessionId,
+                    correlationId,
+                    selection,
+                    status: "error",
+                    reasonCode: "invalid_selection",
+                });
                 return { status: 'error', text: 'Invalid selection. Must be A or B.' };
             }
+
+            const selectedOption = repairContext.options.find(o => o.id === selection);
+            await emitLineageEvent({
+                eventType: "repair.selection",
+                sessionId,
+                correlationId,
+                selection,
+                selectedThreadId: selectedOption?.threadId,
+                threadId: selectedOption?.threadId,
+                status: "received",
+            });
 
             let sessionState = SESSION_THREADS.get(sessionId) || { threads: [], activeThreadId: null };
             sessionState = handleRepairSelection(sessionState, selection, correlationId, repairContext, now());
             SESSION_THREADS.set(sessionId, sessionState);
             PENDING_REPAIRS.delete(correlationId);
 
-            const selectedOption = repairContext.options.find(o => o.id === selection);
+            await emitLineageEvent({
+                eventType: "repair.outcome",
+                sessionId,
+                correlationId,
+                selection,
+                selectedThreadId: selectedOption?.threadId,
+                threadId: selectedOption?.threadId,
+                status: "completed",
+                reasonCode: "selection_applied",
+            });
+
             return {
                 status: 'completed',
                 text: `Got it — continuing with: ${selectedOption?.label || selection}`,

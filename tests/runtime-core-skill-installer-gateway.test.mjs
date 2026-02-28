@@ -13,6 +13,7 @@ import {
   createExtensionGateway,
   createMiddlewarePipeline,
   createSkillInstallerGateway,
+  createSkillRegistry,
   registerExtensionContracts,
   registerSkillInstallerContract,
 } from "../packages/polar-runtime-core/src/index.mjs";
@@ -59,6 +60,68 @@ function setupSkillInstaller({
     extensionGateway,
     extensionRegistry,
     auditEvents,
+  };
+}
+
+function setupSkillInstallerWithRegistry({
+  skillPolicy = {},
+  analysisResponse,
+} = {}) {
+  const contractRegistry = createContractRegistry();
+  registerExtensionContracts(contractRegistry);
+  registerSkillInstallerContract(contractRegistry);
+
+  const middlewarePipeline = createMiddlewarePipeline({
+    contractRegistry,
+  });
+  const extensionRegistry = createExtensionAdapterRegistry();
+  const extensionGateway = createExtensionGateway({
+    middlewarePipeline,
+    extensionRegistry,
+  });
+  const skillRegistry = createSkillRegistry();
+  const providerRequests = [];
+
+  const installerGateway = createSkillInstallerGateway({
+    middlewarePipeline,
+    extensionGateway,
+    extensionRegistry,
+    skillRegistry,
+    providerGateway: {
+      async generate(request) {
+        providerRequests.push(request);
+        return {
+          text:
+            analysisResponse ??
+            JSON.stringify({
+              extensionId: "skill.docs-helper",
+              version: "1.0.0",
+              description: "Docs helper",
+              permissions: ["fs.read"],
+              capabilities: [
+                {
+                  capabilityId: "docs.search",
+                  riskLevel: "read",
+                  sideEffects: "none",
+                },
+              ],
+            }),
+        };
+      },
+    },
+    skillAdapter: {
+      parseSkillManifest,
+      verifySkillProvenance,
+      createSkillCapabilityAdapter,
+    },
+    policy: skillPolicy,
+  });
+
+  return {
+    installerGateway,
+    extensionGateway,
+    skillRegistry,
+    providerRequests,
   };
 }
 
@@ -402,4 +465,110 @@ test("skill installer rejects blocked provenance and invalid manifests determini
       error instanceof ContractValidationError &&
       error.code === "POLAR_CONTRACT_VALIDATION_ERROR",
   );
+});
+
+test("skill installer proposal review flow supports pending -> approved -> enabled lifecycle", async () => {
+  const { installerGateway, extensionGateway, skillRegistry, providerRequests } =
+    setupSkillInstallerWithRegistry();
+
+  const proposed = await installerGateway.proposeManifest({
+    sourceUri: "https://safe.local/skills/docs-helper/SKILL.md",
+    skillContent: "# SKILL.md\nUse docs search capability",
+    mcpInventory: [
+      {
+        name: "docs.search",
+      },
+    ],
+  });
+
+  assert.equal(proposed.status, "applied");
+  assert.equal(proposed.extensionId, "skill.docs-helper");
+  assert.equal(proposed.lifecycleState, "pending_install");
+  assert.equal(providerRequests.length, 1);
+  assert.equal(providerRequests[0].providerId, "openai");
+  assert.equal(providerRequests[0].model, "gpt-4.1-mini");
+  assert.equal(skillRegistry.listPending().length, 1);
+
+  const reviewed = await installerGateway.reviewProposal({
+    extensionId: "skill.docs-helper",
+    decision: "approve",
+    reviewerId: "operator-1",
+    reason: "Risk metadata validated",
+    enableAfterReview: true,
+    requestedTrustLevel: "reviewed",
+  });
+
+  assert.deepEqual(
+    {
+      status: reviewed.status,
+      extensionId: reviewed.extensionId,
+      reviewStatus: reviewed.reviewStatus,
+      lifecycleStatus: reviewed.lifecycleStatus,
+      lifecycleState: reviewed.lifecycleState,
+    },
+    {
+      status: "applied",
+      extensionId: "skill.docs-helper",
+      reviewStatus: "approved",
+      lifecycleStatus: "applied",
+      lifecycleState: "enabled",
+    },
+  );
+  assert.equal(skillRegistry.getProposed("skill.docs-helper"), undefined);
+
+  const executed = await extensionGateway.execute({
+    extensionId: "skill.docs-helper",
+    extensionType: "skill",
+    capabilityId: "docs.search",
+    sessionId: "session-1",
+    userId: "user-1",
+    capabilityScope: {
+      allowed: {
+        "skill.docs-helper": ["docs.search"],
+      },
+    },
+    input: { query: "policies" },
+  });
+  assert.equal(executed.status, "completed");
+});
+
+test("skill installer proposal review reject clears pending proposal and removes pending install state", async () => {
+  const { installerGateway, extensionGateway, skillRegistry } =
+    setupSkillInstallerWithRegistry({
+      analysisResponse: JSON.stringify({
+        extensionId: "skill.docs-rejected",
+        version: "1.0.0",
+        description: "Rejected docs helper",
+        permissions: ["fs.read"],
+        capabilities: [
+          {
+            capabilityId: "docs.search",
+            riskLevel: "read",
+            sideEffects: "none",
+          },
+        ],
+      }),
+    });
+
+  const proposed = await installerGateway.proposeManifest({
+    sourceUri: "https://safe.local/skills/docs-rejected/SKILL.md",
+    skillContent: "# SKILL.md\nProposal that will be rejected",
+    mcpInventory: [{ name: "docs.search" }],
+  });
+  assert.equal(proposed.lifecycleState, "pending_install");
+  assert.equal(skillRegistry.listPending().length, 1);
+
+  const reviewRejected = await installerGateway.reviewProposal({
+    extensionId: "skill.docs-rejected",
+    decision: "reject",
+    reason: "Not approved for rollout",
+  });
+
+  assert.equal(reviewRejected.status, "rejected");
+  assert.equal(reviewRejected.reviewStatus, "rejected");
+  assert.equal(reviewRejected.lifecycleState, "removed");
+  assert.equal(skillRegistry.getProposed("skill.docs-rejected"), undefined);
+
+  const state = extensionGateway.getState("skill.docs-rejected");
+  assert.equal(state.lifecycleState, "removed");
 });

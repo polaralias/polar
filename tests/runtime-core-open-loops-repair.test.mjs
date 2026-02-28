@@ -437,6 +437,33 @@ test("status nudge still works", () => {
     assert.equal(result.targetThreadId, "t1");
 });
 
+test("greeting does not become status_nudge when active work is stale", () => {
+    const now = 1_000_000;
+    const sessionState = {
+        activeThreadId: "t1",
+        threads: [
+            { id: "t1", status: "in_progress", lastActivityTs: now - (3 * 60 * 1000) }
+        ]
+    };
+
+    const result = classifyUserMessage({ text: "hi", sessionState, now });
+    assert.equal(result.type, "new_request");
+});
+
+test("greeting becomes status_nudge when active work is recent", () => {
+    const now = 1_000_000;
+    const sessionState = {
+        activeThreadId: "t1",
+        threads: [
+            { id: "t1", status: "in_progress", lastActivityTs: now - 30_000 }
+        ]
+    };
+
+    const result = classifyUserMessage({ text: "hey", sessionState, now });
+    assert.equal(result.type, "status_nudge");
+    assert.equal(result.targetThreadId, "t1");
+});
+
 test("answer_to_pending still works", () => {
     const sessionState = {
         activeThreadId: "t1",
@@ -529,6 +556,44 @@ test("'actually ye' after rejection → accept_offer reversal", () => {
     // Then reverse with "actually ye"
     const rev = classifyUserMessage({ text: "actually ye", sessionState, now: 3000 });
     assert.equal(rev.type, "accept_offer");
+});
+
+test("reversal phrase with explicit override verb routes to override, not accept_offer", () => {
+    let sessionState = {
+        activeThreadId: "t1",
+        threads: [{
+            id: "t1", status: "in_progress", slots: {},
+            openOffer: { offerType: "troubleshoot", target: "fix", askedAtMessageId: "m1" },
+            recentOffers: [{ offerType: "troubleshoot", target: "fix", askedAtMessageId: "m1", timestampMs: 1000, outcome: "pending" }]
+        }]
+    };
+
+    const rej = classifyUserMessage({ text: "nah", sessionState });
+    sessionState = applyUserTurn({ sessionState, classification: rej, rawText: "nah", now: () => 2000 });
+
+    const override = classifyUserMessage({ text: "actually stop", sessionState, now: 3000 });
+    assert.equal(override.type, "override");
+    assert.equal(override.targetThreadId, "t1");
+});
+
+test("recent failed thread with open offer still accepts short affirmative", () => {
+    const now = 1_000_000;
+    const sessionState = {
+        activeThreadId: "t1",
+        threads: [
+            {
+                id: "t1",
+                status: "failed",
+                lastActivityTs: now - 30_000,
+                openOffer: { offerType: "troubleshoot", target: "fix the failed run", askedAtMessageId: "m-failed" },
+                recentOffers: [{ offerType: "troubleshoot", askedAtMessageId: "m-failed", timestampMs: now - 40_000, outcome: "pending" }]
+            }
+        ]
+    };
+
+    const result = classifyUserMessage({ text: "yeah", sessionState, now });
+    assert.equal(result.type, "accept_offer");
+    assert.equal(result.targetThreadId, "t1");
 });
 
 

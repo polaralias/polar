@@ -1,6 +1,6 @@
 # Incident Response And Drills
 
-Last updated: 2026-02-23
+Last updated: 2026-02-28
 
 This document outlines the procedures for responding to Polar runtime incidents and performing regular "Incident Drills" to validate system resilience and operator readiness.
 
@@ -64,3 +64,55 @@ To maintain a high "Production Strictness Posture," operators should perform the
   - 95% Handoff success rate.
   - < 2% Unexpected model lane escalation.
   - < 1% Audit sink ingestion failure.
+
+## 5. Operational Runbooks (Current Deployment Reality)
+
+### 5.1 Run Locally (single-node reality)
+1. Install dependencies:
+   - `npm install`
+2. Create `.env` in repo root with at least:
+   - `OPENAI_API_KEY=...` (or other provider key used by your profile)
+   - `TELEGRAM_BOT_TOKEN=...` (if using Telegram runner)
+   - optional: `POLAR_UI_API_SECRET=...` for dashboard API auth hardening
+3. Start runtime:
+   - `npm run dev`
+4. Verify surfaces:
+   - Web UI: `http://localhost:5173`
+   - Telegram runner process starts without token errors
+5. Confirm persistence path:
+   - SQLite DB is `polar-system.db` at repository root
+
+### 5.2 Deploy (what exists today)
+1. Supported operational mode today is effectively single-node or manually split services using the same Node runtime packages.
+2. There is no first-class production deployment manifest in this repo (no canonical k8s/helm/terraform baseline).
+3. Minimum production hardening baseline:
+   - pin Node runtime version
+   - set explicit environment secrets (no defaults)
+   - persist and back up `polar-system.db`
+   - run behind a process supervisor (systemd/pm2/container runtime)
+   - configure immutable sink for middleware audit/telemetry exports
+
+### 5.3 Secret Rotation
+1. Provider/API keys:
+   - rotate upstream provider secrets
+   - update Polar provider config (UI or config API) and verify `listModels`/`generateOutput` health
+2. `POLAR_UI_API_SECRET`:
+   - rotate env var and restart web process
+   - verify unauthorized API requests return `401`
+3. `POLAR_VAULT_KEY`:
+   - if rotated/lost, existing encrypted values are not recoverable
+   - regenerate key, re-enter all encrypted provider/extension secrets, and validate each connection
+
+### 5.4 Troubleshoot `Invalid extension.gateway.execute.request`
+1. Confirm required request fields match runtime schema:
+   - `extensionId`, `extensionType`, `capabilityId`, `sessionId`, `userId`, `capabilityScope`, `input`
+2. Confirm `capabilityScope` is non-empty and shaped as:
+   - `{ "allowed": { "<extensionId>": ["<capabilityId>"] } }`
+3. Re-run with minimal known-good payload through control-plane `executeExtension`.
+4. If still failing, inspect:
+   - middleware contract validation errors (`POLAR_CONTRACT_VALIDATION_ERROR`)
+   - extension policy denials (`POLAR_EXTENSION_POLICY_DENIED`)
+   - extension state (`listExtensionStates`) for lifecycle/trust mismatches
+5. Capture trace and audit evidence:
+   - include `traceId` in request
+   - pull middleware audit events and extension execution response payload for incident ticket

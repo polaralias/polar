@@ -91,18 +91,18 @@ function validateContract(contract) {
     });
   }
 
-  if (
-    typeof retryPolicy !== "object" ||
-    retryPolicy === null ||
-    !isPositiveInteger(
-      /** @type {Record<string, unknown>} */ (retryPolicy).maxAttempts,
-    )
-  ) {
+  const retryPolicyRecord =
+    typeof retryPolicy === "object" && retryPolicy !== null
+      ? /** @type {Record<string, unknown>} */ (retryPolicy)
+      : undefined;
+  const maxAttempts = retryPolicyRecord?.maxAttempts;
+  if (!isPositiveInteger(maxAttempts)) {
     throw new ContractRegistryError(
       "Contract retryPolicy.maxAttempts must be a positive integer",
       {
         actionId,
         version,
+        maxAttempts,
       },
     );
   }

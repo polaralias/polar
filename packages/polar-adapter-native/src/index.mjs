@@ -17,7 +17,8 @@ import { RuntimeExecutionError } from "../../polar-domain/src/index.mjs";
  *   apiKey?: string | (() => Promise<string> | string),
  *   defaultHeaders?: Record<string, string>,
  *   capabilities?: import("../../polar-runtime-core/src/provider-gateway.mjs").ProviderCapabilities,
- *   fetcher?: typeof fetch
+ *   fetcher?: typeof fetch,
+ *   timeoutMs?: number
  * }} config
  */
 export function createNativeHttpAdapter(config) {
@@ -33,6 +34,7 @@ export function createNativeHttpAdapter(config) {
         defaultHeaders = {},
         capabilities = {},
         fetcher = globalThis.fetch,
+        timeoutMs: defaultTimeoutMs = 60000,
     } = config;
 
     if (typeof providerId !== "string" || providerId.length === 0) {
@@ -311,38 +313,53 @@ export function createNativeHttpAdapter(config) {
             const headers = await buildHeaders(input, false);
             const bodyArgs = buildRequestBody(input, false);
 
-            const res = await fetcher(url, {
-                method: "POST",
-                headers,
-                body: JSON.stringify(bodyArgs),
-            });
+            const AbortControllerImpl = globalThis.AbortController || require('abort-controller');
+            const controller = new AbortControllerImpl();
+            const timeoutMs = input.timeoutMs !== undefined ? input.timeoutMs : defaultTimeoutMs;
+            const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
-            if (!res.ok) {
-                let errMessage = res.statusText;
-                try {
-                    const json = await res.json();
-                    errMessage = json.error?.message || JSON.stringify(json);
-                } catch { /* ignore */ }
-                throw new RuntimeExecutionError(`Native HTTP Provider failed: ${errMessage}`, {
-                    providerId,
-                    status: res.status
+            try {
+                const res = await fetcher(url, {
+                    method: "POST",
+                    headers,
+                    body: JSON.stringify(bodyArgs),
+                    signal: controller.signal
                 });
+                clearTimeout(timeoutId);
+
+                if (!res.ok) {
+                    let errMessage = res.statusText;
+                    try {
+                        const json = await res.json();
+                        errMessage = json.error?.message || JSON.stringify(json);
+                    } catch { /* ignore */ }
+                    throw new RuntimeExecutionError(`Native HTTP Provider failed: ${errMessage}`, {
+                        providerId,
+                        status: res.status
+                    });
+                }
+
+                const json = await res.json();
+                const text = parseGenerateResponse(json);
+                const usage = extractTokenCount(json);
+
+                if (!text || text.length === 0) {
+                    throw new RuntimeExecutionError(`Native HTTP Provider returned an empty response`, { providerId, model: input.model });
+                }
+
+                return {
+                    providerId: input.providerId,
+                    model: input.model,
+                    text,
+                    usage: usage
+                };
+            } catch (err) {
+                clearTimeout(timeoutId);
+                if (err.name === 'AbortError') {
+                    throw new RuntimeExecutionError(`Native HTTP Provider timed out after ${timeoutMs}ms`, { providerId, model: input.model });
+                }
+                throw err;
             }
-
-            const json = await res.json();
-            const text = parseGenerateResponse(json);
-            const usage = extractTokenCount(json);
-
-            if (!text || text.length === 0) {
-                throw new RuntimeExecutionError(`Native HTTP Provider returned an empty response`, { providerId, model: input.model });
-            }
-
-            return {
-                providerId: input.providerId,
-                model: input.model,
-                text,
-                usage: usage
-            };
         },
 
         async stream(input) {
@@ -360,101 +377,113 @@ export function createNativeHttpAdapter(config) {
             const headers = await buildHeaders(input, true);
             const bodyArgs = buildRequestBody(input, true);
 
-            const res = await fetcher(url, {
-                method: "POST",
-                headers,
-                body: JSON.stringify(bodyArgs),
-            });
+            const AbortControllerImpl = globalThis.AbortController || require('abort-controller');
+            const controller = new AbortControllerImpl();
+            const timeoutMs = input.timeoutMs !== undefined ? input.timeoutMs : defaultTimeoutMs;
+            const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
-            if (!res.ok) {
-                let errMessage = res.statusText;
-                try {
-                    const json = await res.json();
-                    errMessage = json.error?.message || JSON.stringify(json);
-                } catch { /* ignore */ }
-                throw new RuntimeExecutionError(`Native HTTP Provider stream failed: ${errMessage}`, { providerId, status: res.status });
-            }
+            try {
+                const res = await fetcher(url, {
+                    method: "POST",
+                    headers,
+                    body: JSON.stringify(bodyArgs),
+                    signal: controller.signal
+                });
 
-            if (!res.body) {
-                throw new RuntimeExecutionError("Native HTTP Provider stream body is empty", { providerId });
-            }
+                if (!res.ok) {
+                    clearTimeout(timeoutId);
+                    let errMessage = res.statusText;
+                    try {
+                        const json = await res.json();
+                        errMessage = json.error?.message || JSON.stringify(json);
+                    } catch { /* ignore */ }
+                    throw new RuntimeExecutionError(`Native HTTP Provider stream failed: ${errMessage}`, { providerId, status: res.status });
+                }
 
-            // BUG-018 fix: Buffer incomplete lines across network chunks
-            const chunks = [];
-            const decoder = new TextDecoder();
-            let lineBuffer = "";
+                if (!res.body) {
+                    clearTimeout(timeoutId);
+                    throw new RuntimeExecutionError("Native HTTP Provider stream body is empty", { providerId });
+                }
 
-            function extractDelta(parsed) {
-                if (endpointMode === "chat") {
-                    return parsed.choices?.[0]?.delta?.content || "";
-                } else if (endpointMode === "anthropic_messages") {
-                    if (parsed.type === "content_block_delta" && parsed.delta?.type === "text_delta") {
-                        return parsed.delta.text;
+                const chunks = [];
+                const decoder = new TextDecoder();
+                let lineBuffer = "";
+
+                function extractDelta(parsed) {
+                    if (endpointMode === "chat") {
+                        return parsed.choices?.[0]?.delta?.content || "";
+                    } else if (endpointMode === "anthropic_messages") {
+                        if (parsed.type === "content_block_delta" && parsed.delta?.type === "text_delta") {
+                            return parsed.delta.text;
+                        }
+                        return "";
+                    } else if (endpointMode === "gemini_generate_content") {
+                        return parsed.candidates?.[0]?.content?.parts?.[0]?.text || "";
+                    } else if (endpointMode === "responses") {
+                        if (parsed.type === "response.output_text.delta") {
+                            return parsed.delta || "";
+                        }
+                        if (parsed.choices?.[0]?.delta?.content) {
+                            return parsed.choices[0].delta.content;
+                        }
+                        return "";
                     }
                     return "";
-                } else if (endpointMode === "gemini_generate_content") {
-                    return parsed.candidates?.[0]?.content?.parts?.[0]?.text || "";
-                } else if (endpointMode === "responses") {
-                    // BUG-001 fix: Responses API uses different SSE event types
-                    // Handle response.output_text.delta events (primary text streaming)
-                    if (parsed.type === "response.output_text.delta") {
-                        return parsed.delta || "";
-                    }
-                    // Fallback for compatibility with providers that proxy via Chat Completions format
-                    if (parsed.choices?.[0]?.delta?.content) {
-                        return parsed.choices[0].delta.content;
-                    }
-                    return "";
                 }
-                return "";
-            }
 
-            function processSSELines(rawChunk) {
-                lineBuffer += rawChunk;
-                const lines = lineBuffer.split("\n");
-                // Keep the last element (may be incomplete) in the buffer
-                lineBuffer = lines.pop() || "";
-                for (const line of lines) {
-                    if (line.startsWith("data: ")) {
-                        const data = line.slice(6).trim();
-                        if (data === "[DONE]") continue;
-                        if (!data) continue;
-                        try {
-                            const parsed = JSON.parse(data);
-                            const delta = extractDelta(parsed);
-                            if (delta) chunks.push(delta);
-                        } catch { /* incomplete JSON in this line, skip */ }
+                function processSSELines(rawChunk) {
+                    lineBuffer += rawChunk;
+                    const lines = lineBuffer.split("\n");
+                    lineBuffer = lines.pop() || "";
+                    for (const line of lines) {
+                        if (line.startsWith("data: ")) {
+                            const data = line.slice(6).trim();
+                            if (data === "[DONE]") continue;
+                            if (!data) continue;
+                            try {
+                                const parsed = JSON.parse(data);
+                                const delta = extractDelta(parsed);
+                                if (delta) chunks.push(delta);
+                            } catch { /* incomplete JSON in this line, skip */ }
+                        }
                     }
                 }
-            }
 
-            if (res.body[Symbol.asyncIterator]) {
-                for await (const chunk of res.body) {
-                    processSSELines(decoder.decode(chunk, { stream: true }));
+                if (res.body[Symbol.asyncIterator]) {
+                    for await (const chunk of res.body) {
+                        processSSELines(decoder.decode(chunk, { stream: true }));
+                    }
+                } else {
+                    const reader = res.body.getReader();
+                    while (true) {
+                        const { done, value } = await reader.read();
+                        if (done) break;
+                        processSSELines(decoder.decode(value, { stream: true }));
+                    }
                 }
-            } else {
-                const reader = res.body.getReader();
-                while (true) {
-                    const { done, value } = await reader.read();
-                    if (done) break;
-                    processSSELines(decoder.decode(value, { stream: true }));
+
+                clearTimeout(timeoutId);
+
+                if (lineBuffer.trim()) {
+                    processSSELines("\n");
                 }
-            }
 
-            // Process any remaining data in the line buffer
-            if (lineBuffer.trim()) {
-                processSSELines("\n");
-            }
+                if (chunks.length === 0) {
+                    throw new RuntimeExecutionError(`Native HTTP Stream Provider returned no chunks`, { providerId });
+                }
 
-            if (chunks.length === 0) {
-                throw new RuntimeExecutionError(`Native HTTP Stream Provider returned no chunks`, { providerId });
+                return {
+                    providerId: input.providerId,
+                    model: input.model,
+                    chunks,
+                };
+            } catch (err) {
+                clearTimeout(timeoutId);
+                if (err.name === 'AbortError') {
+                    throw new RuntimeExecutionError(`Native HTTP Provider stream timed out after ${timeoutMs}ms`, { providerId, model: input.model });
+                }
+                throw err;
             }
-
-            return {
-                providerId: input.providerId,
-                model: input.model,
-                chunks,
-            };
         },
 
         async embed(input) {
@@ -488,33 +517,48 @@ export function createNativeHttpAdapter(config) {
                 bodyArgs.content = { parts: [{ text: input.text }] };
             }
 
-            const res = await fetcher(url, {
-                method: "POST",
-                headers,
-                body: JSON.stringify(bodyArgs),
-            });
+            const AbortControllerImpl = globalThis.AbortController || require('abort-controller');
+            const controller = new AbortControllerImpl();
+            const timeoutMs = input.timeoutMs !== undefined ? input.timeoutMs : defaultTimeoutMs;
+            const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
-            if (!res.ok) {
-                throw new RuntimeExecutionError("Native HTTP Provider embedding failed", { providerId, status: res.status });
+            try {
+                const res = await fetcher(url, {
+                    method: "POST",
+                    headers,
+                    body: JSON.stringify(bodyArgs),
+                    signal: controller.signal
+                });
+                clearTimeout(timeoutId);
+
+                if (!res.ok) {
+                    throw new RuntimeExecutionError("Native HTTP Provider embedding failed", { providerId, status: res.status });
+                }
+
+                const json = await res.json();
+                let vector = [];
+                if (endpointMode === "chat" || endpointMode === "openai" || endpointMode === "responses") {
+                    vector = json.data?.[0]?.embedding || [];
+                } else if (endpointMode === "gemini_generate_content") {
+                    vector = json.embedding?.values || [];
+                }
+
+                if (vector.length === 0) {
+                    throw new RuntimeExecutionError("Embedder returned an invalid vector", { providerId, model: input.model });
+                }
+
+                return {
+                    providerId: input.providerId,
+                    model: input.model,
+                    vector: [...vector]
+                };
+            } catch (err) {
+                clearTimeout(timeoutId);
+                if (err.name === 'AbortError') {
+                    throw new RuntimeExecutionError(`Native HTTP Provider embedding timed out after ${timeoutMs}ms`, { providerId, model: input.model });
+                }
+                throw err;
             }
-
-            const json = await res.json();
-            let vector = [];
-            if (endpointMode === "chat" || endpointMode === "openai" || endpointMode === "responses") {
-                vector = json.data?.[0]?.embedding || [];
-            } else if (endpointMode === "gemini_generate_content") {
-                vector = json.embedding?.values || [];
-            }
-
-            if (vector.length === 0) {
-                throw new RuntimeExecutionError("Embedder returned an invalid vector", { providerId, model: input.model });
-            }
-
-            return {
-                providerId: input.providerId,
-                model: input.model,
-                vector: [...vector]
-            };
         },
 
         async listModels() {

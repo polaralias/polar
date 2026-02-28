@@ -48,6 +48,19 @@ function validateRequest(request) {
 }
 
 /**
+ * @returns {Record<string, unknown>}
+ */
+function createEmptyLineageResponse() {
+  return Object.freeze({
+    status: "ok",
+    fromSequence: 1,
+    returnedCount: 0,
+    totalCount: 0,
+    items: Object.freeze([]),
+  });
+}
+
+/**
  * @param {ReturnType<import("./contract-registry.mjs").createContractRegistry>} contractRegistry
  */
 export function registerUsageTelemetryContract(contractRegistry) {
@@ -65,12 +78,14 @@ export function registerUsageTelemetryContract(contractRegistry) {
  * @param {{
  *   middlewarePipeline: ReturnType<import("./middleware-pipeline.mjs").createMiddlewarePipeline>,
  *   telemetryCollector: { listEvents: (request?: unknown) => Record<string, unknown> },
+ *   lineageStore?: { query: (request?: unknown) => Promise<Record<string, unknown>>|Record<string, unknown> },
  *   defaultExecutionType?: "tool"|"handoff"|"automation"|"heartbeat"
  * }} config
  */
 export function createUsageTelemetryGateway({
   middlewarePipeline,
   telemetryCollector,
+  lineageStore,
   defaultExecutionType = "tool",
 }) {
   if (
@@ -80,6 +95,19 @@ export function createUsageTelemetryGateway({
   ) {
     throw new RuntimeExecutionError(
       "telemetryCollector must expose listEvents(request)",
+    );
+  }
+
+  if (
+    lineageStore !== undefined &&
+    (
+      typeof lineageStore !== "object" ||
+      lineageStore === null ||
+      typeof lineageStore.query !== "function"
+    )
+  ) {
+    throw new RuntimeExecutionError(
+      "lineageStore must expose query(request) when provided",
     );
   }
 
@@ -134,6 +162,18 @@ export function createUsageTelemetryGateway({
         },
         async (input) => telemetryCollector.listEvents(input),
       );
+    },
+
+    /**
+     * @param {unknown} [request]
+     * @returns {Promise<Record<string, unknown>>}
+     */
+    async listExecutionLineage(request = {}) {
+      if (!lineageStore) {
+        return createEmptyLineageResponse();
+      }
+
+      return lineageStore.query(request);
     },
   });
 }

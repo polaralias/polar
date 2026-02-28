@@ -1,12 +1,29 @@
 import assert from 'node:assert';
+import { describe, it, before, after } from 'node:test';
 import { createOrchestrator } from '../src/orchestrator.mjs';
 import { createApprovalStore } from '../src/approval-store.mjs';
+import { WORKFLOW_TEMPLATES } from '../src/workflow-templates.mjs';
 
 describe('Orchestrator: Plan Approvals', () => {
     let orchestrator;
     let approvalStore;
     let extensionStates;
-    let lastActionResponse;
+    let executeRequests;
+    const originalSetInterval = globalThis.setInterval;
+
+    before(() => {
+        globalThis.setInterval = (callback, interval, ...args) => {
+            const timer = originalSetInterval(callback, interval, ...args);
+            if (timer && typeof timer.unref === 'function') {
+                timer.unref();
+            }
+            return timer;
+        };
+    });
+
+    after(() => {
+        globalThis.setInterval = originalSetInterval;
+    });
 
     const mockProfile = {
         profileConfig: {
@@ -16,14 +33,20 @@ describe('Orchestrator: Plan Approvals', () => {
         }
     };
 
-    const setupOrchestrator = (actionToEmit) => {
+    const setupOrchestrator = (actionToEmit, options = {}) => {
+        const {
+            sendEmailRiskLevel = 'write',
+            sendEmailSideEffects = 'external'
+        } = options;
+
+        executeRequests = [];
         extensionStates = new Map([
             ['email', {
                 extensionId: 'email',
                 lifecycleState: 'enabled',
                 capabilities: [
                     { capabilityId: 'draft_email', riskLevel: 'write', sideEffects: 'internal' },
-                    { capabilityId: 'send_email', riskLevel: 'write', sideEffects: 'external' }
+                    { capabilityId: 'send_email', riskLevel: sendEmailRiskLevel, sideEffects: sendEmailSideEffects }
                 ]
             }]
         ]);
@@ -33,7 +56,10 @@ describe('Orchestrator: Plan Approvals', () => {
         const mockExtensionGateway = {
             getState: (id) => extensionStates.get(id),
             listStates: () => Array.from(extensionStates.values()),
-            execute: async () => ({ status: 'completed', output: 'Done.' }),
+            execute: async (request) => {
+                executeRequests.push(request);
+                return { status: 'completed', output: 'Done.' };
+            },
             applyLifecycle: async () => ({ status: 'applied' })
         };
 
@@ -139,5 +165,88 @@ describe('Orchestrator: Plan Approvals', () => {
 
         // Should auto-run because of existing grant
         assert.strictEqual(result.status, 'completed');
+    });
+
+    it('Destructive actions require explicit approval every run by default', async () => {
+        setupOrchestrator(
+            { template: 'send_email', args: { to: 'bob', subject: 'hi', body: 'hello' } },
+            { sendEmailRiskLevel: 'destructive', sendEmailSideEffects: 'external' }
+        );
+
+        const firstProposal = await orchestrator.orchestrate({
+            sessionId: 's1', userId: 'u1', text: 'Delete and send immediately'
+        });
+        assert.strictEqual(firstProposal.status, 'workflow_proposed');
+        assert.strictEqual(firstProposal.risk.level, 'destructive');
+
+        const firstExecute = await orchestrator.executeWorkflow(firstProposal.workflowId);
+        assert.strictEqual(firstExecute.status, 'completed');
+
+        // Destructive approvals should not produce reusable grants by default.
+        assert.strictEqual(approvalStore._listGrants().length, 0);
+
+        const secondProposal = await orchestrator.orchestrate({
+            sessionId: 's1', userId: 'u1', text: 'Do it again'
+        });
+        assert.strictEqual(secondProposal.status, 'workflow_proposed');
+        assert.strictEqual(secondProposal.risk.level, 'destructive');
+    });
+
+    it('Plan approval runs multi-step external workflow without per-step prompts', async () => {
+        const templateId = 'send_email_twice_for_test';
+        const previousTemplate = WORKFLOW_TEMPLATES[templateId];
+        WORKFLOW_TEMPLATES[templateId] = {
+            id: templateId,
+            description: 'Test-only multi-step external workflow',
+            schema: {
+                required: ['toA', 'subjectA', 'bodyA', 'toB', 'subjectB', 'bodyB'],
+                optional: []
+            },
+            steps: (args) => [
+                {
+                    extensionId: 'email',
+                    extensionType: 'mcp',
+                    capabilityId: 'send_email',
+                    args: { to: args.toA, subject: args.subjectA, body: args.bodyA }
+                },
+                {
+                    extensionId: 'email',
+                    extensionType: 'mcp',
+                    capabilityId: 'send_email',
+                    args: { to: args.toB, subject: args.subjectB, body: args.bodyB }
+                }
+            ]
+        };
+
+        try {
+            setupOrchestrator({
+                template: templateId,
+                args: {
+                    toA: 'a@example.com',
+                    subjectA: 'One',
+                    bodyA: 'Body one',
+                    toB: 'b@example.com',
+                    subjectB: 'Two',
+                    bodyB: 'Body two'
+                }
+            });
+
+            const proposal = await orchestrator.orchestrate({
+                sessionId: 's1', userId: 'u1', text: 'Send two emails'
+            });
+            assert.strictEqual(proposal.status, 'workflow_proposed');
+            assert.strictEqual(proposal.risk.sideEffects, 'external');
+            assert.strictEqual(proposal.risk.requirements.length, 2);
+
+            const executeResult = await orchestrator.executeWorkflow(proposal.workflowId);
+            assert.strictEqual(executeResult.status, 'completed');
+            assert.strictEqual(executeRequests.length, 2);
+        } finally {
+            if (previousTemplate) {
+                WORKFLOW_TEMPLATES[templateId] = previousTemplate;
+            } else {
+                delete WORKFLOW_TEMPLATES[templateId];
+            }
+        }
     });
 });

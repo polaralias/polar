@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import {
   booleanField,
   ContractValidationError,
@@ -10,6 +11,7 @@ import {
   createStrictObjectSchema,
   enumField,
   jsonField,
+  stringArrayField,
   stringField,
 } from "../../polar-domain/src/index.mjs";
 
@@ -30,6 +32,37 @@ const installerRequestSchema = createStrictObjectSchema({
     approvalTicket: stringField({ minLength: 1, required: false }),
     enableAfterInstall: booleanField({ required: false }),
     metadata: jsonField({ required: false }),
+  },
+});
+
+const proposalReviewRequestSchema = createStrictObjectSchema({
+  schemaId: "skill.installer.gateway.proposal.review.request",
+  fields: {
+    executionType: enumField(["tool", "handoff", "automation", "heartbeat"], {
+      required: false,
+    }),
+    traceId: stringField({ minLength: 1, required: false }),
+    extensionId: stringField({ minLength: 1 }),
+    decision: enumField(["approve", "reject"]),
+    requestedTrustLevel: enumField(EXTENSION_TRUST_LEVELS, {
+      required: false,
+    }),
+    approvalTicket: stringField({ minLength: 1, required: false }),
+    enableAfterReview: booleanField({ required: false }),
+    reviewerId: stringField({ minLength: 1, required: false }),
+    reason: stringField({ minLength: 1, required: false }),
+    metadata: jsonField({ required: false }),
+  },
+});
+
+const analyzerManifestSchema = createStrictObjectSchema({
+  schemaId: "skill.installer.gateway.analyzer.manifest",
+  fields: {
+    extensionId: stringField({ minLength: 1 }),
+    version: stringField({ minLength: 1, required: false }),
+    description: stringField({ minLength: 1, required: false }),
+    permissions: stringArrayField({ minItems: 0, required: false }),
+    capabilities: jsonField(),
   },
 });
 
@@ -108,9 +141,190 @@ function resolveInstallOperation(state) {
 }
 
 /**
- * @param {ReturnType<import("./contract-registry.mjs").createContractRegistry>} contractRegistry
+ * @param {string} content
+ * @returns {string}
  */
-export function registerSkillInstallerContract(contractRegistry) {
+function createManifestHash(content) {
+  return crypto.createHash("sha256").update(content).digest("hex");
+}
+
+/**
+ * @param {unknown} capabilitiesValue
+ * @param {readonly string[]} inventoryToolNames
+ * @returns {readonly Record<string, unknown>[]}
+ */
+function normalizeAnalyzerCapabilities(capabilitiesValue, inventoryToolNames) {
+  if (!Array.isArray(capabilitiesValue) || capabilitiesValue.length === 0) {
+    throw new RuntimeExecutionError(
+      "Proposed manifest capabilities must be a non-empty array",
+    );
+  }
+
+  const inventoryToolSet = new Set(inventoryToolNames);
+  const normalized = [];
+  const knownCapabilityIds = new Set();
+  for (const capabilityCandidate of capabilitiesValue) {
+    if (!isPlainObject(capabilityCandidate)) {
+      throw new RuntimeExecutionError(
+        "Proposed manifest capabilities must contain plain objects",
+      );
+    }
+
+    const capabilityId = capabilityCandidate.capabilityId;
+    if (typeof capabilityId !== "string" || capabilityId.length === 0) {
+      throw new RuntimeExecutionError(
+        "Proposed manifest capabilities require capabilityId",
+      );
+    }
+    if (knownCapabilityIds.has(capabilityId)) {
+      throw new RuntimeExecutionError(
+        `Proposed manifest has duplicate capabilityId: ${capabilityId}`,
+      );
+    }
+    knownCapabilityIds.add(capabilityId);
+
+    if (!inventoryToolSet.has(capabilityId)) {
+      throw new RuntimeExecutionError(
+        `Proposed manifest includes unknown capability: ${capabilityId}`,
+      );
+    }
+
+    normalized.push(Object.freeze({ ...capabilityCandidate }));
+  }
+
+  normalized.sort((left, right) =>
+    String(left.capabilityId).localeCompare(String(right.capabilityId)),
+  );
+  return Object.freeze(normalized);
+}
+
+/**
+ * @param {unknown} proposedManifestCandidate
+ * @param {readonly string[]} inventoryToolNames
+ * @returns {Record<string, unknown>}
+ */
+function normalizeAnalyzerManifest(proposedManifestCandidate, inventoryToolNames) {
+  const validation = analyzerManifestSchema.validate(proposedManifestCandidate);
+  if (!validation.ok) {
+    throw new RuntimeExecutionError("Invalid proposed manifest from analyzer", {
+      schemaId: analyzerManifestSchema.schemaId,
+      errors: validation.errors ?? [],
+    });
+  }
+
+  const parsedManifest = /** @type {Record<string, unknown>} */ (validation.value);
+  const capabilities = normalizeAnalyzerCapabilities(
+    parsedManifest.capabilities,
+    inventoryToolNames,
+  );
+  const permissions = normalizePermissions(
+    /** @type {readonly string[]|undefined} */ (parsedManifest.permissions),
+  );
+
+  const manifestForHash = {
+    extensionId: parsedManifest.extensionId,
+    version: parsedManifest.version ?? "1.0.0",
+    ...(parsedManifest.description !== undefined
+      ? { description: parsedManifest.description }
+      : {}),
+    permissions,
+    capabilities,
+  };
+
+  return Object.freeze({
+    ...manifestForHash,
+    extensionType: "skill",
+    manifestHash: createManifestHash(JSON.stringify(manifestForHash)),
+  });
+}
+
+/**
+ * @param {Record<string, unknown>} registry
+ * @param {{
+ *   extensionId: string,
+ *   lifecycleState: "pending_install"|"installed"|"enabled"|"disabled"|"removed"|"blocked",
+ *   capabilities?: readonly Record<string, unknown>[],
+ *   authoritySource?: string
+ * }} request
+ */
+function syncSkillAuthority(registry, request) {
+  if (
+    typeof registry === "object" &&
+    registry !== null &&
+    typeof registry.syncLifecycleState === "function"
+  ) {
+    registry.syncLifecycleState({
+      extensionId: request.extensionId,
+      extensionType: "skill",
+      lifecycleState: request.lifecycleState,
+      capabilities: request.capabilities,
+      authoritySource: request.authoritySource,
+    });
+  }
+}
+
+function createPassthroughSkillRegistry() {
+  return Object.freeze({
+    propose() { },
+    getProposed() { return undefined; },
+    reviewProposal(request) {
+      return {
+        status: request?.decision === "approve" ? "approved" : "rejected",
+        extensionId: request?.extensionId,
+      };
+    },
+    listPending() { return []; },
+    clearProposed() { },
+    markBlocked() { },
+    unblock() { },
+    submitOverride() { },
+    syncLifecycleState() { },
+    listAuthorityStates() { return []; },
+    processMetadata(_extensionId, capabilities) {
+      return {
+        enriched: Array.isArray(capabilities) ? [...capabilities] : [],
+        missingMetadata: [],
+      };
+    },
+  });
+}
+
+/**
+ * Ensures legacy contracts missing retry policy remain registrable under strict registry validation.
+ * @template {Record<string, unknown>} T
+ * @param {T} contract
+ * @param {number} [defaultMaxAttempts]
+ * @returns {T}
+ */
+function ensureRetryPolicy(contract, defaultMaxAttempts = 1) {
+  const retryPolicy = contract.retryPolicy;
+  if (
+    typeof retryPolicy === "object" &&
+    retryPolicy !== null &&
+    Number.isInteger(
+      /** @type {Record<string, unknown>} */ (retryPolicy).maxAttempts,
+    ) &&
+    /** @type {Record<string, unknown>} */ (retryPolicy).maxAttempts > 0
+  ) {
+    return contract;
+  }
+
+  return /** @type {T} */ (
+    Object.freeze({
+      ...contract,
+      retryPolicy: Object.freeze({
+        maxAttempts: defaultMaxAttempts,
+      }),
+    })
+  );
+}
+
+/**
+ * @param {ReturnType<import("./contract-registry.mjs").createContractRegistry>} contractRegistry
+ * @param {{ includeAnalyzer?: boolean }} [options]
+ */
+export function registerSkillInstallerContract(contractRegistry, options = {}) {
+  const includeAnalyzer = options.includeAnalyzer === true;
   if (
     !contractRegistry.has(
       SKILL_INSTALLER_ACTION.actionId,
@@ -120,12 +334,15 @@ export function registerSkillInstallerContract(contractRegistry) {
     contractRegistry.register(createSkillInstallerContract());
   }
   if (
+    includeAnalyzer &&
     !contractRegistry.has(
       SKILL_ANALYZER_ACTION.actionId,
       SKILL_ANALYZER_ACTION.version,
     )
   ) {
-    contractRegistry.register(createSkillAnalyzerContract());
+    contractRegistry.register(
+      ensureRetryPolicy(createSkillAnalyzerContract()),
+    );
   }
 }
 
@@ -143,6 +360,25 @@ export function registerSkillInstallerContract(contractRegistry) {
  *     parseSkillManifest: (skillManifest: string) => Record<string, unknown>,
  *     verifySkillProvenance: (request: Record<string, unknown>) => Record<string, unknown>,
  *     createSkillCapabilityAdapter: (config: { skillManifest: Record<string, unknown> }) => { executeCapability: (request: Record<string, unknown>) => Promise<unknown>|unknown }
+ *   },
+ *   skillRegistry?: {
+ *     processMetadata: (extensionId: string, capabilities: Array<Record<string, unknown>>) => {
+ *       enriched: Array<Record<string, unknown>>,
+ *       missingMetadata: Array<{ capabilityId: string, missingFields: string[] }>
+ *     },
+ *     getProposed: (extensionId: string) => Record<string, unknown>|undefined,
+ *     reviewProposal: (request: Record<string, unknown>) => Record<string, unknown>,
+ *     listPending: () => readonly Record<string, unknown>[],
+ *     markBlocked: (extensionId: string, missingMetadata: Array<{ capabilityId: string, missingFields: string[] }>) => void,
+ *     unblock: (extensionId: string) => void,
+ *     clearProposed: (extensionId: string) => void,
+ *     propose: (extensionId: string, manifest: Record<string, unknown>) => void,
+ *     syncLifecycleState?: (request: Record<string, unknown>) => void,
+ *     listAuthorityStates?: () => readonly Record<string, unknown>[],
+ *     submitOverride: (request: Record<string, unknown>) => unknown
+ *   },
+ *   providerGateway?: {
+ *     generate: (request: Record<string, unknown>) => Promise<Record<string, unknown>>|Record<string, unknown>
  *   },
  *   policy?: {
  *     trustedSourcePrefixes?: readonly string[],
@@ -195,12 +431,32 @@ export function createSkillInstallerGateway({
     );
   }
 
+  const resolvedSkillRegistry = skillRegistry ?? createPassthroughSkillRegistry();
   if (
-    typeof skillRegistry !== "object" ||
-    skillRegistry === null ||
-    typeof skillRegistry.submitOverride !== "function"
+    typeof resolvedSkillRegistry !== "object" ||
+    resolvedSkillRegistry === null ||
+    typeof resolvedSkillRegistry.submitOverride !== "function" ||
+    typeof resolvedSkillRegistry.processMetadata !== "function" ||
+    typeof resolvedSkillRegistry.getProposed !== "function" ||
+    typeof resolvedSkillRegistry.reviewProposal !== "function" ||
+    typeof resolvedSkillRegistry.listPending !== "function" ||
+    typeof resolvedSkillRegistry.markBlocked !== "function" ||
+    typeof resolvedSkillRegistry.unblock !== "function" ||
+    typeof resolvedSkillRegistry.clearProposed !== "function" ||
+    typeof resolvedSkillRegistry.propose !== "function"
   ) {
     throw new RuntimeExecutionError("skillRegistry is required");
+  }
+
+  if (
+    providerGateway !== undefined &&
+    (typeof providerGateway !== "object" ||
+      providerGateway === null ||
+      typeof providerGateway.generate !== "function")
+  ) {
+    throw new RuntimeExecutionError(
+      "providerGateway.generate(request) is required when providerGateway is provided",
+    );
   }
 
   const trustedSourcePrefixes = normalizePermissions(
@@ -221,6 +477,15 @@ export function createSkillInstallerGateway({
   }
 
   const autoEnableTrusted = policy.autoEnableTrusted === true;
+  const analyzerProviderId =
+    typeof policy.analyzerProviderId === "string" &&
+      policy.analyzerProviderId.length > 0
+      ? policy.analyzerProviderId
+      : "openai";
+  const analyzerModel =
+    typeof policy.analyzerModel === "string" && policy.analyzerModel.length > 0
+      ? policy.analyzerModel
+      : "gpt-4.1-mini";
 
   return Object.freeze({
     /**
@@ -239,7 +504,19 @@ export function createSkillInstallerGateway({
 
       const parsed = /** @type {Record<string, unknown>} */ (validation.value);
       const skillContent = /** @type {string} */ (parsed.skillContent);
-      const mcpInventory = /** @type {Array<any>} */ (parsed.mcpInventory);
+      const mcpInventory = Array.isArray(parsed.mcpInventory)
+        ? parsed.mcpInventory
+        : [];
+      const inventoryToolNames = mcpInventory
+        .map((tool) =>
+          isPlainObject(tool) && typeof tool.name === "string" ? tool.name : undefined,
+        )
+        .filter((name) => typeof name === "string" && name.length > 0);
+      if (inventoryToolNames.length === 0) {
+        throw new RuntimeExecutionError(
+          "Analyzer inventory must include at least one named MCP capability",
+        );
+      }
 
       const prompt = `You are a Polar Skill Installer.
 Analyze the following SKILL.md content and the available MCP tools.
@@ -258,49 +535,310 @@ ${JSON.stringify(mcpInventory, null, 2)}
 
 Output ONLY the JSON manifest.`;
 
+      if (
+        typeof providerGateway !== "object" ||
+        providerGateway === null ||
+        typeof providerGateway.generate !== "function"
+      ) {
+        throw new RuntimeExecutionError(
+          "providerGateway.generate(request) is required for skill manifest analysis",
+        );
+      }
+
       const response = await providerGateway.generate({
         executionType: "tool",
+        providerId: analyzerProviderId,
+        model: analyzerModel,
         system: "You are a specialized Polar Skill Installer. You output only valid JSON.",
-        prompt
+        prompt,
       });
 
-      let proposedManifest;
+      let proposedManifestCandidate;
       try {
-        proposedManifest = JSON.parse(response.text.replace(/```json|```/g, '').trim());
-      } catch (e) {
+        const responseText =
+          typeof response?.text === "string" ? response.text : "";
+        proposedManifestCandidate = JSON.parse(
+          responseText.replace(/```json|```/g, "").trim(),
+        );
+      } catch {
         throw new RuntimeExecutionError("Failed to parse proposed manifest from LLM");
       }
 
-      // Basic validation: ensure extensionId exists
-      if (!proposedManifest.extensionId) {
-        throw new RuntimeExecutionError("Proposed manifest missing extensionId");
-      }
-
-      // Ensure no invented capabilities
-      if (Array.isArray(proposedManifest.capabilities)) {
-        const inventoryToolNames = mcpInventory.map(t => t.name);
-        for (const cap of proposedManifest.capabilities) {
-          if (!inventoryToolNames.includes(cap.capabilityId)) {
-            throw new RuntimeExecutionError(`Proposed manifest includes unknown capability: ${cap.capabilityId}`);
-          }
-        }
-      }
+      const proposedManifest = normalizeAnalyzerManifest(
+        proposedManifestCandidate,
+        inventoryToolNames,
+      );
+      const extensionId = /** @type {string} */ (proposedManifest.extensionId);
 
       // Force-set status to pending_install in lifecycle
       await extensionGateway.applyLifecycle({
-        extensionId: proposedManifest.extensionId,
+        extensionId,
         extensionType: "skill",
         operation: "install",
-        metadata: { status: "pending_install" }
+        capabilities: proposedManifest.capabilities,
+        requestedPermissions: normalizePermissions(
+          /** @type {readonly string[]|undefined} */ (proposedManifest.permissions),
+        ),
+        metadata: {
+          status: "pending_install",
+          sourceUri: parsed.sourceUri,
+          manifestHash: proposedManifest.manifestHash,
+        },
       });
 
       // Store in registry
-      skillRegistry.propose(proposedManifest.extensionId, proposedManifest);
+      resolvedSkillRegistry.propose(extensionId, proposedManifest, {
+        sourceUri: /** @type {string} */ (parsed.sourceUri),
+      });
+      syncSkillAuthority(resolvedSkillRegistry, {
+        extensionId,
+        lifecycleState: "pending_install",
+        capabilities: proposedManifest.capabilities,
+        authoritySource: "proposal",
+      });
 
       return {
         status: "applied",
-        extensionId: proposedManifest.extensionId,
-        proposedManifest
+        extensionId,
+        proposedManifest,
+        lifecycleState: "pending_install",
+      };
+    },
+
+    /**
+     * Review a pending proposal and optionally enable after approval.
+     * @param {unknown} request
+     * @returns {Promise<Record<string, unknown>>}
+     */
+    async reviewProposal(request) {
+      const validation = proposalReviewRequestSchema.validate(request);
+      if (!validation.ok) {
+        throw new ContractValidationError(
+          "Invalid skill proposal review request",
+          {
+            schemaId: proposalReviewRequestSchema.schemaId,
+            errors: validation.errors ?? [],
+          },
+        );
+      }
+
+      const parsed = /** @type {Record<string, unknown>} */ (validation.value);
+      const requestExecutionType =
+        /** @type {"tool"|"handoff"|"automation"|"heartbeat"|undefined} */ (
+          parsed.executionType
+        ) ?? defaultExecutionType;
+      const requestTraceId = /** @type {string|undefined} */ (parsed.traceId);
+      const extensionId = /** @type {string} */ (parsed.extensionId);
+      const decision = /** @type {"approve"|"reject"} */ (parsed.decision);
+      const currentState = extensionGateway.getState(extensionId);
+
+      const reviewResult = resolvedSkillRegistry.reviewProposal({
+        extensionId,
+        decision,
+        reviewerId: parsed.reviewerId,
+        reason: parsed.reason,
+      });
+
+      if (decision === "reject") {
+        let rejectedLifecycleState = currentState?.lifecycleState ?? "removed";
+        if (rejectedLifecycleState === "pending_install") {
+          const removeInput = {
+            executionType: requestExecutionType,
+            extensionId,
+            extensionType: "skill",
+            operation: "remove",
+            metadata: {
+              status: "review_rejected",
+              ...(typeof parsed.reason === "string" && parsed.reason.length > 0
+                ? { reason: parsed.reason }
+                : {}),
+            },
+          };
+          if (requestTraceId !== undefined) {
+            removeInput.traceId = requestTraceId;
+          }
+          const removeResult = await extensionGateway.applyLifecycle(removeInput);
+          if (removeResult.status === "applied") {
+            rejectedLifecycleState = removeResult.lifecycleState;
+          }
+        }
+
+        syncSkillAuthority(resolvedSkillRegistry, {
+          extensionId,
+          lifecycleState:
+            /** @type {"pending_install"|"installed"|"enabled"|"disabled"|"removed"|"blocked"} */ (
+              rejectedLifecycleState
+            ),
+          capabilities: Array.isArray(currentState?.capabilities)
+            ? currentState.capabilities
+            : [],
+          authoritySource: "review_rejected",
+        });
+
+        return {
+          status: "rejected",
+          extensionId,
+          reviewStatus: "rejected",
+          lifecycleState: rejectedLifecycleState,
+          ...(typeof parsed.reason === "string" &&
+            parsed.reason.length > 0
+            ? { reason: parsed.reason }
+            : {}),
+        };
+      }
+
+      const proposal = resolvedSkillRegistry.getProposed(extensionId);
+      if (!isPlainObject(proposal)) {
+        throw new RuntimeExecutionError(
+          `No approved proposal available for extension: ${extensionId}`,
+        );
+      }
+
+      const requestedPermissions = normalizePermissions(
+        /** @type {readonly string[]|undefined} */ (proposal.permissions),
+      );
+      const proposedCapabilities = Array.isArray(proposal.capabilities)
+        ? proposal.capabilities
+        : [];
+      const { enriched: enrichedCapabilities, missingMetadata } =
+        resolvedSkillRegistry.processMetadata(extensionId, proposedCapabilities);
+      if (missingMetadata.length > 0) {
+        resolvedSkillRegistry.markBlocked(extensionId, missingMetadata);
+        syncSkillAuthority(resolvedSkillRegistry, {
+          extensionId,
+          lifecycleState: "blocked",
+          capabilities: enrichedCapabilities,
+          authoritySource: "review_metadata_block",
+        });
+        return {
+          status: "rejected",
+          extensionId,
+          reviewStatus: "approved",
+          lifecycleStatus: "rejected",
+          lifecycleState: "blocked",
+          reason: "Skill metadata required",
+          missingMetadata,
+        };
+      }
+
+      resolvedSkillRegistry.unblock(extensionId);
+
+      const trustLevel =
+        /** @type {"trusted"|"reviewed"|"sandboxed"|"blocked"|undefined} */ (
+          parsed.requestedTrustLevel
+        ) ?? "reviewed";
+      const operation = resolveInstallOperation(currentState);
+      const lifecycleInput = {
+        executionType: requestExecutionType,
+        extensionId,
+        extensionType: "skill",
+        operation,
+        trustLevel,
+        requestedPermissions,
+        capabilities: enrichedCapabilities,
+        metadata: {
+          status: "reviewed_install",
+          review: reviewResult,
+          sourceUri: proposal.sourceUri,
+          manifestHash:
+            typeof proposal.manifestHash === "string" &&
+              proposal.manifestHash.length > 0
+              ? proposal.manifestHash
+              : createManifestHash(JSON.stringify(proposal)),
+          ...(isPlainObject(parsed.metadata) ? parsed.metadata : {}),
+        },
+      };
+      if (requestTraceId !== undefined) {
+        lifecycleInput.traceId = requestTraceId;
+      }
+      if (parsed.approvalTicket !== undefined) {
+        lifecycleInput.approvalTicket = parsed.approvalTicket;
+      }
+
+      const lifecycleResult = await extensionGateway.applyLifecycle(lifecycleInput);
+      if (lifecycleResult.status !== "applied") {
+        syncSkillAuthority(resolvedSkillRegistry, {
+          extensionId,
+          lifecycleState:
+            /** @type {"pending_install"|"installed"|"enabled"|"disabled"|"removed"|"blocked"} */ (
+              lifecycleResult.lifecycleState
+            ),
+          capabilities: enrichedCapabilities,
+          authoritySource: "review_lifecycle_rejected",
+        });
+
+        return {
+          status: "rejected",
+          extensionId,
+          reviewStatus: "approved",
+          lifecycleStatus: "rejected",
+          lifecycleState: lifecycleResult.lifecycleState,
+          reason:
+            typeof lifecycleResult.reason === "string" &&
+              lifecycleResult.reason.length > 0
+              ? lifecycleResult.reason
+              : "Skill lifecycle transition rejected",
+        };
+      }
+
+      const adapterManifest = {
+        ...proposal,
+        extensionId,
+        extensionType: "skill",
+        permissions: requestedPermissions,
+        capabilities: enrichedCapabilities,
+        manifestHash:
+          typeof proposal.manifestHash === "string" &&
+            proposal.manifestHash.length > 0
+            ? proposal.manifestHash
+            : createManifestHash(JSON.stringify(proposal)),
+      };
+      const skillCapabilityAdapter = skillAdapter.createSkillCapabilityAdapter({
+        skillManifest: adapterManifest,
+      });
+      extensionRegistry.upsert(extensionId, skillCapabilityAdapter);
+
+      let finalLifecycleStatus = lifecycleResult.status;
+      let finalLifecycleState = lifecycleResult.lifecycleState;
+      if (
+        parsed.enableAfterReview === true &&
+        finalLifecycleState !== "enabled"
+      ) {
+        const enableResult = await extensionGateway.applyLifecycle({
+          executionType: requestExecutionType,
+          ...(requestTraceId ? { traceId: requestTraceId } : {}),
+          extensionId,
+          extensionType: "skill",
+          operation: "enable",
+        });
+        finalLifecycleStatus = enableResult.status;
+        finalLifecycleState = enableResult.lifecycleState;
+      }
+
+      syncSkillAuthority(resolvedSkillRegistry, {
+        extensionId,
+        lifecycleState:
+          finalLifecycleStatus === "applied"
+            ? /** @type {"pending_install"|"installed"|"enabled"|"disabled"|"removed"|"blocked"} */ (
+              finalLifecycleState
+            )
+            : "blocked",
+        capabilities: enrichedCapabilities,
+        authoritySource: "review_approved",
+      });
+
+      if (finalLifecycleStatus === "applied") {
+        resolvedSkillRegistry.clearProposed(extensionId);
+      }
+
+      return {
+        status: finalLifecycleStatus === "applied" ? "applied" : "rejected",
+        extensionId,
+        reviewStatus: "approved",
+        operation,
+        trustLevel,
+        lifecycleStatus: finalLifecycleStatus,
+        lifecycleState: finalLifecycleState,
       };
     },
 
@@ -535,10 +1073,16 @@ Output ONLY the JSON manifest.`;
             };
           }
 
-          const { enriched: enrichedCapabilities, missingMetadata } = skillRegistry.processMetadata(extensionId, Array.isArray(skillManifest.capabilities) ? skillManifest.capabilities : []);
+          const { enriched: enrichedCapabilities, missingMetadata } = resolvedSkillRegistry.processMetadata(extensionId, Array.isArray(skillManifest.capabilities) ? skillManifest.capabilities : []);
 
           if (missingMetadata.length > 0) {
-            skillRegistry.markBlocked(extensionId, missingMetadata);
+            resolvedSkillRegistry.markBlocked(extensionId, missingMetadata);
+            syncSkillAuthority(resolvedSkillRegistry, {
+              extensionId,
+              lifecycleState: "blocked",
+              capabilities: enrichedCapabilities,
+              authoritySource: "install_metadata_block",
+            });
             return {
               status: "rejected",
               extensionId,
@@ -556,8 +1100,8 @@ Output ONLY the JSON manifest.`;
           }
 
           // Unblock if it was blocked before and clear any pending proposal
-          skillRegistry.unblock(extensionId);
-          skillRegistry.clearProposed(extensionId);
+          resolvedSkillRegistry.unblock(extensionId);
+          resolvedSkillRegistry.clearProposed(extensionId);
 
           const lifecycleInput = {
             executionType: requestExecutionType,
@@ -587,6 +1131,15 @@ Output ONLY the JSON manifest.`;
           const lifecycleResult = await extensionGateway.applyLifecycle(lifecycleInput);
 
           if (lifecycleResult.status !== "applied") {
+            syncSkillAuthority(resolvedSkillRegistry, {
+              extensionId,
+              lifecycleState:
+                /** @type {"pending_install"|"installed"|"enabled"|"disabled"|"removed"|"blocked"} */ (
+                  lifecycleResult.lifecycleState
+                ),
+              capabilities: enrichedCapabilities,
+              authoritySource: "install_lifecycle_rejected",
+            });
             return {
               status: "rejected",
               extensionId,
@@ -647,6 +1200,18 @@ Output ONLY the JSON manifest.`;
           }
 
           const status = finalLifecycleStatus === "applied" ? "applied" : "rejected";
+          syncSkillAuthority(resolvedSkillRegistry, {
+            extensionId,
+            lifecycleState:
+              status === "applied"
+                ? /** @type {"pending_install"|"installed"|"enabled"|"disabled"|"removed"|"blocked"} */ (
+                  finalLifecycleState
+                )
+                : "blocked",
+            capabilities: enrichedCapabilities,
+            authoritySource: "install_finalized",
+          });
+
           return {
             status,
             extensionId,

@@ -1,3 +1,29 @@
+import {
+    createStrictObjectSchema,
+    stringArrayField
+} from '../../polar-domain/src/index.mjs';
+
+const memoryExtractionResponseSchema = createStrictObjectSchema({
+    schemaId: 'memory.extraction.response',
+    fields: {
+        facts: stringArrayField({ minItems: 0, required: false })
+    }
+});
+
+/**
+ * @param {string} rawText
+ * @returns {Record<string, unknown>}
+ */
+function parseExtractionResponse(rawText) {
+    const normalized = rawText.replace(/```json?\s*/g, '').replace(/```/g, '').trim();
+    const parsed = JSON.parse(normalized);
+    const validation = memoryExtractionResponseSchema.validate(parsed);
+    if (!validation.ok) {
+        throw new Error(`Invalid ${memoryExtractionResponseSchema.schemaId}: ${(validation.errors || []).join('; ')}`);
+    }
+    return /** @type {Record<string, unknown>} */ (validation.value);
+}
+
 /**
  * Middleware that automatically extracts durable facts from chat messages
  * and persists them to the Memory Gateway.
@@ -37,7 +63,7 @@ export function createMemoryExtractionMiddleware({ memoryGateway, providerGatewa
                         });
 
                         // Provider gateway returns { text: "..." }, not { content: "..." } (BUG-019 fix)
-                        const parsed = JSON.parse(extractionResult.text || '{}');
+                        const parsed = parseExtractionResponse(extractionResult.text || '{}');
                         const facts = Array.isArray(parsed.facts) ? parsed.facts : [];
 
                         for (const fact of facts) {

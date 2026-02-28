@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { ContractValidationError } from "../packages/polar-domain/src/index.mjs";
 import { createExtensionAdapterRegistry } from "../packages/polar-adapter-extensions/src/index.mjs";
 import {
+  createApprovalStore,
   createContractRegistry,
   createExtensionGateway,
   createMiddlewarePipeline,
@@ -15,6 +16,7 @@ function setupExtensionGateway({
   policy,
   adapters = [],
   initialStates,
+  approvalStore,
 } = {}) {
   const registry = createContractRegistry();
   registerExtensionContracts(registry);
@@ -38,6 +40,7 @@ function setupExtensionGateway({
     extensionRegistry,
     policy,
     initialStates,
+    approvalStore,
   });
 
   return {
@@ -482,4 +485,89 @@ test("extension execute respects policy denial and rejects invalid request shape
       error instanceof ContractValidationError &&
       error.code === "POLAR_CONTRACT_VALIDATION_ERROR",
   );
+});
+
+test("extension execute enforces built-in approval requirement for external/network capabilities", async () => {
+  const approvalStore = createApprovalStore();
+  const { gateway } = setupExtensionGateway({
+    approvalStore,
+    initialStates: [
+      {
+        extensionId: "skill.mail",
+        extensionType: "skill",
+        trustLevel: "reviewed",
+        lifecycleState: "enabled",
+        permissions: [],
+        capabilities: [
+          {
+            capabilityId: "send_mail",
+            riskLevel: "write",
+            sideEffects: "external",
+            dataEgress: "network",
+          },
+        ],
+      },
+    ],
+    adapters: [
+      [
+        "skill.mail",
+        {
+          async executeCapability() {
+            return { ok: true };
+          },
+        },
+      ],
+    ],
+  });
+
+  const denied = await gateway.execute({
+    extensionId: "skill.mail",
+    extensionType: "skill",
+    capabilityId: "send_mail",
+    sessionId: "session-approval",
+    userId: "user-approval",
+    capabilityScope: {
+      allowed: {
+        "skill.mail": ["send_mail"],
+      },
+    },
+    input: {
+      to: "a@example.com",
+    },
+  });
+
+  assert.equal(denied.status, "failed");
+  assert.deepEqual(denied.error, {
+    code: "POLAR_EXTENSION_POLICY_DENIED",
+    message: "External side effects or data egress require explicit approval",
+  });
+
+  approvalStore.issueGrant(
+    { userId: "user-approval", sessionId: "session-approval" },
+    {
+      capabilities: [{ extensionId: "skill.mail", capabilityId: "send_mail" }],
+    },
+    3600,
+    "Manual approval",
+    { workflowId: "wf-1" },
+    "write",
+  );
+
+  const allowed = await gateway.execute({
+    extensionId: "skill.mail",
+    extensionType: "skill",
+    capabilityId: "send_mail",
+    sessionId: "session-approval",
+    userId: "user-approval",
+    capabilityScope: {
+      allowed: {
+        "skill.mail": ["send_mail"],
+      },
+    },
+    input: {
+      to: "a@example.com",
+    },
+  });
+
+  assert.equal(allowed.status, "completed");
 });

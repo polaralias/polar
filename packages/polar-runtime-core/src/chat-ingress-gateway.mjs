@@ -147,8 +147,9 @@ export function registerChatIngressContract(contractRegistry) {
  *     slack?: () => unknown|Promise<unknown>,
  *     discord?: () => unknown|Promise<unknown>
  *   },
- *   defaultExecutionType?: "tool"|"handoff"|"automation"|"heartbeat"
- *   now?: () => number
+ *   defaultExecutionType?: "tool"|"handoff"|"automation"|"heartbeat",
+ *   now?: () => number,
+ *   rateLimitOptions?: { windowMs: number, maxRequests: number }
  * }} config
  */
 export function createChatIngressGateway({
@@ -157,6 +158,7 @@ export function createChatIngressGateway({
   healthChecks = {},
   defaultExecutionType = "tool",
   now = Date.now,
+  rateLimitOptions = { windowMs: 60000, maxRequests: 50 },
 }) {
   if (typeof normalizers !== "object" || normalizers === null) {
     throw new RuntimeExecutionError("normalizers must be an object");
@@ -198,12 +200,28 @@ export function createChatIngressGateway({
     return async () => await check();
   }
 
+  const rateLimitWindowMs = rateLimitOptions.windowMs > 0 ? rateLimitOptions.windowMs : 60000;
+  const rateLimitMaxRequests = rateLimitOptions.maxRequests > 0 ? rateLimitOptions.maxRequests : 50;
+  const ingressTimestamps = [];
+
   return Object.freeze({
     /**
      * @param {unknown} request
      * @returns {Promise<Record<string, unknown>>}
      */
     async normalize(request) {
+      const nowMs = now();
+      while (ingressTimestamps.length > 0 && ingressTimestamps[0] < nowMs - rateLimitWindowMs) {
+        ingressTimestamps.shift();
+      }
+
+      if (ingressTimestamps.length >= rateLimitMaxRequests) {
+        throw new RuntimeExecutionError("Rate limit exceeded for ingress gateway", {
+          retryAfterMs: rateLimitWindowMs
+        });
+      }
+      ingressTimestamps.push(nowMs);
+
       const validation = gatewayRequestSchema.validate(request);
       if (!validation.ok) {
         throw new ContractValidationError("Invalid chat ingress request", {

@@ -306,7 +306,9 @@ export function registerProviderOperationContracts(contractRegistry) {
  *       errorCode?: string
  *     }) => Promise<void>|void
  *   },
- *   now?: () => number
+ *   now?: () => number,
+ *   cooldownDurationMs?: number,
+ *   defaultTimeoutMs?: number
  * }} config
  */
 export function createProviderGateway({
@@ -320,6 +322,7 @@ export function createProviderGateway({
   usageTelemetryCollector = { async recordOperation() { } },
   now = Date.now,
   cooldownDurationMs = 60_000,
+  defaultTimeoutMs,
 }) {
   const providerEntries =
     providers instanceof Map ? [...providers.entries()] : Object.entries(providers);
@@ -610,6 +613,9 @@ export function createProviderGateway({
           if (parsedRequest.estimatedCostUsd !== undefined) {
             input.estimatedCostUsd = parsedRequest.estimatedCostUsd;
           }
+          if (defaultTimeoutMs !== undefined) {
+            input.timeoutMs = defaultTimeoutMs;
+          }
           return input;
         },
       });
@@ -700,6 +706,7 @@ export function createProviderGateway({
           };
           if (parsedRequest.workspaceId !== undefined) input.workspaceId = parsedRequest.workspaceId;
           if (parsedRequest.estimatedCostUsd !== undefined) input.estimatedCostUsd = parsedRequest.estimatedCostUsd;
+          if (defaultTimeoutMs !== undefined) input.timeoutMs = defaultTimeoutMs;
           return input;
         },
       });

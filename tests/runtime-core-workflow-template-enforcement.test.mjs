@@ -15,6 +15,12 @@ test("workflow-engine rejects unknown template", () => {
     assert.ok(result.error !== undefined);
 });
 
+test("workflow-engine ignores legacy <polar_workflow> blocks", () => {
+    const text = `<polar_workflow>{"template": "lookup_weather", "args": {"location": "London"}}</polar_workflow>`;
+    const result = parseModelProposal(text);
+    assert.equal(result, null);
+});
+
 test("workflow-engine expands template deterministically", () => {
     const steps = expandTemplate("delegate_to_agent", {
         agentId: "@writer",

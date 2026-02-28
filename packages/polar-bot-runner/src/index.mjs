@@ -224,11 +224,14 @@ async function processGroupedMessages(polarSessionId, items) {
         const anchorId = result.anchorMessageId; // specific message to reply to, if provided
         // anchorMessageId may be a synthetic internal ID (e.g. "msg_err_<uuid>") — only use
         // it for Telegram reply_parameters if it's a valid numeric message ID.
-        const numericAnchor = typeof anchorId === 'number' ? anchorId : (Number.isFinite(Number(anchorId)) ? Number(anchorId) : null);
+        const parsedAnchor = typeof anchorId === 'number' ? anchorId : Number(anchorId);
+        const numericAnchor =
+            Number.isSafeInteger(parsedAnchor) && parsedAnchor > 0
+                ? parsedAnchor
+                : null;
         let replyOptions = {};
-        if (useInlineReply) {
-            const replyToId = numericAnchor || telegramMessageId;
-            replyOptions = { reply_parameters: { message_id: replyToId } };
+        if (useInlineReply && numericAnchor !== null) {
+            replyOptions = { reply_parameters: { message_id: numericAnchor } };
         }
 
         if (result.status === 'workflow_proposed') {

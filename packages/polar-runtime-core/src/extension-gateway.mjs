@@ -68,6 +68,18 @@ const extensionStateSchema = createStrictObjectSchema({
   },
 });
 
+const capabilityRiskLevels = new Set(["read", "write", "destructive", "unknown"]);
+const capabilitySideEffects = new Set(["none", "internal", "external", "unknown"]);
+const capabilityDataEgress = new Set(["none", "network", "unknown"]);
+
+const approvalContextSchema = createStrictObjectSchema({
+  schemaId: "extension.gateway.approval.context",
+  fields: {
+    workflowId: stringField({ minLength: 1 }),
+    runId: stringField({ minLength: 1 }),
+  },
+});
+
 /**
  * @param {readonly string[]|undefined} value
  * @returns {readonly string[]}
@@ -186,6 +198,106 @@ function validateState(state) {
 }
 
 /**
+ * @param {unknown} capability
+ * @returns {{ capabilityId?: string, riskLevel: "read"|"write"|"destructive"|"unknown", sideEffects: "none"|"internal"|"external"|"unknown", dataEgress: "none"|"network"|"unknown" }}
+ */
+function normalizeCapabilityMetadata(capability) {
+  if (!isPlainObject(capability)) {
+    return {
+      riskLevel: "unknown",
+      sideEffects: "unknown",
+      dataEgress: "unknown",
+    };
+  }
+
+  const normalized = /** @type {Record<string, unknown>} */ (capability);
+  const capabilityId =
+    typeof normalized.capabilityId === "string" && normalized.capabilityId.length > 0
+      ? normalized.capabilityId
+      : undefined;
+  const riskLevel =
+    typeof normalized.riskLevel === "string" && capabilityRiskLevels.has(normalized.riskLevel)
+      ? normalized.riskLevel
+      : "unknown";
+  const sideEffects =
+    typeof normalized.sideEffects === "string" && capabilitySideEffects.has(normalized.sideEffects)
+      ? normalized.sideEffects
+      : "unknown";
+  const dataEgress =
+    typeof normalized.dataEgress === "string" && capabilityDataEgress.has(normalized.dataEgress)
+      ? normalized.dataEgress
+      : "unknown";
+
+  return {
+    capabilityId,
+    riskLevel: /** @type {"read"|"write"|"destructive"|"unknown"} */ (riskLevel),
+    sideEffects: /** @type {"none"|"internal"|"external"|"unknown"} */ (sideEffects),
+    dataEgress: /** @type {"none"|"network"|"unknown"} */ (dataEgress),
+  };
+}
+
+/**
+ * @param {{
+ *   riskLevel: "read"|"write"|"destructive"|"unknown",
+ *   sideEffects: "none"|"internal"|"external"|"unknown",
+ *   dataEgress: "none"|"network"|"unknown"
+ * }} capabilityMetadata
+ * @returns {{
+ *   required: boolean,
+ *   minimumRiskLevel: "write"|"destructive",
+ *   reason: string
+ * }}
+ */
+export function evaluateCapabilityApprovalRequirement(capabilityMetadata) {
+  const needsApproval =
+    capabilityMetadata.riskLevel === "destructive" ||
+    capabilityMetadata.sideEffects === "external" ||
+    capabilityMetadata.dataEgress === "network";
+
+  const minimumRiskLevel =
+    capabilityMetadata.riskLevel === "destructive" ? "destructive" : "write";
+  const reason =
+    capabilityMetadata.riskLevel === "destructive"
+      ? "Destructive capability execution requires explicit approval"
+      : "External side effects or data egress require explicit approval";
+
+  return {
+    required: needsApproval,
+    minimumRiskLevel,
+    reason,
+  };
+}
+
+/**
+ * @param {unknown} metadata
+ * @returns {Record<string, unknown>}
+ */
+function extractApprovalConstraints(metadata) {
+  if (!isPlainObject(metadata)) {
+    return {};
+  }
+
+  if (!Object.prototype.hasOwnProperty.call(metadata, "approvalContext")) {
+    return {};
+  }
+
+  const approvalContext = metadata.approvalContext;
+  if (!isPlainObject(approvalContext)) {
+    throw new RuntimeExecutionError("Invalid approval context on extension execute metadata");
+  }
+
+  const validation = approvalContextSchema.validate(approvalContext);
+  if (!validation.ok) {
+    throw new RuntimeExecutionError("Invalid approval context on extension execute metadata", {
+      schemaId: approvalContextSchema.schemaId,
+      errors: validation.errors ?? [],
+    });
+  }
+
+  return /** @type {Record<string, unknown>} */ (validation.value);
+}
+
+/**
  * @param {ReturnType<import("./contract-registry.mjs").createContractRegistry>} contractRegistry
  */
 export function registerExtensionContracts(contractRegistry) {
@@ -205,7 +317,11 @@ export function registerExtensionContracts(contractRegistry) {
  *     evaluateLifecycle?: (input: Record<string, unknown>, currentState: Record<string, unknown>|undefined) => Promise<{ allowed: boolean, reason?: string }|boolean|void>|{ allowed: boolean, reason?: string }|boolean|void,
  *     evaluateExecution?: (input: Record<string, unknown>, currentState: Record<string, unknown>|undefined) => Promise<{ allowed: boolean, reason?: string }|boolean|void>|{ allowed: boolean, reason?: string }|boolean|void
  *   },
- *   defaultExecutionType?: "tool"|"handoff"|"automation"|"heartbeat"
+ *   approvalStore?: {
+ *     findMatchingGrant?: (principal: { userId: string, sessionId?: string, workspaceId?: string }, request: Record<string, unknown>) => { riskLevel?: "write"|"destructive" }|null
+ *   },
+ *   defaultExecutionType?: "tool"|"handoff"|"automation"|"heartbeat",
+ *   defaultExecutionTimeoutMs?: number
  * }} config
  */
 export function createExtensionGateway({
@@ -215,6 +331,7 @@ export function createExtensionGateway({
   policy = {},
   defaultExecutionType = "tool",
   approvalStore,
+  defaultExecutionTimeoutMs = 60000,
 }) {
   if (extensionRegistry !== undefined) {
     if (
@@ -526,11 +643,79 @@ export function createExtensionGateway({
     }
 
     const capabilityMetadata = (Array.isArray(currentState?.capabilities) ? currentState.capabilities : [])
-      .find(c => c.capabilityId === capabilityId) || { riskLevel: 'unknown', sideEffects: 'unknown', dataEgress: 'unknown' };
+      .find(c => c.capabilityId === capabilityId);
+    const normalizedCapabilityMetadata = normalizeCapabilityMetadata(
+      capabilityMetadata ?? { capabilityId, riskLevel: "unknown", sideEffects: "unknown", dataEgress: "unknown" },
+    );
+    const approvalRequirement = evaluateCapabilityApprovalRequirement(
+      normalizedCapabilityMetadata,
+    );
+
+    if (approvalRequirement.required) {
+      if (
+        typeof approvalStore !== "object" ||
+        approvalStore === null ||
+        typeof approvalStore.findMatchingGrant !== "function"
+      ) {
+        return {
+          ...base,
+          status: "failed",
+          error: Object.freeze({
+            code: "POLAR_EXTENSION_POLICY_DENIED",
+            message: "Approval store is not available for approval-required capability execution",
+          }),
+        };
+      }
+
+      const constraints = extractApprovalConstraints(input.metadata);
+      const matchingGrant = approvalStore.findMatchingGrant(
+        {
+          userId: input.userId,
+          sessionId: input.sessionId,
+        },
+        {
+          extensionId,
+          capabilityId,
+          userId: input.userId,
+          sessionId: input.sessionId,
+          constraints,
+        },
+      );
+
+      if (!matchingGrant) {
+        return {
+          ...base,
+          status: "failed",
+          error: Object.freeze({
+            code: "POLAR_EXTENSION_POLICY_DENIED",
+            message: approvalRequirement.reason,
+          }),
+        };
+      }
+
+      if (
+        approvalRequirement.minimumRiskLevel === "destructive" &&
+        matchingGrant.riskLevel !== "destructive"
+      ) {
+        return {
+          ...base,
+          status: "failed",
+          error: Object.freeze({
+            code: "POLAR_EXTENSION_POLICY_DENIED",
+            message:
+              "Destructive capability execution requires a destructive-risk approval grant",
+          }),
+        };
+      }
+    }
 
     const executionDecision = normalizePolicyDecision(
       evaluateExecution
-        ? await evaluateExecution(input, { ...currentState, capabilityMetadata }, approvalStore)
+        ? await evaluateExecution(
+          input,
+          { ...currentState, capabilityMetadata: normalizedCapabilityMetadata },
+          approvalStore,
+        )
         : undefined,
     );
     if (!executionDecision.allowed) {
@@ -577,7 +762,16 @@ export function createExtensionGateway({
         adapterRequest.metadata = input.metadata;
       }
 
-      const output = await extensionAdapter.executeCapability(adapterRequest);
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => {
+          reject(new RuntimeExecutionError(`Extension capability execution timed out after ${defaultExecutionTimeoutMs}ms`, { extensionId, capabilityId }));
+        }, defaultExecutionTimeoutMs);
+      });
+
+      const output = await Promise.race([
+        extensionAdapter.executeCapability(adapterRequest),
+        timeoutPromise
+      ]);
 
       return {
         ...base,
