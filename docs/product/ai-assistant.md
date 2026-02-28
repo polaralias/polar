@@ -5,23 +5,23 @@ Last updated: 2026-02-25
 ## Bridging the Gap: How we build the Assistant without touching the Framework
 
 Right now, `polar-control-plane` exposes strict, safe, executable APIs:
+- `orchestrate` (handles deterministic routing, workflow execution, and thread ownership)
 - `executeExtension` (runs a sandboxed tool)
 - `resolveProfile` (gets an agent's configured LLM/system prompt)
-- `generateOutput` / `streamOutput` (calls the LLM)
 - `syncMcpServer` / `installSkill` (manages tools)
 
-To build the AI Assistant with "OpenClaw Tool Gating", we can build a lightweight **Agent Runner** that listens to Discord, Telegram, Whatsapp, and Slack endpoints.
+To build the AI Assistant, we built a lightweight **Agent Runner** that listens to Discord, Telegram, Whatsapp, and Slack endpoints.
 
-This Runner will simply act as a **Consumer** of the framework:
+This Runner acts as a **Thin Client** for the framework:
 
-1. **The Orchestrator Loop**: We import `createPiAgentTurnAdapter` from `@polar/adapter-pi` into our new runner service (e.g. `polar-bot-runner`).
-2. **Tool Execution**: When `pi-agent-core` wants to run a tool, the runner catches it. Instead of running it unsafely, it fires a call to the framework's `controlPlane.executeExtension()` API.
-3. **The Gating (Human-in-the-loop)**: When the runner catches a sensitive tool call, it pauses the `pi-agent-core` loop, sends an interactive UI message (e.g. an Inline Keyboard Button on Telegram or Message Component in Discord) back to the user, and waits for them to click "Approve" before passing the execution to the framework.
+1. **The Orchestrator**: The central orchestrator logic resides in `packages/polar-runtime-core/src/orchestrator.mjs`. It handles workflow execution, explicit deterministic routing, and thread ownership directly.
+2. **Tool Execution**: When the orchestrator executes a tool, it uses `extensionGateway` which centralizes approval enforcement.
+3. **The Gating (Human-in-the-loop)**: When a sensitive tool call is evaluated, it is checked for pre-existing grants. If an approval is required, the orchestrator outputs a request to the user to explicitly "Approve" before passing the execution to the framework.
 
 ### Why this approach is ideal:
-- **Zero Framework Bloat**: `polar-runtime-core` remains a pure, stateless enforcement engine. It doesn't need to know what a "chat loop" or "Discord webhook" is.
+- **Zero Framework Bloat**: `polar-runtime-core` remains the strict, stateless enforcement engine.
 - **Native Chat Experience**: You get to use the high-quality, existing interfaces of Telegram, Discord, and Slack, including their native push notifications and mobile apps.
-- **True Separation of Concerns**: The framework is the engine. The bots are the UI.
+- **True Separation of Concerns**: The framework orchestrator handles all logic, while the bots are merely UI thin clients.
 
 ---
 
@@ -31,8 +31,8 @@ To get the local-hosted, multi-agent platform running over external messaging ap
 
 ### 1. Ingress Webhooks (The Endpoints)
 * **Gap:** The framework has parsers for Slack, Telegram, and Discord payloads, but no actual HTTP server listening for their webhooks.
-* **Action:** Boot up a runner server (e.g., `packages/polar-bot-runner`) with Express/Fastify routes like `/api/webhooks/telegram` to receive messages and pipe them to the `createPiAgentTurnAdapter` loop.
-* **Status:** ✅ **Completed** (Implemented natively via Telegraf interacting closely with `controlPlane.generateOutput` and `controlPlane.appendMessage`)
+* **Action:** Boot up a runner server (e.g., `packages/polar-bot-runner`) with Express/Fastify routes like `/api/webhooks/telegram` to receive messages and pipe them to the orchestration layer. Web and Telegram clients call backend orchestration endpoints natively as thin clients.
+* **Status:** ✅ **Completed** (Implemented natively via Telegraf interacting closely with `controlPlane.orchestrate` and explicit orchestration endpoints)
 
 ### 2. Native File & Multimodal Handling
 * **Gap:** Right now, the core framework handles text. To support native UX like PDF and image uploads, we need to bridge the gap to LLM capabilities.
@@ -54,7 +54,7 @@ To get the local-hosted, multi-agent platform running over external messaging ap
 ### 5. Default Agent Bootstrapping 
 * **Gap:** The framework config is empty by default.
 * **Action:** Set up a bootstrapping routine to load a default `@Primary` agent profile, configure the Telegraf bot, and sync your MCP shell servers into the `polar-control-plane` so the bot can actually work on your laptop.
-* **Status:** ✅ **Completed** (Multi-Agent Orchestration loop is injected into `polar-bot-runner` with deterministic rules allowing the Primary orchestrator to hand off execution directly to specific pre-defined AI roles using `MULTI_AGENT_CONFIG` mapping and `<polar_workflow>` delegation payloads)
+* **Status:** ✅ **Completed** (Multi-Agent Orchestration loop is injected into `polar-bot-runner` with deterministic rules allowing the Primary orchestrator to hand off execution directly to specific pre-defined AI roles using `MULTI_AGENT_CONFIG` mapping and `<polar_action>` delegation payloads)
 
 ---
 

@@ -1,5 +1,7 @@
 # LLM provider documentation extraction
 
+*(Note: The full provider matrix and endpoint options below are aspirational research and reference notes. Current runtime implementation supports key modes like fallback/cooldown and standard parameter normalization, but does not yet natively support every provider-specific feature documented below end-to-end.)*
+
 Below is a practical, implementation-ready update that gives you:
 
 1. **Exact doc URLs** (as a copyable mapping)

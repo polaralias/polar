@@ -78,7 +78,7 @@ Status legend:
 | Operational observability minimum telemetry fields are fully available | `docs/operations/quality-and-safety.md` | Partial | Usage/handoff telemetry modules + middleware audit sink | `tests/runtime-core-usage-telemetry-gateway.test.mjs`, `tests/runtime-core-handoff-routing-telemetry.test.mjs`, `tests/runtime-core-contract-middleware.test.mjs` | Not all requested fields are unified under one durable lineage query model. |
 | Incident SOPs (provider failover, vault recovery, extension kill-switch) are actionable from runtime surfaces | `docs/operations/incident-response-and-drills.md` | Partial | Provider fallback (`provider-gateway`), vault (`crypto-vault`), extension lifecycle (`extension-gateway`) | `tests/runtime-core-provider-gateway.test.mjs`, `tests/runtime-core-extension-gateway.test.mjs` | Runbook is mostly process guidance; not all drills have automated checks. |
 | Incident drill scenarios (blackout, store corruption, multi-agent loop panic) are codified as automated drills | `docs/operations/incident-response-and-drills.md` | Missing | No dedicated drill harness scripts | No tests | Add repeatable drill harness and pass/fail criteria. |
-| Product doc claims current assistant architecture and completion status | `docs/product/ai-assistant.md` | Doc drift | Current runtime in `packages/polar-runtime-core/src/orchestrator.mjs`, `packages/polar-bot-runner/src/index.mjs` | `tests/channels-thin-client-enforcement.test.mjs`, orchestrator suites | Doc still describes legacy `createPiAgentTurnAdapter`/`<polar_workflow>` path and outdated completion claims. |
+| Product doc claims current assistant architecture and completion status | `docs/product/ai-assistant.md` | Implemented | Current runtime in `packages/polar-runtime-core/src/orchestrator.mjs`, `packages/polar-bot-runner/src/index.mjs` | `tests/channels-thin-client-enforcement.test.mjs`, orchestrator suites | Updated to describe deterministic orchestrator path and `<polar_action>`. |
 | Product automation classes and safety/idempotency behaviors | `docs/product/automations.md` | Partial | `packages/polar-runtime-core/src/automation-gateway.mjs`, `packages/polar-runtime-core/src/heartbeat-gateway.mjs`, `packages/polar-runtime-core/src/scheduler-gateway.mjs` | `tests/runtime-core-automation-gateway.test.mjs`, `tests/runtime-core-heartbeat-gateway.test.mjs`, `tests/runtime-core-scheduler-gateway.test.mjs` | Core engine exists; chat-first authoring UX and version rollback UX remain partial. |
 | Web UI core management areas (chat/tasks/profiles/extensions/channels/automation/audit) are complete | `docs/product/web-ui-and-chat-management.md` | Partial | `packages/polar-web-ui/src/views/*.js`, `packages/polar-control-plane/src/index.mjs` | `tests/channels-thin-client-enforcement.test.mjs` | Current UI has dashboard/chat/tasks/telemetry/scheduler/config; channel mgmt + moderation + full extension lifecycle UIs are incomplete. |
 | Real-time UI updates for tasks/long-runs/failures | `docs/product/web-ui-and-chat-management.md` | Missing | `packages/polar-web-ui/src/main.js` uses polling, no streaming channel | No tests | Add websocket/SSE update layer and deterministic event model for UI. |
@@ -86,11 +86,7 @@ Status legend:
 
 ## Doc Drift Flags
 
-1. `docs/product/ai-assistant.md` describes legacy runner architecture (`createPiAgentTurnAdapter`, `<polar_workflow>`) that is not the current deterministic orchestrator path.
-2. `docs/product/web-ui-and-chat-management.md` overstates delivered UI scope (channel mgmt/moderation/realtime) versus current implemented views.
-3. `docs/architecture/llm-providers.md` is a large research/reference dump and not fully reflected as enforceable runtime architecture.
-4. `docs/extensions/skills-mcp-plugins.md` claims dev-only MCP harness isolation, but runtime enforcement hooks are not explicit.
-5. `docs/operations/*` mix process goals and runtime guarantees without explicit code/test traceability in several sections.
+1. `docs/operations/*` mix process goals and runtime guarantees without explicit code/test traceability in several sections.
 
 ## Top 10 Risks
 
@@ -175,6 +171,15 @@ F5 outcome evidence (2026-02-28):
   - Server-side ingress rate-limiting/backoff in `createChatIngressGateway` with sliding window
   - Verified blackout failover, store degradation (fail-closed), and multi-agent runaway containment (panic exit via timeout)
 
+F6 outcome evidence (2026-02-28):
+- Closed Doc Drift:
+  - `docs/product/ai-assistant.md`
+  - `docs/product/web-ui-and-chat-management.md`
+  - `docs/extensions/skills-mcp-plugins.md`
+  - `docs/architecture/llm-providers.md`
+- Verified Test suites are green.
+- Updated `implementation-status.md` and appended `implementation-log.md`.
+
 Use chunk order `F0 -> (F1,F2) -> F3 -> F4 -> F5 -> F6` to keep long-running agent execution resumable with deterministic handoff boundaries.
 
 # Summary of Completed Chunks:
@@ -184,4 +189,4 @@ Use chunk order `F0 -> (F1,F2) -> F3 -> F4 -> F5 -> F6` to keep long-running age
 - [x] F3: Skill Installation Repair
 - [x] F4: Observability Verification
 - [x] F5: Reliability Drills (Current Turn)
-- [ ] F6: Documentation Finalization
+- [x] F6: Documentation Finalization
