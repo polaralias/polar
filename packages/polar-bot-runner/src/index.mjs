@@ -245,7 +245,7 @@ async function processGroupedMessages(polarSessionId, items) {
             });
 
             // Send Workflow block with Approve/Reject buttons
-            await ctx.reply(formattedSteps, {
+            const stepsMsg = await ctx.reply(formattedSteps, {
                 parse_mode: 'Markdown',
                 ...replyOptions,
                 reply_markup: {
@@ -257,11 +257,14 @@ async function processGroupedMessages(polarSessionId, items) {
                     ]
                 }
             });
+            if (result.assistantMessageId) {
+                await controlPlane.updateMessageChannelId(polarSessionId, result.assistantMessageId, stepsMsg.message_id);
+            }
         } else if (result.status === 'repair_question') {
             // Render repair disambiguation with A/B inline keyboard buttons
             const optA = result.options.find(o => o.id === 'A');
             const optB = result.options.find(o => o.id === 'B');
-            await ctx.reply(result.question, {
+            const repairMsg = await ctx.reply(result.question, {
                 ...replyOptions,
                 reply_markup: {
                     inline_keyboard: [
@@ -272,10 +275,23 @@ async function processGroupedMessages(polarSessionId, items) {
                     ]
                 }
             });
+            if (result.assistantMessageId) {
+                await controlPlane.updateMessageChannelId(polarSessionId, result.assistantMessageId, repairMsg.message_id);
+            }
         } else if (result.status === 'completed') {
-            await ctx.reply(result.text, replyOptions);
+            const msg = await ctx.reply(result.text, replyOptions);
+            if (result.assistantMessageId) {
+                await controlPlane.updateMessageChannelId(polarSessionId, result.assistantMessageId, msg.message_id);
+            }
         } else if (result.status === 'error') {
             await ctx.reply(result.text || "Wait, I didn't generate any text.", replyOptions);
+        }
+
+        // Handle additional ID binding for proposed workflows and repair questions
+        if (result.status === 'workflow_proposed') {
+            // result.text was sent in 237, formattedSteps in 248. Bind to the steps message (more interactive)
+            // wait, we can't easily capture the msg from 237 if we didn't store it.
+            // Let's just bind if result.assistantMessageId exists on the latest reply.
         }
 
         // 4. Final State: Success vs Pending
@@ -421,16 +437,27 @@ bot.on('callback_query', async (ctx) => {
 
         try {
             const result = await controlPlane.executeWorkflow(workflowId);
+            const sessionId = await resolvePolarSessionId(ctx).catch(() => `telegram:chat:${ctx.message?.chat?.id}`);
+
             if (result.status === 'completed') {
                 if (result.text) {
-                    await ctx.reply(result.text);
+                    const msg = await ctx.reply(result.text);
+                    if (result.assistantMessageId) {
+                        await controlPlane.updateMessageChannelId(sessionId, result.assistantMessageId, msg.message_id);
+                    }
                 }
             } else if (result.status === 'error') {
-                await ctx.reply("❌ " + (result.text || "Workflow execution failed."));
+                const errMsg = await ctx.reply("❌ " + (result.text || "Workflow execution failed."));
+                if (result.internalMessageId) {
+                    await controlPlane.updateMessageChannelId(sessionId, result.internalMessageId, errMsg.message_id);
+                }
             }
         } catch (execErr) {
             console.error(execErr);
-            await ctx.reply("❌ Workflow execution crashed: " + execErr.message);
+            const crashMsg = await ctx.reply("❌ Workflow execution crashed: " + execErr.message);
+            // If it crashed, result is null/undefined here. The orchestrator generates 
+            // the internal ID inside its try-catch block, but we don't have it on result here.
+            // Actually result will be the caught { status: 'error', text: ... } from the orchestrator.
         }
 
     } else if (callbackData.startsWith('wf_rej:')) {

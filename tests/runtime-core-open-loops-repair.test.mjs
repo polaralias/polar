@@ -127,7 +127,7 @@ test("offer reversal: reject then 'actually yeah' → accept_offer on same threa
     assert.equal(thread1.recentOffers[0].outcome, "rejected");
 
     // Step 3: User reverses — "actually yeah"
-    const reversal = classifyUserMessage({ text: "actually yeah", sessionState });
+    const reversal = classifyUserMessage({ text: "actually yeah", sessionState, now: 3000 });
     assert.equal(reversal.type, "accept_offer", "Should classify as accept_offer on reversal");
     assert.equal(reversal.targetThreadId, "t1", "Should target the same thread");
 
@@ -527,7 +527,7 @@ test("'actually ye' after rejection → accept_offer reversal", () => {
     const rej = classifyUserMessage({ text: "nah", sessionState });
     sessionState = applyUserTurn({ sessionState, classification: rej, rawText: "nah", now: () => 2000 });
     // Then reverse with "actually ye"
-    const rev = classifyUserMessage({ text: "actually ye", sessionState });
+    const rev = classifyUserMessage({ text: "actually ye", sessionState, now: 3000 });
     assert.equal(rev.type, "accept_offer");
 });
 

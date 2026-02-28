@@ -618,6 +618,14 @@ const ERROR_INQUIRY_LONG = /^(what\s*happened|what\s*went\s*wrong|what the|expla
  * 5 minutes.
  */
 const LAST_ERROR_TTL_MS = 5 * 60 * 1000;
+/** Greeting (hi/hey) only attaches to task if task was active within 2 mins. */
+const GREETING_RECENCY_MS = 2 * 60 * 1000;
+/** Reversals ("actually yeah") only work if rejection was within 5 mins. */
+const REJECTED_OFFER_TTL_MS = 5 * 60 * 1000;
+/** Offers on failed threads only stay active for 5 mins. */
+const OFFER_RECENCY_MS = 5 * 60 * 1000;
+
+const GREETING_SET = new Set(['hello', 'hi', 'hey']);
 
 /**
  * Detects whether assistant text contains an offer.
@@ -706,22 +714,49 @@ function gatherOpenLoops(sessionState) {
  * @returns {null|{ type: 'repair_question', question: string, correlationId: string, options: Object[] }}
  */
 export function computeRepairDecision(sessionState, classification, rawText) {
-  // Only consider open offers across active threads
-  const offerLoops = gatherOpenLoops(sessionState).filter(l => l.loopType === 'open_offer');
+  // Consider ALL open loop types, not just offers
+  const allLoops = gatherOpenLoops(sessionState);
 
-  // Repair only when two or more plausible offers exist
-  if (offerLoops.length < 2) return null;
+  // Deduplicate by threadId (keep highest-priority loop per thread)
+  const loopPriority = { 'last_error': 4, 'in_flight': 3, 'awaiting_approval': 2, 'pending_question': 1, 'open_offer': 0 };
+  const byThread = new Map();
+  for (const loop of allLoops) {
+    const existing = byThread.get(loop.threadId);
+    if (!existing || (loopPriority[loop.loopType] || 0) > (loopPriority[existing.loopType] || 0)) {
+      byThread.set(loop.threadId, loop);
+    }
+  }
+  const uniqueLoops = [...byThread.values()];
+
+  // Repair only when two or more candidate threads have open loops
+  if (uniqueLoops.length < 2) return null;
 
   // And the message is low-info / ambiguous
   const normalized = (rawText || '').toLowerCase().trim().replace(/[?!.]+$/, '');
   if (!LOW_INFO.test(normalized) && !EXPLAIN_MORE.test(normalized)) return null;
 
-  // Build A/B from the two most recent offer loops
-  const candidates = offerLoops.slice(-2);
+  // Rank by recency (most recent first)
+  const threadsById = new Map(sessionState.threads.map(t => [t.id, t]));
+  uniqueLoops.sort((a, b) => {
+    const ta = threadsById.get(a.threadId)?.lastActivityTs || 0;
+    const tb = threadsById.get(b.threadId)?.lastActivityTs || 0;
+    return tb - ta;
+  });
+
+  // Pick top two candidates
+  const candidates = uniqueLoops.slice(0, 2);
   const correlationId = crypto.randomUUID();
 
-  const threadA = sessionState.threads.find(t => t.id === candidates[0].threadId);
-  const threadB = sessionState.threads.find(t => t.id === candidates[1].threadId);
+  // Build label from loop type and thread summary
+  function labelFor(loop) {
+    const thread = threadsById.get(loop.threadId);
+    if (loop.loopType === 'open_offer') return thread?.openOffer?.target || thread?.summary || 'Option';
+    if (loop.loopType === 'last_error') return `Error: ${loop.detail?.capabilityId || thread?.summary || 'recent crash'}`;
+    if (loop.loopType === 'in_flight') return `Running: ${loop.detail?.workflowId?.slice(0, 8) || thread?.summary || 'task'}`;
+    if (loop.loopType === 'pending_question') return `Question: ${loop.detail?.text || thread?.summary || 'pending'}`;
+    if (loop.loopType === 'awaiting_approval') return `Workflow: ${loop.detail?.workflowId?.slice(0, 8) || thread?.summary || 'proposed'}`;
+    return thread?.summary || 'Option';
+  }
 
   return {
     type: 'repair_question',
@@ -730,13 +765,13 @@ export function computeRepairDecision(sessionState, classification, rawText) {
     options: [
       {
         id: 'A',
-        label: threadA?.openOffer?.target || threadA?.summary || 'Option A',
+        label: labelFor(candidates[0]),
         threadId: candidates[0].threadId,
         action: 'attach_to_thread'
       },
       {
         id: 'B',
-        label: threadB?.openOffer?.target || threadB?.summary || 'Option B',
+        label: labelFor(candidates[1]),
         threadId: candidates[1].threadId,
         action: 'attach_to_thread'
       }
@@ -811,31 +846,42 @@ export function handleRepairSelection(sessionState, selection, correlationId, re
  * @param {Object} args.sessionState The current threads in the session
  * @returns {{ type: 'override'|'answer_to_pending'|'status_nudge'|'new_request'|'filler', targetThreadId?: string, intent?: string, slotKey?: string, slotValue?: string }}
  */
-export function classifyUserMessage({ text = "", sessionState = { threads: [], activeThreadId: null } }) {
+export function classifyUserMessage({ text = "", sessionState = { threads: [], activeThreadId: null }, now = Date.now() }) {
   const normalized = text.toLowerCase().trim().replace(/[?!.]+$/, "");
 
+  // Override verbs — if present in a reversal phrase, route to override not accept.
+  // We use the user's explicit list: "stop/ignore/instead/cancel/scrap".
+  const REVERSAL_BLOCKING_VERBS = ['stop', 'ignore', 'cancel', 'instead', 'forget', 'scrap', 'drop'];
+
   // 1) Override / steering beats everything
-  // But "actually yes/yeah/sure" is a reversal, not an override — check first
+  // Reversal ("actually yeah") is NARROW: only when recent rejected offer + no override verbs
   if (AFFIRM_AFTER_REJECT.test(normalized)) {
-    // Change-of-mind: look for a recently-rejected offer on the active thread
-    const activeThread = sessionState.threads.find(t => t.id === sessionState.activeThreadId);
-    const recentRejected = activeThread?.recentOffers?.slice().reverse().find(r => r.outcome === 'rejected');
-    if (recentRejected || activeThread?.openOffer) {
-      return {
-        type: 'accept_offer',
-        targetThreadId: activeThread.id,
-        offerDetail: recentRejected || activeThread.openOffer
-      };
-    }
-    // Also check all threads for a recent rejected offer
-    for (const t of [...sessionState.threads].reverse()) {
-      const rej = t.recentOffers?.slice().reverse().find(r => r.outcome === 'rejected');
-      if (rej) {
+    const hasOverrideVerb = REVERSAL_BLOCKING_VERBS.some(v => normalized.includes(v));
+    if (!hasOverrideVerb) {
+      // Only accept reversal if there's a recently rejected offer (not just an open offer)
+      const activeThread = sessionState.threads.find(t => t.id === sessionState.activeThreadId);
+      const recentRejected = activeThread?.recentOffers?.slice().reverse().find(r =>
+        r.outcome === 'rejected' && (now - (r.timestampMs || 0)) < REJECTED_OFFER_TTL_MS
+      );
+      if (recentRejected) {
         return {
           type: 'accept_offer',
-          targetThreadId: t.id,
-          offerDetail: rej
+          targetThreadId: activeThread.id,
+          offerDetail: recentRejected
         };
+      }
+      // Check all threads for a recent rejected offer
+      for (const t of [...sessionState.threads].reverse()) {
+        const rej = t.recentOffers?.slice().reverse().find(r =>
+          r.outcome === 'rejected' && (now - (r.timestampMs || 0)) < REJECTED_OFFER_TTL_MS
+        );
+        if (rej) {
+          return {
+            type: 'accept_offer',
+            targetThreadId: t.id,
+            offerDetail: rej
+          };
+        }
       }
     }
   }
@@ -849,14 +895,22 @@ export function classifyUserMessage({ text = "", sessionState = { threads: [], a
   }
 
   // 2) Status/progress nudge
-  const statusNudgeKeywords = ["any luck", "update", "status", "anyone there", "any news", "hello", "hi", "hey", "?"];
-  if (statusNudgeKeywords.includes(normalized) ||
+  // Greetings (hi/hey/hello) only count as nudge if there's a RECENT active task
+  const isGreeting = GREETING_SET.has(normalized);
+  const nudgeOnlyKeywords = ["any luck", "update", "status", "anyone there", "any news", "?"];
+  const isNudgePhrase = nudgeOnlyKeywords.includes(normalized) ||
     (normalized.length === 0 && text.trim() === "?") ||
-    statusNudgeKeywords.some(n => normalized.startsWith(n + " "))) {
+    nudgeOnlyKeywords.some(n => normalized.startsWith(n + " "));
 
-    const target = [...sessionState.threads].reverse().find(t =>
-      ['in_progress', 'blocked', 'workflow_proposed'].includes(t.status)
-    );
+  if (isNudgePhrase || isGreeting) {
+    const target = [...sessionState.threads].reverse().find(t => {
+      if (!['in_progress', 'blocked', 'workflow_proposed'].includes(t.status)) return false;
+      // For greetings, require recent activity; for explicit nudges, always attach
+      if (isGreeting && !isNudgePhrase) {
+        return (now - (t.lastActivityTs || 0)) < GREETING_RECENCY_MS;
+      }
+      return true;
+    });
     if (target) {
       return {
         type: "status_nudge",
@@ -866,10 +920,16 @@ export function classifyUserMessage({ text = "", sessionState = { threads: [], a
   }
 
   // 3) Open offer handling: accept / reject / explain-more
-  // Gather all open offers across active threads
-  const threadsWithOffers = sessionState.threads.filter(
-    t => t.openOffer && !['done', 'failed'].includes(t.status)
-  );
+  // Gather open offers — include failed threads if recent (user may want to continue after crash)
+  const threadsWithOffers = sessionState.threads.filter(t => {
+    if (!t.openOffer) return false;
+    if (t.status === 'done') return false;
+    // Failed threads are included if recent
+    if (t.status === 'failed') {
+      return (now - (t.lastActivityTs || 0)) < OFFER_RECENCY_MS;
+    }
+    return true;
+  });
 
   // 3a) Short affirmative → accept offer (exact match or prefix for tiny messages)
   if (isShortAffirmative(normalized) && threadsWithOffers.length > 0) {
@@ -911,7 +971,6 @@ export function classifyUserMessage({ text = "", sessionState = { threads: [], a
   // Note: "?" normalizes to "" after punctuation strip, so check raw text as fallback
   const isErrorInquiry = ERROR_INQUIRY_SHORT.test(normalized) || ERROR_INQUIRY_LONG.test(normalized) || (text.trim() === '?');
   if (isErrorInquiry) {
-    const now = Date.now();
     // Find the most recent thread with a lastError within TTL
     const errorThread = [...sessionState.threads].reverse().find(t => {
       if (!t.lastError) return false;
@@ -963,9 +1022,16 @@ function isFittedAnswer(text, expectedType) {
   switch (expectedType) {
     case 'yes_no':
       return /^(yes|no|y|n|yep|nope|sure|nah|ok|okay|confirm|cancel)$/.test(normalized);
-    case 'location':
-      // Heuristic: No commands, at least a couple chars
-      return !/^(actually|ignore|stop|update|status|any luck)/.test(normalized) && text.length >= 2;
+    case 'location': {
+      // Tighter location fit: reject questions, long messages, and command-like text
+      if (text.includes('?')) return false; // questions are not locations
+      const tokens = normalized.split(/\s+/);
+      if (tokens.length > 6) return false; // too verbose for a location
+      if (/^(what|why|how|who|when|where|which|can|could|would|should|do|did|is|are|was|were)\b/.test(normalized)) return false; // question starters
+      if (/^(actually|ignore|stop|update|status|any luck)/.test(normalized)) return false; // commands
+      if (text.length < 2) return false;
+      return true;
+    }
     case 'date_time':
       return /(today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|january|february|march|april|may|june|july|august|september|october|november|december|at|pm|am|clock|next|last|now)/.test(normalized);
     case 'freeform':
@@ -978,19 +1044,23 @@ function isFittedAnswer(text, expectedType) {
 /**
  * Mutates session state deterministically based on classification.
  */
-export function applyUserTurn({ sessionState = { threads: [], activeThreadId: null }, classification, rawText, now = Date.now }) {
+export function applyUserTurn({ sessionState = { threads: [], activeThreadId: null }, classification: classificationArg, rawText, now }) {
+  const ts = typeof now === 'function' ? now() : (now || Date.now());
+
   const nextState = {
     threads: sessionState.threads.map(t => ({
       ...t,
-      recentOffers: t.recentOffers ? [...t.recentOffers] : undefined,
+      recentOffers: t.recentOffers ? t.recentOffers.map(r => ({ ...r })) : undefined,
       openOffer: t.openOffer ? { ...t.openOffer } : undefined,
       inFlight: t.inFlight ? { ...t.inFlight } : undefined,
       awaitingApproval: t.awaitingApproval ? { ...t.awaitingApproval } : undefined,
+      pendingQuestion: t.pendingQuestion ? { ...t.pendingQuestion } : undefined,
+      lastError: t.lastError ? { ...t.lastError } : undefined,
     })),
     activeThreadId: sessionState.activeThreadId
   };
 
-  const ts = typeof now === 'function' ? now() : Date.now();
+  const classification = classificationArg || classifyUserMessage({ text: rawText, sessionState, now: ts });
 
   if (classification.type === "new_request") {
     const newThread = {
@@ -1095,7 +1165,9 @@ export function selectReplyAnchor({ sessionState, classification }) {
   const targetThread = sessionState.threads?.find(t => t.id === targetId);
 
   // Find a concrete anchorMessageId from the target thread
-  const anchorMessageId = targetThread?.pendingQuestion?.askedAtMessageId
+  const anchorMessageId = targetThread?.pendingQuestion?.channelMessageId
+    || targetThread?.pendingQuestion?.askedAtMessageId
+    || targetThread?.lastError?.channelMessageId
     || targetThread?.lastError?.messageId
     || null;
 

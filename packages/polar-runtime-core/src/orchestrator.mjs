@@ -304,8 +304,10 @@ ${routingRecommendation || ""}`;
                     try {
                         const stateUpdate = JSON.parse(stateMatch[1].trim());
                         let st = SESSION_THREADS.get(polarSessionId) || { threads: [], activeThreadId: null };
-                        const threadRef = st.threads.find(t => t.id === (stateUpdate.activeThreadId || st.activeThreadId));
+                        // RESTRICTED: only active thread, model cannot switch threads
+                        const threadRef = st.threads.find(t => t.id === st.activeThreadId);
                         if (threadRef) {
+                            // Only 'done' and 'waiting_for_user' — model cannot set in_progress/failed/blocked
                             if (stateUpdate.status === "done") {
                                 threadRef.status = "done";
                                 delete threadRef.pendingQuestion;
@@ -318,7 +320,15 @@ ${routingRecommendation || ""}`;
                                     askedAtMessageId: assistantMessageId
                                 };
                             }
-                            if (stateUpdate.slots) Object.assign(threadRef.slots, stateUpdate.slots);
+                            // Allowlisted slot keys only — no arbitrary injection
+                            const ALLOWED_SLOT_KEYS = ['location', 'query', 'date', 'time', 'subject', 'recipient', 'latest_answer'];
+                            if (stateUpdate.slots && typeof stateUpdate.slots === 'object') {
+                                for (const [key, val] of Object.entries(stateUpdate.slots)) {
+                                    if (ALLOWED_SLOT_KEYS.includes(key)) {
+                                        threadRef.slots[key] = val;
+                                    }
+                                }
+                            }
                             threadRef.lastActivityTs = now();
                         }
                         SESSION_THREADS.set(polarSessionId, st);
@@ -363,6 +373,7 @@ ${routingRecommendation || ""}`;
 
                 return {
                     status: 'completed',
+                    assistantMessageId,
                     text: cleanText || responseText,
                     useInlineReply: currentTurnAnchor ?? false,
                     anchorMessageId: currentAnchorMessageId
@@ -538,9 +549,22 @@ ${routingRecommendation || ""}`;
                 const responseText = finalResult?.text || "Execution complete.";
                 const cleanText = responseText.replace(/<polar_action>[\s\S]*?<\/polar_action>/, '').replace(/<thread_state>[\s\S]*?<\/thread_state>/, '').trim();
 
-                await chatManagementGateway.appendMessage({ sessionId: polarSessionId, userId: "assistant", role: "assistant", text: cleanText, timestampMs: now() });
+                const assistantMessageId = `msg_ast_${crypto.randomUUID()}`;
+                await chatManagementGateway.appendMessage({
+                    sessionId: polarSessionId, userId: "assistant", role: "assistant",
+                    text: cleanText, messageId: assistantMessageId, timestampMs: now()
+                });
+
                 const sessionStateForReply = SESSION_THREADS.get(polarSessionId) || { threads: [], activeThreadId: null };
-                return { status: 'completed', text: deterministicHeader + cleanText, useInlineReply: selectReplyAnchor({ sessionState: sessionStateForReply, classification: { type: 'status_nudge', targetThreadId: targetThreadId } }).useInlineReply };
+                return {
+                    status: 'completed',
+                    text: deterministicHeader + cleanText,
+                    assistantMessageId,
+                    useInlineReply: selectReplyAnchor({
+                        sessionState: sessionStateForReply,
+                        classification: { type: 'status_nudge', targetThreadId: targetThreadId }
+                    }).useInlineReply
+                };
             } catch (err) {
                 // Crash path: record lastError on the owning thread (using stored threadId)
                 st = SESSION_THREADS.get(polarSessionId);
@@ -560,7 +584,20 @@ ${routingRecommendation || ""}`;
                     // Keep failed thread active — don't let next message spawn a greeting
                     st.activeThreadId = targetThreadId;
                 }
-                return { status: 'error', text: `Crashed: ${err.message}` };
+                return { status: 'error', text: `Crashed: ${err.message}`, internalMessageId: thread?.lastError?.messageId };
+            }
+        },
+
+        updateMessageChannelId(sessionId, messageId, channelMessageId) {
+            let st = SESSION_THREADS.get(sessionId);
+            if (!st) return;
+            for (const t of st.threads) {
+                if (t.pendingQuestion?.askedAtMessageId === messageId) {
+                    t.pendingQuestion.channelMessageId = channelMessageId;
+                }
+                if (t.lastError?.messageId === messageId) {
+                    t.lastError.channelMessageId = channelMessageId;
+                }
             }
         },
 

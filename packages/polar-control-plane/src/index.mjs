@@ -704,6 +704,13 @@ export function createControlPlaneService(config = {}) {
      */
     async handleRepairSelection(request) {
       return orchestrator.handleRepairSelectionEvent(request);
+    },
+
+    /**
+     * Binds a synthetic message ID to a real channel (Telegram) message ID.
+     */
+    async updateMessageChannelId(sessionId, internalId, channelId) {
+      return orchestrator.updateMessageChannelId(sessionId, internalId, channelId);
     }
   });
 }
