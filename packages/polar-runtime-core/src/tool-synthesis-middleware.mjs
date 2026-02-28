@@ -1,4 +1,5 @@
 import {
+    RuntimeExecutionError,
     createStrictObjectSchema,
     stringArrayField
 } from '../../polar-domain/src/index.mjs';
@@ -19,7 +20,7 @@ function parseSynthesisResponse(rawText) {
     const parsed = JSON.parse(normalized);
     const validation = toolSynthesisResponseSchema.validate(parsed);
     if (!validation.ok) {
-        throw new Error(`Invalid ${toolSynthesisResponseSchema.schemaId}: ${(validation.errors || []).join('; ')}`);
+        throw new RuntimeExecutionError(`Invalid ${toolSynthesisResponseSchema.schemaId}: ${(validation.errors || []).join('; ')}`);
     }
     return /** @type {Record<string, unknown>} */ (validation.value);
 }
