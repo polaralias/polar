@@ -4,7 +4,8 @@ import {
     enumField,
     jsonField,
     stringArrayField,
-    stringField
+    stringField,
+    RuntimeExecutionError
 } from '../../polar-domain/src/index.mjs';
 import {
     createDurableLineageStore,
@@ -68,7 +69,7 @@ function parseJsonWithSchema(rawText, schema) {
     const parsed = JSON.parse(normalizeJsonText(rawText));
     const validation = schema.validate(parsed);
     if (!validation.ok) {
-        throw new Error(`Invalid ${schema.schemaId}: ${(validation.errors || []).join('; ')}`);
+        throw new RuntimeExecutionError(`Invalid ${schema.schemaId}: ${(validation.errors || []).join('; ')}`);
     }
     return /** @type {Record<string, unknown>} */ (validation.value);
 }
@@ -135,7 +136,7 @@ export function createOrchestrator({
             typeof resolvedLineageStore.append !== "function"
         )
     ) {
-        throw new Error("lineageStore must expose append(event) when provided");
+        throw new RuntimeExecutionError("lineageStore must expose append(event) when provided");
     }
 
     if (resolvedLineageStore === undefined && !isRuntimeDevMode()) {

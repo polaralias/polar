@@ -1325,3 +1325,33 @@ Last updated: 2026-02-28
 
 **Follow-ups:**
 - None identified.
+
+### 2026-02-28 — HEALTH-001 — Runtime Domain Error Standardization — Done
+
+**Owner:** Antigravity
+**Scope:** Improve codebase maintainability and readability by standardizing on `RuntimeExecutionError` for domain-logic failures instead of generic `Error`.
+
+**Summary:**
+- Replaced generic `Error` with `RuntimeExecutionError` from `polar-domain` in schema-validation and runtime-control choke-points.
+- This ensures that these failures map correctly to `POLAR_RUNTIME_EXECUTION_ERROR` and follow the established domain logic patterns for the Polar runtime.
+- Proactively extended the fix across all middleware and engine components using identical patterns.
+
+**Files changed:**
+- `packages/polar-runtime-core/src/orchestrator.mjs`
+- `packages/polar-runtime-core/src/memory-extraction-middleware.mjs`
+- `packages/polar-runtime-core/src/budget-middleware.mjs`
+- `packages/polar-runtime-core/src/workflow-engine.mjs`
+- `packages/polar-runtime-core/src/tool-synthesis-middleware.mjs` (already using, verified)
+
+**Tests run (exact):**
+- `node --test tests/runtime-core-budget-enforcement.test.mjs`
+- `node --test tests/runtime-core-orchestrator-workflow-validation.test.mjs`
+- `node --test tests/runtime-core-contract-middleware.test.mjs`
+
+**Manual verification (evidence, not vibes):**
+- Verified `RuntimeExecutionError` imports resolution.
+- Confirmed existing tests pass with no regressions in error handling logic.
+- Verified that error codes are correctly emitted as `POLAR_RUNTIME_EXECUTION_ERROR`.
+
+**Follow-ups:**
+- None.

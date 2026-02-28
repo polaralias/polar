@@ -1,4 +1,5 @@
 import {
+    RuntimeExecutionError,
     createStrictObjectSchema,
     stringArrayField
 } from '../../polar-domain/src/index.mjs';
@@ -19,7 +20,7 @@ function parseExtractionResponse(rawText) {
     const parsed = JSON.parse(normalized);
     const validation = memoryExtractionResponseSchema.validate(parsed);
     if (!validation.ok) {
-        throw new Error(`Invalid ${memoryExtractionResponseSchema.schemaId}: ${(validation.errors || []).join('; ')}`);
+        throw new RuntimeExecutionError(`Invalid ${memoryExtractionResponseSchema.schemaId}: ${(validation.errors || []).join('; ')}`);
     }
     return /** @type {Record<string, unknown>} */ (validation.value);
 }

@@ -1,5 +1,4 @@
-// packages/polar-runtime-core/src/workflow-engine.mjs
-
+import { RuntimeExecutionError } from '../../polar-domain/src/index.mjs';
 import { WORKFLOW_TEMPLATES } from './workflow-templates.mjs';
 
 /**
@@ -30,13 +29,13 @@ export function parseModelProposal(responseText) {
 export function expandTemplate(templateId, args) {
     const template = WORKFLOW_TEMPLATES[templateId];
     if (!template) {
-        throw new Error(`Cannot expand unknown template ${templateId}`);
+        throw new RuntimeExecutionError(`Cannot expand unknown template ${templateId}`);
     }
 
     // Strict schema validation
     const missing = template.schema.required.filter(key => !(key in args));
     if (missing.length > 0) {
-        throw new Error(`Template ${templateId} missing required arguments: ${missing.join(", ")}`);
+        throw new RuntimeExecutionError(`Template ${templateId} missing required arguments: ${missing.join(", ")}`);
     }
 
     return template.steps(args);

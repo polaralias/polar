@@ -1,3 +1,5 @@
+import { RuntimeExecutionError } from '../../polar-domain/src/index.mjs';
+
 /**
  * @param {{
  *   budgetGateway: {
@@ -25,7 +27,7 @@ export function createBudgetMiddleware({ budgetGateway }) {
                 estimatedRunCostUsd: estimatedCost,
             });
             if (globalCheck.isBlocked) {
-                throw new Error(`Global budget exceeded. Remaining: $${globalCheck.remainingBudgetUsd}, Requested: $${estimatedCost}`);
+                throw new RuntimeExecutionError(`Global budget exceeded. Remaining: $${globalCheck.remainingBudgetUsd}, Requested: $${estimatedCost}`);
             }
 
             // Check workspace budget if present
@@ -40,7 +42,7 @@ export function createBudgetMiddleware({ budgetGateway }) {
                 });
 
                 if (workspaceCheck.isBlocked) {
-                    throw new Error(`Workspace budget exceeded for ${workspaceId}. Remaining: $${workspaceCheck.remainingBudgetUsd}, Requested: $${estimatedCost}`);
+                    throw new RuntimeExecutionError(`Workspace budget exceeded for ${workspaceId}. Remaining: $${workspaceCheck.remainingBudgetUsd}, Requested: $${estimatedCost}`);
                 }
             }
         },
