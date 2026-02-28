@@ -47,6 +47,60 @@ Last updated: 2026-02-28
 (Entries appended below.)
 
 
+### 2026-02-28 — F6-001 — Documentation Finalization — Done
+
+**Owner:** Codex
+**Scope:** Complete F6 from `implementation-finalization-plan.md`: Close doc drift, update architecture files, and mark release gates with evidence.
+**Summary:**
+- Updated `ai-assistant.md` to reflect the deterministic orchestrator path, dropping references to legacy `createPiAgentTurnAdapter` loops and replacing `<polar_workflow>` with `<polar_action>`.
+- Updated `web-ui-and-chat-management.md` to clarify that real-time features currently use polling, and full moderation/channel views are partial.
+- Updated `skills-mcp-plugins.md` to explicitly state dev-only MCP restrictions lack hard-coded runtime enforcement at this time.
+- Updated `llm-providers.md` to flag the detailed provider matrix as aspirational notes rather than 100% current end-to-end reality.
+- Appended final F6 evidence to `implementation-status.md` and verified all requested pre-F6 suites pass.
+
+**Architecture refs:**
+- `docs/implementation/implementation-finalization-plan.md`
+- `docs/implementation/implementation-status.md`
+
+**Files changed:**
+- `docs/product/ai-assistant.md`
+- `docs/product/web-ui-and-chat-management.md`
+- `docs/extensions/skills-mcp-plugins.md`
+- `docs/architecture/llm-providers.md`
+- `docs/implementation/implementation-status.md`
+- `docs/implementation/implementation-log.md`
+
+**Tests run (exact):**
+- `node --test tests/control-plane-service.test.mjs`
+- `node --test tests/runtime-core-skill-installer-gateway.test.mjs`
+- `node --test tests/runtime-core-skill-risk-enforcement.test.mjs`
+- `node --test tests/channels-thin-client-enforcement.test.mjs`
+- `node --test tests/runtime-core-open-loops-repair.test.mjs`
+- `node --test tests/runtime-core-extension-gateway.test.mjs`
+- `node --test packages/polar-runtime-core/tests/orchestrator-plan-approvals.test.mjs`
+- `node --test tests/runtime-core-orchestrator-workflow-validation.test.mjs`
+- `node --test tests/runtime-core-skill-registry-install-enforcement.test.mjs`
+- `node --test tests/runtime-core-capability-scope-enforcement.test.mjs`
+- `node --test tests/runtime-core-contract-middleware.test.mjs`
+- `node --test tests/runtime-core-usage-telemetry-gateway.test.mjs`
+- `node --test tests/runtime-core-handoff-routing-telemetry.test.mjs`
+- `node --test tests/runtime-core-provider-gateway.test.mjs`
+- `node --test tests/runtime-core-scheduler-gateway.test.mjs`
+- `node --test tests/runtime-core-scheduler-state-store-sqlite.test.mjs`
+- `node --test tests/runtime-core-drills-automation.test.mjs`
+
+**Manual verification (evidence, not vibes):**
+- Tested all documentation files directly using `cat` and `grep` to verify the actual state of the files against the assertions.
+- Verified test suites pass completely after running F5 test fix requirements (`better-sqlite3`).
+
+**Notes / decisions:**
+- Acknowledged remaining missing functionality directly in the documentation rather than promising complete delivery, satisfying the F6 goal to accurately reflect code implementation.
+- F6 completes the `implementation-finalization-plan.md`.
+
+**Follow-ups:**
+- Close out the final stage and review full coverage goals.
+
+
 ### 2026-02-28 — AUDIT-001 — Repair phrasing + ApprovalStore + SkillRegistry sanity — Done
 
 **Owner:** Audit agent

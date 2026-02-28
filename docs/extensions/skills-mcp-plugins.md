@@ -71,6 +71,8 @@ Rules:
 4. Harness outputs are test artifacts and cannot trigger production side effects.
 5. Promotion to end-user runtime capability requires explicit trust, policy, and architecture review.
 
+*(Note: These dev-only restrictions are currently documentation-led process guidelines. Explicit runtime denylist enforcement is missing in code.)*
+
 ## Claude Plugin Support
 
 Claude plugin installation follows the same governance model:

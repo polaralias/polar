@@ -69,7 +69,8 @@ Pinned settings are exclusively governed by the unified Control Plane state (ups
 
 ## Real-Time Management Expectations
 
-1. Task board updates stream in real time from agent and user actions.
+1. Task board updates stream in real time from agent and user actions. (Currently implemented via polling).
 2. Long-running tasks show live execution and ownership transitions.
 3. Failures are visible with deterministic error class and remediation path.
 4. Cost-impact surfaces are visible before enabling high-frequency automations.
+5. Real-time channel UI elements like moderation and full extension lifecycle UIs are incomplete or partial.
