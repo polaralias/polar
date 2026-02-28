@@ -54,6 +54,7 @@ export function createSkillInstallerContract(options = {}) {
         manifestHash: stringField({ minLength: 1 }),
         provenance: jsonField(),
         reason: stringField({ minLength: 1, required: false }),
+        missingMetadata: jsonField({ required: false }),
       },
     }),
     riskClass,
@@ -62,5 +63,41 @@ export function createSkillInstallerContract(options = {}) {
     retryPolicy: {
       maxAttempts: 1,
     },
+  });
+}
+export const SKILL_ANALYZER_ACTION = Object.freeze({
+  actionId: "skill.install.analyze",
+  version: 1,
+});
+
+/**
+ * @param {{ trustClass?: "native"|"skill"|"mcp"|"plugin", riskClass?: "low"|"moderate"|"high"|"critical" }} [options]
+ */
+export function createSkillAnalyzerContract(options = {}) {
+  const { trustClass = "native", riskClass = "low" } = options;
+
+  return Object.freeze({
+    actionId: SKILL_ANALYZER_ACTION.actionId,
+    version: SKILL_ANALYZER_ACTION.version,
+    inputSchema: createStrictObjectSchema({
+      schemaId: "skill.install.analyze.input",
+      fields: {
+        sourceUri: stringField({ minLength: 1 }),
+        skillContent: stringField({ minLength: 1 }), // content of SKILL.md
+        mcpInventory: jsonField(), // list of available MCP tools
+      },
+    }),
+    outputSchema: createStrictObjectSchema({
+      schemaId: "skill.install.analyze.output",
+      fields: {
+        status: enumField(["applied", "rejected"]),
+        extensionId: stringField({ minLength: 1 }),
+        proposedManifest: jsonField(),
+        reason: stringField({ minLength: 1, required: false }),
+      },
+    }),
+    riskClass,
+    trustClass,
+    timeoutMs: 60_000,
   });
 }

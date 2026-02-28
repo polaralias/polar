@@ -233,13 +233,13 @@ function normalizePluginManifest(manifest) {
   }
 
   const permissions = normalizeStringList(
-    /** @type {readonly string[]|undefined} */ (manifest.permissions),
+    /** @type {readonly string[]|undefined} */(manifest.permissions),
   );
 
   const capabilityCandidates = Array.isArray(manifest.capabilities)
     ? manifest.capabilities
     : [];
-  const capabilityIds = [];
+  const capabilities = [];
   const knownCapabilityIds = new Set();
   for (const capabilityCandidate of capabilityCandidates) {
     if (!isPlainObject(capabilityCandidate)) {
@@ -256,19 +256,31 @@ function normalizePluginManifest(manifest) {
     }
 
     knownCapabilityIds.add(capabilityId);
-    capabilityIds.push(capabilityId);
+
+    const capability = {
+      capabilityId,
+      riskLevel: capabilityCandidate.riskLevel || "unknown",
+      sideEffects: capabilityCandidate.sideEffects || "unknown",
+      dataEgress: capabilityCandidate.dataEgress || "unknown",
+    };
+    if (typeof capabilityCandidate.description === "string") {
+      capability.description = capabilityCandidate.description;
+    }
+    capabilities.push(Object.freeze(capability));
   }
 
-  if (capabilityIds.length === 0) {
+  if (capabilities.length === 0) {
     throw new RuntimeExecutionError("Plugin manifest must include at least one capability");
   }
-  capabilityIds.sort((left, right) => left.localeCompare(right));
+  capabilities.sort((left, right) => left.capabilityId.localeCompare(right.capabilityId));
+  const capabilityIds = Object.freeze(capabilities.map(c => c.capabilityId));
 
   return Object.freeze({
     extensionId,
     descriptorHash,
     permissions,
-    capabilityIds: Object.freeze(capabilityIds),
+    capabilityIds,
+    capabilities: Object.freeze(capabilities),
     manifest: Object.freeze({
       ...manifest,
       extensionType: "plugin",
@@ -293,13 +305,13 @@ function normalizeAuthBinding(value) {
   }
 
   const requiredSchemes = normalizeStringList(
-    /** @type {readonly string[]|undefined} */ (value.requiredSchemes),
+    /** @type {readonly string[]|undefined} */(value.requiredSchemes),
   );
   const providedSchemes = normalizeStringList(
-    /** @type {readonly string[]|undefined} */ (value.providedSchemes),
+    /** @type {readonly string[]|undefined} */(value.providedSchemes),
   );
   const missingSchemes = normalizeStringList(
-    /** @type {readonly string[]|undefined} */ (value.missingSchemes),
+    /** @type {readonly string[]|undefined} */(value.missingSchemes),
   );
   const status =
     typeof value.status === "string" && value.status.length > 0
@@ -408,13 +420,13 @@ export function createPluginInstallerGateway({
   }
 
   const trustedSourcePrefixes = normalizeStringList(
-    /** @type {readonly string[]|undefined} */ (policy.trustedSourcePrefixes),
+    /** @type {readonly string[]|undefined} */(policy.trustedSourcePrefixes),
   );
   const blockedSourcePrefixes = normalizeStringList(
-    /** @type {readonly string[]|undefined} */ (policy.blockedSourcePrefixes),
+    /** @type {readonly string[]|undefined} */(policy.blockedSourcePrefixes),
   );
   const defaultApprovalRequiredPermissions = normalizeStringList(
-    /** @type {readonly string[]|undefined} */ (policy.approvalRequiredPermissions),
+    /** @type {readonly string[]|undefined} */(policy.approvalRequiredPermissions),
   );
 
   const evaluateInstall = policy.evaluateInstall;
@@ -506,7 +518,7 @@ export function createPluginInstallerGateway({
           const currentState = extensionGateway.getState(extensionId);
           const operation = resolveInstallOperation(currentState);
           const previousPermissions = normalizeStringList(
-            /** @type {readonly string[]|undefined} */ (currentState?.permissions),
+            /** @type {readonly string[]|undefined} */(currentState?.permissions),
           );
           const nextPermissions = pluginManifest.permissions;
           const permissionDelta = createPermissionDelta(
@@ -659,17 +671,17 @@ export function createPluginInstallerGateway({
 
           const installDecision = normalizePolicyDecision(
             evaluateInstall &&
-              (await evaluateInstall({
-                extensionId,
-                operation,
-                trustLevel,
-                sourcePolicy: sourcePolicyMetadata,
-                authBinding,
-                permissionDelta,
-                descriptorHash,
-                capabilityIds,
-                currentState,
-              })),
+            (await evaluateInstall({
+              extensionId,
+              operation,
+              trustLevel,
+              sourcePolicy: sourcePolicyMetadata,
+              authBinding,
+              permissionDelta,
+              descriptorHash,
+              capabilityIds,
+              currentState,
+            })),
           );
 
           if (!installDecision.allowed) {
@@ -698,6 +710,7 @@ export function createPluginInstallerGateway({
             trustLevel,
             sourceUri: validatedInput.sourceUri,
             requestedPermissions: nextPermissions,
+            capabilities: pluginManifest.capabilities,
             metadata: {
               descriptorHash,
               capabilityIds,
@@ -730,7 +743,7 @@ export function createPluginInstallerGateway({
               authBinding,
               reason:
                 typeof lifecycleResult.reason === "string" &&
-                lifecycleResult.reason.length > 0
+                  lifecycleResult.reason.length > 0
                   ? lifecycleResult.reason
                   : "Plugin lifecycle transition rejected",
             };
@@ -767,7 +780,7 @@ export function createPluginInstallerGateway({
             if (enableResult.status !== "applied") {
               finalReason =
                 typeof enableResult.reason === "string" &&
-                enableResult.reason.length > 0
+                  enableResult.reason.length > 0
                   ? enableResult.reason
                   : "Plugin enable transition rejected";
             }

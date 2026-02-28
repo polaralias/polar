@@ -208,11 +208,34 @@ export function parseSkillManifest(skillMarkdown) {
       }
 
       const capabilityId = matched[1] ?? matched[2];
+      let description = matched[3]?.trim() || "";
+
+      // Extract risk metadata if present: [risk: read, effects: none, egress: none]
+      const metaMatch = /\[(.*)\]\s*$/.exec(description);
+      let riskLevel = "unknown";
+      let sideEffects = "unknown";
+      let dataEgress = "unknown";
+
+      if (metaMatch) {
+        const metaStr = metaMatch[1];
+        description = description.slice(0, metaMatch.index).trim();
+        const segments = metaStr.split(",").map((s) => s.trim());
+        for (const segment of segments) {
+          const [key, val] = segment.split(":").map((s) => s.trim());
+          if (key === "risk") riskLevel = val;
+          if (key === "effects") sideEffects = val;
+          if (key === "egress") dataEgress = val;
+        }
+      }
+
       const capability = {
         capabilityId,
+        riskLevel,
+        sideEffects,
+        dataEgress,
       };
-      if (matched[3]) {
-        capability.description = matched[3].trim();
+      if (description.length > 0) {
+        capability.description = description;
       }
 
       return capability;
@@ -222,6 +245,9 @@ export function parseSkillManifest(skillMarkdown) {
     capabilities.push({
       capabilityId: `${slug}.run`,
       description: "Default skill capability",
+      riskLevel: "unknown",
+      sideEffects: "unknown",
+      dataEgress: "unknown",
     });
   }
 

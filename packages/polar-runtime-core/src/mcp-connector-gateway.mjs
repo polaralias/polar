@@ -243,7 +243,7 @@ function normalizeMcpManifest(rawManifest, serverId) {
   }
 
   const permissions = normalizeStringList(
-    /** @type {readonly string[]|undefined} */ (rawManifest.permissions),
+    /** @type {readonly string[]|undefined} */(rawManifest.permissions),
   );
 
   const capabilities = Array.isArray(rawManifest.capabilities)
@@ -345,6 +345,7 @@ export function createMcpConnectorGateway({
   extensionGateway,
   extensionRegistry,
   mcpAdapter,
+  skillRegistry,
   policy = {},
   defaultExecutionType = "tool",
 }) {
@@ -379,18 +380,26 @@ export function createMcpConnectorGateway({
     );
   }
 
+  if (
+    typeof skillRegistry !== "object" ||
+    skillRegistry === null ||
+    typeof skillRegistry.submitOverride !== "function"
+  ) {
+    throw new RuntimeExecutionError("skillRegistry is required");
+  }
+
   if (typeof policy !== "object" || policy === null) {
     throw new RuntimeExecutionError("policy must be an object when provided");
   }
 
   const trustedSourcePrefixes = normalizeStringList(
-    /** @type {readonly string[]|undefined} */ (policy.trustedSourcePrefixes),
+    /** @type {readonly string[]|undefined} */(policy.trustedSourcePrefixes),
   );
   const blockedSourcePrefixes = normalizeStringList(
-    /** @type {readonly string[]|undefined} */ (policy.blockedSourcePrefixes),
+    /** @type {readonly string[]|undefined} */(policy.blockedSourcePrefixes),
   );
   const defaultApprovalRequiredPermissions = normalizeStringList(
-    /** @type {readonly string[]|undefined} */ (policy.approvalRequiredPermissions),
+    /** @type {readonly string[]|undefined} */(policy.approvalRequiredPermissions),
   );
   const evaluateSync = policy.evaluateSync;
   if (evaluateSync !== undefined && typeof evaluateSync !== "function") {
@@ -460,7 +469,7 @@ export function createMcpConnectorGateway({
           const currentStateBeforeCatalog = extensionGateway.getState(defaultExtensionId);
           const defaultOperation = resolveSyncOperation(currentStateBeforeCatalog);
           const defaultPreviousPermissions = normalizeStringList(
-            /** @type {readonly string[]|undefined} */ (
+            /** @type {readonly string[]|undefined} */(
               currentStateBeforeCatalog?.permissions
             ),
           );
@@ -547,7 +556,7 @@ export function createMcpConnectorGateway({
           const toolIds = /** @type {readonly string[]} */ (mcpManifest.toolIds);
           const catalogHash = /** @type {string} */ (mcpManifest.catalogHash);
           const nextPermissions = normalizeStringList(
-            /** @type {readonly string[]|undefined} */ (mcpManifest.permissions),
+            /** @type {readonly string[]|undefined} */(mcpManifest.permissions),
           );
 
           if (
@@ -567,7 +576,7 @@ export function createMcpConnectorGateway({
                 "installed",
               permissionDelta: createPermissionDelta(
                 normalizeStringList(
-                  /** @type {readonly string[]|undefined} */ (
+                  /** @type {readonly string[]|undefined} */(
                     extensionGateway.getState(extensionId)?.permissions
                   ),
                 ),
@@ -602,7 +611,7 @@ export function createMcpConnectorGateway({
                   "installed",
                 permissionDelta: createPermissionDelta(
                   normalizeStringList(
-                    /** @type {readonly string[]|undefined} */ (
+                    /** @type {readonly string[]|undefined} */(
                       extensionGateway.getState(extensionId)?.permissions
                     ),
                   ),
@@ -619,7 +628,7 @@ export function createMcpConnectorGateway({
           const currentState = extensionGateway.getState(extensionId);
           const operation = resolveSyncOperation(currentState);
           const previousPermissions = normalizeStringList(
-            /** @type {readonly string[]|undefined} */ (currentState?.permissions),
+            /** @type {readonly string[]|undefined} */(currentState?.permissions),
           );
           const permissionDelta = createPermissionDelta(previousPermissions, nextPermissions);
 
@@ -647,19 +656,41 @@ export function createMcpConnectorGateway({
             };
           }
 
+          const { enriched: enrichedCapabilities, missingMetadata } = skillRegistry.processMetadata(extensionId, Array.isArray(mcpManifest.capabilities) ? mcpManifest.capabilities : []);
+
+          if (missingMetadata.length > 0) {
+            skillRegistry.markBlocked(extensionId, missingMetadata);
+            return {
+              status: "rejected",
+              extensionId,
+              operation,
+              trustLevel,
+              lifecycleStatus: "rejected",
+              lifecycleState: currentState?.lifecycleState ?? "blocked",
+              permissionDelta,
+              capabilityIds,
+              catalogHash,
+              health,
+              reason: "MCP metadata required",
+              missingMetadata
+            };
+          }
+
+          skillRegistry.unblock(extensionId);
+
           const syncDecision = normalizePolicyDecision(
             evaluateSync &&
-              (await evaluateSync({
-                extensionId,
-                operation,
-                trustLevel,
-                health,
-                sourcePolicy: sourcePolicyMetadata,
-                permissionDelta,
-                catalogHash,
-                capabilityIds,
-                currentState,
-              })),
+            (await evaluateSync({
+              extensionId,
+              operation,
+              trustLevel,
+              health,
+              sourcePolicy: sourcePolicyMetadata,
+              permissionDelta,
+              catalogHash,
+              capabilityIds,
+              currentState,
+            })),
           );
           if (!syncDecision.allowed) {
             return {
@@ -685,6 +716,7 @@ export function createMcpConnectorGateway({
             trustLevel,
             sourceUri: validatedInput.sourceUri,
             requestedPermissions: nextPermissions,
+            capabilities: enrichedCapabilities,
             metadata: {
               serverId: validatedInput.serverId,
               health,
@@ -718,13 +750,16 @@ export function createMcpConnectorGateway({
               health,
               reason:
                 typeof lifecycleResult.reason === "string" &&
-                lifecycleResult.reason.length > 0
+                  lifecycleResult.reason.length > 0
                   ? lifecycleResult.reason
                   : "MCP lifecycle transition rejected",
             };
           }
 
-          const mcpCapabilityAdapter = mcpAdapter.createCapabilityAdapter(mcpManifest);
+          const mcpCapabilityAdapter = mcpAdapter.createCapabilityAdapter({
+            ...mcpManifest,
+            capabilities: enrichedCapabilities
+          });
           extensionRegistry.upsert(extensionId, mcpCapabilityAdapter);
 
           const shouldEnable =
@@ -752,7 +787,7 @@ export function createMcpConnectorGateway({
             if (enableResult.status !== "applied") {
               finalReason =
                 typeof enableResult.reason === "string" &&
-                enableResult.reason.length > 0
+                  enableResult.reason.length > 0
                   ? enableResult.reason
                   : "MCP enable transition rejected";
             }

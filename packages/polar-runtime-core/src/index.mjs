@@ -55,6 +55,7 @@ export { createHandoffGateway, registerHandoffContract } from "./handoff-gateway
 export { createHeartbeatGateway, registerHeartbeatContract } from "./heartbeat-gateway.mjs";
 export { createExtensionGateway, registerExtensionContracts } from "./extension-gateway.mjs";
 export { createSkillInstallerGateway, registerSkillInstallerContract } from "./skill-installer-gateway.mjs";
+export { createSkillRegistry } from "./skill-registry.mjs";
 export { createMcpConnectorGateway, registerMcpConnectorContract } from "./mcp-connector-gateway.mjs";
 export { createMemoryGateway, registerMemoryContracts } from "./memory-gateway.mjs";
 export {
@@ -72,4 +73,5 @@ export { createModelPolicyEngine } from "./model-policy-engine.mjs";
 export { createMemoryExtractionMiddleware } from "./memory-extraction-middleware.mjs";
 export { createMemoryRecallMiddleware } from "./memory-recall-middleware.mjs";
 export { createToolSynthesisMiddleware } from "./tool-synthesis-middleware.mjs";
+export { createApprovalStore } from "./approval-store.mjs";
 export { createSqliteMemoryProvider } from "./memory-provider-sqlite.mjs";

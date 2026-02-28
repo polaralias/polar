@@ -194,7 +194,9 @@ test("skill installer installs, auto-enables trusted skill, and executes capabil
     sessionId: "s1",
     userId: "u1",
     capabilityScope: {
-      allowedTools: ["search"],
+      allowed: {
+        "skill.docs-helper": ["docs.search"],
+      },
     },
     input: {
       q: "polar",
@@ -212,7 +214,7 @@ test("skill installer installs, auto-enables trusted skill, and executes capabil
       capabilityId: "docs.search",
       manifestHash: parsed.manifestHash,
       status: "completed",
-      message: "Skill capability \"docs.search\" executed with default adapter",
+      message: 'Skill capability "docs.search" executed with default adapter',
     },
   });
 

@@ -136,7 +136,9 @@ export {
   createExtensionLifecycleContract,
 } from "./extension-contracts.mjs";
 export {
+  SKILL_ANALYZER_ACTION,
   SKILL_INSTALLER_ACTION,
+  createSkillAnalyzerContract,
   createSkillInstallerContract,
 } from "./skill-installer-contracts.mjs";
 export {

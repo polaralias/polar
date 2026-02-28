@@ -26,12 +26,17 @@ export const EXTENSION_LIFECYCLE_OPERATIONS = Object.freeze([
 ]);
 
 export const EXTENSION_LIFECYCLE_STATES = Object.freeze([
+  "pending_install",
   "installed",
   "enabled",
   "disabled",
   "removed",
   "blocked",
 ]);
+
+export const CAPABILITY_RISK_LEVELS = Object.freeze(["read", "write", "destructive", "unknown"]);
+export const CAPABILITY_SIDE_EFFECTS = Object.freeze(["none", "internal", "external", "unknown"]);
+export const CAPABILITY_DATA_EGRESS = Object.freeze(["none", "network", "unknown"]);
 
 export const EXTENSION_LIFECYCLE_ACTION = Object.freeze({
   actionId: "extension.lifecycle.apply",
@@ -65,6 +70,7 @@ export function createExtensionLifecycleContract(options = {}) {
           required: false,
         }),
         approvalTicket: stringField({ minLength: 1, required: false }),
+        capabilities: jsonField({ required: false }),
         metadata: jsonField({ required: false }),
       },
     }),

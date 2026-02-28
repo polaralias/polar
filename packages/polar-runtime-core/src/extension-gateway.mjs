@@ -33,6 +33,7 @@ const lifecycleRequestSchema = createStrictObjectSchema({
     }),
     approvalTicket: stringField({ minLength: 1, required: false }),
     metadata: jsonField({ required: false }),
+    capabilities: jsonField({ required: false }),
   },
 });
 
@@ -63,6 +64,7 @@ const extensionStateSchema = createStrictObjectSchema({
     trustLevel: enumField(EXTENSION_TRUST_LEVELS),
     lifecycleState: enumField(EXTENSION_LIFECYCLE_STATES),
     permissions: stringArrayField({ minItems: 0 }),
+    capabilities: jsonField({ required: false }),
   },
 });
 
@@ -212,6 +214,7 @@ export function createExtensionGateway({
   initialStates = [],
   policy = {},
   defaultExecutionType = "tool",
+  approvalStore,
 }) {
   if (extensionRegistry !== undefined) {
     if (
@@ -321,7 +324,7 @@ export function createExtensionGateway({
     let reason = undefined;
 
     if (operation === "install") {
-      nextLifecycleState = trustLevel === "blocked" ? "blocked" : "installed";
+      nextLifecycleState = input.metadata?.status === "pending_install" ? "pending_install" : (trustLevel === "blocked" ? "blocked" : "installed");
     } else if (operation === "enable") {
       if (trustLevel === "blocked") {
         status = "rejected";
@@ -384,6 +387,9 @@ export function createExtensionGateway({
         trustLevel,
         lifecycleState: nextLifecycleState,
         permissions: nextPermissions,
+        ...((input.capabilities ?? currentState?.capabilities)
+          ? { capabilities: input.capabilities ?? currentState?.capabilities }
+          : {}),
       });
       extensionStates.set(extensionId, nextState);
     }
@@ -519,9 +525,12 @@ export function createExtensionGateway({
       };
     }
 
+    const capabilityMetadata = (Array.isArray(currentState?.capabilities) ? currentState.capabilities : [])
+      .find(c => c.capabilityId === capabilityId) || { riskLevel: 'unknown', sideEffects: 'unknown', dataEgress: 'unknown' };
+
     const executionDecision = normalizePolicyDecision(
       evaluateExecution
-        ? await evaluateExecution(input, currentState)
+        ? await evaluateExecution(input, { ...currentState, capabilityMetadata }, approvalStore)
         : undefined,
     );
     if (!executionDecision.allowed) {
@@ -612,6 +621,9 @@ export function createExtensionGateway({
       }
       if (parsed.approvalTicket !== undefined) {
         input.approvalTicket = parsed.approvalTicket;
+      }
+      if (parsed.capabilities !== undefined) {
+        input.capabilities = parsed.capabilities;
       }
       if (parsed.metadata !== undefined) {
         input.metadata = parsed.metadata;

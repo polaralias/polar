@@ -168,11 +168,14 @@ export function createControlPlaneService(config = {}) {
   const cryptoVault = createCryptoVault();
 
   const extensionRegistry = createExtensionAdapterRegistry();
+  const approvalStore = createApprovalStore();
+  const skillRegistry = createSkillRegistry();
   const extensionGateway = createExtensionGateway({
     middlewarePipeline,
     extensionRegistry,
     initialStates: config.initialExtensionStates,
     policy: config.extensionPolicy,
+    approvalStore,
   });
   const skillInstallerGateway = createSkillInstallerGateway({
     middlewarePipeline,
@@ -183,6 +186,8 @@ export function createControlPlaneService(config = {}) {
       verifySkillProvenance,
       createSkillCapabilityAdapter,
     },
+    skillRegistry,
+    providerGateway: { generate: (req) => providerGatewayRef.generate(req) },
     policy: config.skillPolicy,
   });
   const mcpConnectorGateway = createMcpConnectorGateway({
@@ -194,6 +199,7 @@ export function createControlPlaneService(config = {}) {
       async importToolCatalog() { throw new Error("mcpAdapter not configured"); },
       createCapabilityAdapter() { throw new Error("mcpAdapter not configured"); },
     },
+    skillRegistry,
     policy: config.mcpPolicy,
   });
   const pluginInstallerGateway = createPluginInstallerGateway({
@@ -333,6 +339,7 @@ export function createControlPlaneService(config = {}) {
     chatManagementGateway,
     providerGateway,
     extensionGateway,
+    approvalStore,
     gateway,
     now: config.now,
   });
@@ -711,6 +718,20 @@ export function createControlPlaneService(config = {}) {
      */
     async updateMessageChannelId(sessionId, internalId, channelId) {
       return orchestrator.updateMessageChannelId(sessionId, internalId, channelId);
+    },
+
+    /**
+     * Submit an operator-supplied risk metadata override for a skill capability.
+     */
+    async submitSkillMetadataOverride(request) {
+      return skillRegistry.submitOverride(request);
+    },
+
+    /**
+     * List skills that are currently blocked due to missing risk metadata.
+     */
+    async listBlockedSkills() {
+      return skillRegistry.listBlocked();
     }
   });
 }

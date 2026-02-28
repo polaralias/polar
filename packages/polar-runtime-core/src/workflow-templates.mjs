@@ -85,5 +85,21 @@ export const WORKFLOW_TEMPLATES = {
                 args: {}
             }
         ]
+    },
+    send_email: {
+        id: "send_email",
+        description: "Send an email immediately",
+        schema: {
+            required: ["to", "subject", "body"],
+            optional: []
+        },
+        steps: (args) => [
+            {
+                extensionId: "email",
+                extensionType: "mcp",
+                capabilityId: "send_email",
+                args: { to: args.to, subject: args.subject, body: args.body }
+            }
+        ]
     }
 };

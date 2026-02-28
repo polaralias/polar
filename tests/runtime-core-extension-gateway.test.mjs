@@ -254,7 +254,9 @@ test("extension execute succeeds after install+enable and forwards scoped reques
     sessionId: "session-1",
     userId: "user-1",
     capabilityScope: {
-      allowedOps: ["status"],
+      allowed: {
+        "mcp.git": ["repo.status"],
+      },
     },
     input: {
       repo: "polar",
@@ -280,7 +282,9 @@ test("extension execute succeeds after install+enable and forwards scoped reques
       sessionId: "session-1",
       userId: "user-1",
       capabilityScope: {
-        allowedOps: ["status"],
+        allowed: {
+          "mcp.git": ["repo.status"],
+        },
       },
       input: {
         repo: "polar",
@@ -324,7 +328,11 @@ test("extension execute rejects trust level overrides that differ from persisted
     sessionId: "session-override",
     userId: "user-override",
     trustLevel: "trusted",
-    capabilityScope: {},
+    capabilityScope: {
+      allowed: {
+        "skill.docs": ["docs.search"],
+      },
+    },
     input: {},
   });
 
@@ -376,7 +384,11 @@ test("extension execute returns deterministic failed payload for adapter errors"
     capabilityId: "docs.search",
     sessionId: "session-2",
     userId: "user-2",
-    capabilityScope: {},
+    capabilityScope: {
+      allowed: {
+        "skill.docs": ["docs.search"],
+      },
+    },
     input: {
       q: "contracts",
     },
@@ -433,7 +445,11 @@ test("extension execute respects policy denial and rejects invalid request shape
     capabilityId: "search.web",
     sessionId: "session-3",
     userId: "user-3",
-    capabilityScope: {},
+    capabilityScope: {
+      allowed: {
+        "plugin.search": ["search.web"],
+      },
+    },
     input: {
       q: "polar",
     },

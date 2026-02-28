@@ -74,50 +74,43 @@ export function validateModelOverride({ modelOverride, multiAgentConfig = {}, ba
 }
 /**
  * Computes a strict capability scope for tool execution.
- * Only explicitly mapped skills grant capabilities — unknown skills are rejected.
+ * Only explicitly enabled extensions grant capabilities.
  * @param {Object} args
  * @param {Object} args.sessionProfile
  * @param {Object} args.multiAgentConfig
  * @param {Object} [args.activeDelegation]
+ * @param {Array<Object>} [args.installedExtensions] - List of states from extensionGateway
  * @returns {{ allowed: Record<string, string[]>, constraints: Object, rejectedSkills: string[] }}
  */
-export function computeCapabilityScope({ sessionProfile = {}, multiAgentConfig = {}, activeDelegation }) {
+export function computeCapabilityScope({ sessionProfile = {}, multiAgentConfig = {}, activeDelegation, installedExtensions = [] }) {
     const scope = {
         allowed: {},
         constraints: {},
     };
     const rejectedSkills = [];
 
-    // Known skill → extension/capability mapping (strict, exhaustive)
-    const SKILL_MAP = {
-        search_web: { extensionId: 'web', capabilities: ['search_web'] },
-        email_mcp: { extensionId: 'email', capabilities: ['draft_email'] },
-    };
+    // System is always allowed for core orchestration tasks
+    scope.allowed["system"] = ["lookup_weather", "delegate_to_agent", "complete_task"];
 
-    // 1. Determine base allowed extensions/skills
-    // If we have an active delegation, it dictates the scope (forward_skills).
-    // Otherwise, we use the session profile's allowed skills or global defaults.
+    // 1. Determine base allowed skills/behaviors
     const effectiveAllowedSkills = activeDelegation?.forward_skills
         || sessionProfile?.profileConfig?.allowedSkills
         || multiAgentConfig?.globalAllowedSkills
         || [];
 
-    // System is always allowed for core orchestration tasks
-    scope.allowed["system"] = ["lookup_weather", "delegate_to_agent", "complete_task"];
-
-    // Map skills to extension/capability pairs using the strict map
+    // 2. Discover capabilities from installed extensions that match allowed skills
+    // In this model, a "skill" name in the allowlist corresponds to a skill's extensionId.
     for (const skill of effectiveAllowedSkills) {
-        const mapping = SKILL_MAP[skill];
-        if (mapping) {
-            const existing = scope.allowed[mapping.extensionId] || [];
-            for (const cap of mapping.capabilities) {
-                if (!existing.includes(cap)) {
-                    existing.push(cap);
-                }
-            }
-            scope.allowed[mapping.extensionId] = existing;
+        const extension = installedExtensions.find(e => e.extensionId === skill && e.lifecycleState === 'enabled');
+        if (extension) {
+            // If the extension is enabled, allow all its capabilities (or strictly what's in manifest)
+            const allowedCaps = (Array.isArray(extension.capabilities) ? extension.capabilities : [])
+                .map(c => typeof c === 'string' ? c : c.capabilityId)
+                .filter(Boolean);
+
+            scope.allowed[extension.extensionId] = allowedCaps;
         } else {
-            // Unknown skill: reject it (least privilege)
+            // Keep hardcoded fallback for legacy system tools if needed, or just reject
             rejectedSkills.push(skill);
         }
     }

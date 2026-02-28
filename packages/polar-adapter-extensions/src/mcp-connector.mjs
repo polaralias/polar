@@ -144,6 +144,9 @@ export function mapMcpToolCatalog(request) {
       capabilityId,
       toolId,
       permissions: toolPermissions,
+      riskLevel: toolCandidate.riskLevel || "unknown",
+      sideEffects: toolCandidate.sideEffects || "unknown",
+      dataEgress: toolCandidate.dataEgress || "unknown",
     };
     if (
       typeof toolCandidate.description === "string" &&
@@ -174,6 +177,9 @@ export function mapMcpToolCatalog(request) {
     permissions: tool.permissions,
     inputSchema: tool.inputSchema,
     outputSchema: tool.outputSchema,
+    riskLevel: tool.riskLevel,
+    sideEffects: tool.sideEffects,
+    dataEgress: tool.dataEgress,
   }));
 
   return Object.freeze({

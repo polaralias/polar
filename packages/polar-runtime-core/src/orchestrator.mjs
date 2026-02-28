@@ -20,6 +20,7 @@ export function createOrchestrator({
     chatManagementGateway,
     providerGateway,
     extensionGateway,
+    approvalStore,
     gateway, // ControlPlaneGateway for config
     now = Date.now
 }) {
@@ -31,7 +32,6 @@ export function createOrchestrator({
     const THREAD_TTL_MS = 60 * 60 * 1000;
     const PENDING_REPAIRS = new Map();
     const REPAIR_TTL_MS = 5 * 60 * 1000;
-
     setInterval(() => {
         const currentTime = now();
         for (const [id, entry] of PENDING_WORKFLOWS) {
@@ -52,7 +52,80 @@ export function createOrchestrator({
         }
     }, 5 * 60 * 1000);
 
-    return Object.freeze({
+    /**
+     * Compute risk summary for a list of workflow steps.
+     */
+    function evaluateWorkflowRisk(steps) {
+        let maxRisk = 'read';
+        let maxEffects = 'none';
+        let maxEgress = 'none';
+        let hasDelegation = false;
+        const requirements = [];
+
+        for (const step of steps) {
+            if (step.capabilityId === 'delegate_to_agent') {
+                hasDelegation = true;
+                requirements.push({ capabilityId: 'delegate_to_agent', extensionId: 'system', riskLevel: 'write', sideEffects: 'internal' });
+                continue;
+            }
+            if (step.capabilityId === 'complete_task') continue;
+
+            const state = extensionGateway.getState(step.extensionId);
+            const cap = (state?.capabilities || []).find(c => c.capabilityId === step.capabilityId);
+
+            if (cap) {
+                // Risk Level: read < write < destructive
+                if (cap.riskLevel === 'destructive') maxRisk = 'destructive';
+                else if (cap.riskLevel === 'write' && maxRisk === 'read') maxRisk = 'write';
+
+                // Side Effects: none < internal < external
+                if (cap.sideEffects === 'external') maxEffects = 'external';
+                else if (cap.sideEffects === 'internal' && maxEffects === 'none') maxEffects = 'internal';
+
+                // Data Egress: none < network
+                if (cap.dataEgress === 'network') maxEgress = 'network';
+
+                if (cap.sideEffects === 'external' || cap.riskLevel === 'destructive' || cap.dataEgress === 'network') {
+                    requirements.push({
+                        extensionId: step.extensionId,
+                        capabilityId: step.capabilityId,
+                        riskLevel: cap.riskLevel,
+                        sideEffects: cap.sideEffects,
+                        dataEgress: cap.dataEgress
+                    });
+                }
+            } else {
+                // If metadata missing, assume write/internal for safety
+                if (maxRisk === 'read') maxRisk = 'write';
+                if (maxEffects === 'none') maxEffects = 'internal';
+            }
+        }
+
+        return {
+            riskLevel: maxRisk,
+            sideEffects: maxEffects,
+            dataEgress: maxEgress,
+            hasDelegation,
+            requirements
+        };
+    }
+
+    /**
+     * Check if requirements are already covered by valid grants.
+     */
+    function checkGrants(requirements, principal) {
+        return requirements.filter(req => {
+            const match = approvalStore.findMatchingGrant(principal, {
+                extensionId: req.extensionId,
+                capabilityId: req.capabilityId,
+                userId: principal.userId,
+                sessionId: principal.sessionId
+            });
+            return !match;
+        });
+    }
+
+    const methods = {
         async orchestrate(envelope) {
             const { sessionId, userId, text, messageId, metadata = {} } = envelope;
             const polarSessionId = sessionId;
@@ -340,15 +413,27 @@ ${routingRecommendation || ""}`;
                     if (!proposal || proposal.error) return { status: 'error', text: "⚠️ Failed to parse action proposal" };
 
                     const workflowSteps = expandTemplate(proposal.templateId, proposal.args);
+                    const risk = evaluateWorkflowRisk(workflowSteps);
+                    const principal = { userId, sessionId: polarSessionId };
+                    const pendingRequirements = checkGrants(risk.requirements, principal);
+
+                    const requiresManualApproval = pendingRequirements.length > 0 || risk.hasDelegation;
                     const workflowId = crypto.randomUUID();
                     const ownerThreadId = sessionState.activeThreadId;
                     PENDING_WORKFLOWS.set(workflowId, {
                         steps: workflowSteps,
                         createdAt: now(),
                         polarSessionId,
+                        userId, // Store for grant issuance
                         multiAgentConfig,
-                        threadId: ownerThreadId  // canonical thread→workflow link
+                        threadId: ownerThreadId, // canonical thread→workflow link
+                        risk: { ...risk, requirements: pendingRequirements }
                     });
+
+                    // Auto-run rules: if no manual approval required, execute immediately
+                    if (!requiresManualApproval) {
+                        return methods.executeWorkflow(workflowId, { isAutoRun: true });
+                    }
 
                     // Mark the owner thread as awaiting approval
                     let st = SESSION_THREADS.get(polarSessionId);
@@ -366,6 +451,12 @@ ${routingRecommendation || ""}`;
                         text: cleanText,
                         workflowId,
                         steps: workflowSteps,
+                        risk: {
+                            level: risk.riskLevel,
+                            sideEffects: risk.sideEffects,
+                            dataEgress: risk.dataEgress,
+                            requirements: pendingRequirements
+                        },
                         useInlineReply: currentTurnAnchor ?? false,
                         anchorMessageId: currentAnchorMessageId
                     };
@@ -382,12 +473,27 @@ ${routingRecommendation || ""}`;
             return { status: 'error', text: "No generation results." };
         },
 
-        async executeWorkflow(workflowId) {
+        async executeWorkflow(workflowId, options = {}) {
             const entry = PENDING_WORKFLOWS.get(workflowId);
             if (!entry) return { status: 'error', text: "Workflow not found" };
 
-            const { steps: workflowSteps, polarSessionId, multiAgentConfig, threadId: ownerThreadId } = entry;
+            const { steps: workflowSteps, polarSessionId, userId, multiAgentConfig, threadId: ownerThreadId, risk } = entry;
             PENDING_WORKFLOWS.delete(workflowId);
+
+            // If this was a manual approval, issue grants for the requirements
+            if (!options.isAutoRun && risk?.requirements && risk.requirements.length > 0) {
+                const principal = { userId, sessionId: polarSessionId };
+                const capabilities = risk.requirements.map(req => ({
+                    extensionId: req.extensionId,
+                    capabilityId: req.capabilityId
+                }));
+                const maxTtl = 3600 * 24; // 24h default for plan approval
+                approvalStore.issueGrant(principal, {
+                    capabilities,
+                    riskLevel: risk.riskLevel === 'destructive' ? 'destructive' : 'write',
+                    reason: 'User approved multi-step plan'
+                }, maxTtl, 'Plan Approval');
+            }
 
             // Resolve the target thread — use stored threadId, never rely on activeThreadId drift
             const runId = `run_${crypto.randomUUID()}`;
@@ -425,7 +531,12 @@ ${routingRecommendation || ""}`;
 
                 // Compute capability scope before validation — this is what extension-gateway enforces
                 let activeDelegation = msgActiveDelegation;
-                let capabilityScope = computeCapabilityScope({ sessionProfile: profile, multiAgentConfig, activeDelegation });
+                let capabilityScope = computeCapabilityScope({
+                    sessionProfile: profile,
+                    multiAgentConfig,
+                    activeDelegation,
+                    installedExtensions: extensionGateway.listStates()
+                });
 
                 const validation = validateSteps(workflowSteps, { capabilityScope });
                 if (!validation.ok) {
@@ -463,7 +574,12 @@ ${routingRecommendation || ""}`;
 
                         activeDelegation = { ...parsedArgs, forward_skills: allowedSkills, model_override: modelId, pinnedProvider: providerId };
                         // Recompute capability scope after delegation change
-                        capabilityScope = computeCapabilityScope({ sessionProfile: profile, multiAgentConfig, activeDelegation });
+                        capabilityScope = computeCapabilityScope({
+                            sessionProfile: profile,
+                            multiAgentConfig,
+                            activeDelegation,
+                            installedExtensions: extensionGateway.listStates()
+                        });
                         const output = `Successfully delegated to ${parsedArgs.agentId}.` + (rejectedSkills.length ? ` Clamped: ${rejectedSkills.join(", ")}` : "");
                         toolResults.push({ tool: capabilityId, status: "delegated", output });
 
@@ -477,7 +593,12 @@ ${routingRecommendation || ""}`;
                     if (capabilityId === "complete_task") {
                         activeDelegation = null;
                         // Recompute capability scope after delegation cleared
-                        capabilityScope = computeCapabilityScope({ sessionProfile: profile, multiAgentConfig, activeDelegation });
+                        capabilityScope = computeCapabilityScope({
+                            sessionProfile: profile,
+                            multiAgentConfig,
+                            activeDelegation,
+                            installedExtensions: extensionGateway.listStates()
+                        });
                         toolResults.push({ tool: capabilityId, status: "completed", output: "Task completed." });
                         await chatManagementGateway.appendMessage({ sessionId: polarSessionId, userId: "system", role: "system", text: `[DELEGATION CLEARED]`, timestampMs: now() });
                         continue;
@@ -652,5 +773,7 @@ ${routingRecommendation || ""}`;
                 useInlineReply: false
             };
         }
-    });
+    };
+
+    return Object.freeze(methods);
 }

@@ -3,7 +3,9 @@ import {
   ContractValidationError,
   EXTENSION_TRUST_LEVELS,
   RuntimeExecutionError,
+  SKILL_ANALYZER_ACTION,
   SKILL_INSTALLER_ACTION,
+  createSkillAnalyzerContract,
   createSkillInstallerContract,
   createStrictObjectSchema,
   enumField,
@@ -117,6 +119,14 @@ export function registerSkillInstallerContract(contractRegistry) {
   ) {
     contractRegistry.register(createSkillInstallerContract());
   }
+  if (
+    !contractRegistry.has(
+      SKILL_ANALYZER_ACTION.actionId,
+      SKILL_ANALYZER_ACTION.version,
+    )
+  ) {
+    contractRegistry.register(createSkillAnalyzerContract());
+  }
 }
 
 /**
@@ -149,6 +159,8 @@ export function createSkillInstallerGateway({
   extensionGateway,
   extensionRegistry,
   skillAdapter,
+  skillRegistry,
+  providerGateway,
   policy = {},
   defaultExecutionType = "tool",
 }) {
@@ -183,14 +195,22 @@ export function createSkillInstallerGateway({
     );
   }
 
+  if (
+    typeof skillRegistry !== "object" ||
+    skillRegistry === null ||
+    typeof skillRegistry.submitOverride !== "function"
+  ) {
+    throw new RuntimeExecutionError("skillRegistry is required");
+  }
+
   const trustedSourcePrefixes = normalizePermissions(
-    /** @type {readonly string[]|undefined} */ (policy.trustedSourcePrefixes),
+    /** @type {readonly string[]|undefined} */(policy.trustedSourcePrefixes),
   );
   const blockedSourcePrefixes = normalizePermissions(
-    /** @type {readonly string[]|undefined} */ (policy.blockedSourcePrefixes),
+    /** @type {readonly string[]|undefined} */(policy.blockedSourcePrefixes),
   );
   const defaultApprovalRequiredPermissions = normalizePermissions(
-    /** @type {readonly string[]|undefined} */ (policy.approvalRequiredPermissions),
+    /** @type {readonly string[]|undefined} */(policy.approvalRequiredPermissions),
   );
 
   const evaluateInstall = policy.evaluateInstall;
@@ -203,6 +223,87 @@ export function createSkillInstallerGateway({
   const autoEnableTrusted = policy.autoEnableTrusted === true;
 
   return Object.freeze({
+    /**
+     * Analyze a skill and propose a manifest.
+     * @param {unknown} request 
+     */
+    async proposeManifest(request) {
+      const inputSchema = createSkillAnalyzerContract().inputSchema;
+      const validation = inputSchema.validate(request);
+      if (!validation.ok) {
+        throw new ContractValidationError("Invalid skill analyzer request", {
+          schemaId: inputSchema.schemaId,
+          errors: validation.errors ?? [],
+        });
+      }
+
+      const parsed = /** @type {Record<string, unknown>} */ (validation.value);
+      const skillContent = /** @type {string} */ (parsed.skillContent);
+      const mcpInventory = /** @type {Array<any>} */ (parsed.mcpInventory);
+
+      const prompt = `You are a Polar Skill Installer.
+Analyze the following SKILL.md content and the available MCP tools.
+Propose a SkillManifest that maps the skill's desired behaviors to specific MCP tools.
+
+RULES:
+1. You MUST only use tools present in the inventory.
+2. You CANNOT set risk metadata (riskLevel, sideEffects).
+3. The manifest must have an extensionId, version, description, and capabilities array.
+
+SKILL.md:
+${skillContent}
+
+MCP INVENTORY:
+${JSON.stringify(mcpInventory, null, 2)}
+
+Output ONLY the JSON manifest.`;
+
+      const response = await providerGateway.generate({
+        executionType: "tool",
+        system: "You are a specialized Polar Skill Installer. You output only valid JSON.",
+        prompt
+      });
+
+      let proposedManifest;
+      try {
+        proposedManifest = JSON.parse(response.text.replace(/```json|```/g, '').trim());
+      } catch (e) {
+        throw new RuntimeExecutionError("Failed to parse proposed manifest from LLM");
+      }
+
+      // Basic validation: ensure extensionId exists
+      if (!proposedManifest.extensionId) {
+        throw new RuntimeExecutionError("Proposed manifest missing extensionId");
+      }
+
+      // Ensure no invented capabilities
+      if (Array.isArray(proposedManifest.capabilities)) {
+        const inventoryToolNames = mcpInventory.map(t => t.name);
+        for (const cap of proposedManifest.capabilities) {
+          if (!inventoryToolNames.includes(cap.capabilityId)) {
+            throw new RuntimeExecutionError(`Proposed manifest includes unknown capability: ${cap.capabilityId}`);
+          }
+        }
+      }
+
+      // Force-set status to pending_install in lifecycle
+      await extensionGateway.applyLifecycle({
+        extensionId: proposedManifest.extensionId,
+        extensionType: "skill",
+        operation: "install",
+        metadata: { status: "pending_install" }
+      });
+
+      // Store in registry
+      skillRegistry.propose(proposedManifest.extensionId, proposedManifest);
+
+      return {
+        status: "applied",
+        extensionId: proposedManifest.extensionId,
+        proposedManifest
+      };
+    },
+
     /**
      * @param {unknown} request
      * @returns {Promise<Record<string, unknown>>}
@@ -263,7 +364,7 @@ export function createSkillInstallerGateway({
           let skillManifest;
           try {
             skillManifest = skillAdapter.parseSkillManifest(
-              /** @type {string} */ (validatedInput.skillManifest),
+              /** @type {string} */(validatedInput.skillManifest),
             );
           } catch (error) {
             throw new ContractValidationError("Invalid SKILL.md manifest", {
@@ -320,12 +421,12 @@ export function createSkillInstallerGateway({
               lifecycleState: currentState?.lifecycleState ?? "blocked",
               permissionDelta: createPermissionDelta(
                 normalizePermissions(
-                  /** @type {readonly string[]|undefined} */ (
+                  /** @type {readonly string[]|undefined} */(
                     currentState?.permissions
                   ),
                 ),
                 normalizePermissions(
-                  /** @type {readonly string[]|undefined} */ (
+                  /** @type {readonly string[]|undefined} */(
                     skillManifest.permissions
                   ),
                 ),
@@ -350,10 +451,10 @@ export function createSkillInstallerGateway({
           const currentState = extensionGateway.getState(extensionId);
           const operation = resolveInstallOperation(currentState);
           const previousPermissions = normalizePermissions(
-            /** @type {readonly string[]|undefined} */ (currentState?.permissions),
+            /** @type {readonly string[]|undefined} */(currentState?.permissions),
           );
           const nextPermissions = normalizePermissions(
-            /** @type {readonly string[]|undefined} */ (skillManifest.permissions),
+            /** @type {readonly string[]|undefined} */(skillManifest.permissions),
           );
           const permissionDelta = createPermissionDelta(previousPermissions, nextPermissions);
 
@@ -411,7 +512,7 @@ export function createSkillInstallerGateway({
               provenance,
               reason:
                 typeof installDecision.reason === "string" &&
-                installDecision.reason.length > 0
+                  installDecision.reason.length > 0
                   ? installDecision.reason
                   : "Skill install policy denied",
             };
@@ -434,6 +535,30 @@ export function createSkillInstallerGateway({
             };
           }
 
+          const { enriched: enrichedCapabilities, missingMetadata } = skillRegistry.processMetadata(extensionId, Array.isArray(skillManifest.capabilities) ? skillManifest.capabilities : []);
+
+          if (missingMetadata.length > 0) {
+            skillRegistry.markBlocked(extensionId, missingMetadata);
+            return {
+              status: "rejected",
+              extensionId,
+              operation,
+              trustLevel,
+              lifecycleStatus: "rejected",
+              lifecycleState: currentState?.lifecycleState ?? "blocked",
+              permissionDelta,
+              capabilityIds,
+              manifestHash: skillManifest.manifestHash,
+              provenance,
+              reason: "Skill metadata required",
+              missingMetadata
+            };
+          }
+
+          // Unblock if it was blocked before and clear any pending proposal
+          skillRegistry.unblock(extensionId);
+          skillRegistry.clearProposed(extensionId);
+
           const lifecycleInput = {
             executionType: requestExecutionType,
             extensionId,
@@ -442,6 +567,7 @@ export function createSkillInstallerGateway({
             trustLevel,
             sourceUri: validatedInput.sourceUri,
             requestedPermissions: nextPermissions,
+            capabilities: enrichedCapabilities,
             metadata: {
               provenance,
               capabilityIds,
@@ -474,14 +600,17 @@ export function createSkillInstallerGateway({
               provenance,
               reason:
                 typeof lifecycleResult.reason === "string" &&
-                lifecycleResult.reason.length > 0
+                  lifecycleResult.reason.length > 0
                   ? lifecycleResult.reason
                   : "Skill lifecycle transition rejected",
             };
           }
 
           const skillCapabilityAdapter = skillAdapter.createSkillCapabilityAdapter({
-            skillManifest,
+            skillManifest: {
+              ...skillManifest,
+              capabilities: enrichedCapabilities
+            },
           });
           extensionRegistry.upsert(extensionId, skillCapabilityAdapter);
 
@@ -511,7 +640,7 @@ export function createSkillInstallerGateway({
             if (enableResult.status !== "applied") {
               finalReason =
                 typeof enableResult.reason === "string" &&
-                enableResult.reason.length > 0
+                  enableResult.reason.length > 0
                   ? enableResult.reason
                   : "Skill enable transition rejected";
             }

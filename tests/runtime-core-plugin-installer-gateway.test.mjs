@@ -96,12 +96,12 @@ function createPluginDescriptor({
     capabilities.length > 0
       ? capabilities
       : [
-          {
-            operationId: "search.query",
-            method: "POST",
-            path: "/search",
-          },
-        ];
+        {
+          operationId: "search.query",
+          method: "POST",
+          path: "/search",
+        },
+      ];
 
   return {
     id: "Search Plugin",
@@ -286,7 +286,9 @@ test("plugin installer installs trusted plugin, auto-enables, and executes wrapp
     sessionId: "s1",
     userId: "u1",
     capabilityScope: {
-      allowedDomains: ["example.com"],
+      allowed: {
+        "plugin.search-plugin": ["plugin.search-plugin.search.query"],
+      },
     },
     input: {
       q: "polar",
