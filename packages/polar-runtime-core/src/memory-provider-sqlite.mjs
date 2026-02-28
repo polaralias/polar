@@ -272,10 +272,19 @@ export function createSqliteMemoryProvider({ db, now = () => Date.now() }) {
 
             // Delete old records
             const deleteMany = db.transaction((ids) => {
-                for (const id of ids) {
-                    statements.deleteById.run(id);
+                if (ids.length === 0) return;
+
+                // SQLite has a limit on the number of variables in a single query (default ~999)
+                const CHUNK_SIZE = 500;
+                for (let i = 0; i < ids.length; i += CHUNK_SIZE) {
+                    const chunk = ids.slice(i, i + CHUNK_SIZE);
+                    const placeholders = chunk.map(() => '?').join(',');
+                    
+                    db.prepare(`DELETE FROM polar_memory WHERE memoryId IN (${placeholders})`).run(...chunk);
                     if (ftsStatements) {
-                        try { ftsStatements.deleteFts.run(id); } catch { /* non-fatal */ }
+                        try {
+                            db.prepare(`DELETE FROM polar_memory_fts WHERE memoryId IN (${placeholders})`).run(...chunk);
+                        } catch { /* non-fatal */ }
                     }
                 }
             });
