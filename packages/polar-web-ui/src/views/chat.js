@@ -1,36 +1,8 @@
 import { fetchApi } from '../api.js';
 
-const MULTI_AGENT_CONFIG = {
-    allowlistedModels: [
-        "gpt-4o-mini",
-        "gpt-4o",
-        "claude-3-5-sonnet-latest",
-        "claude-3-5-opus-latest",
-        "gemini-2.5-flash",
-        "gemini-2.5-pro"
-    ],
-    availableProfiles: [
-        {
-            agentId: "@writer_agent",
-            description: "Specialized for writing tasks, document creation, and styling.",
-            pinnedModel: "claude-3-5-sonnet-latest",
-            pinnedProvider: "anthropic"
-        },
-        {
-            agentId: "@research_agent",
-            description: "Specialized for deep reviews, long-running research, and synthesis.",
-            pinnedModel: null,
-            pinnedProvider: null
-        }
-    ]
-};
-
 export async function renderChat(container) {
     const sessionId = localStorage.getItem('polar_ui_session') || crypto.randomUUID();
     localStorage.setItem('polar_ui_session', sessionId);
-
-    let activeDelegation = null;
-    let pendingWorkflow = null; // Store currently pending workflow blocks
 
     // Base UI Shell
     const html = `
@@ -62,15 +34,25 @@ export async function renderChat(container) {
         }
     });
 
+    const completedReactions = new Set();
+
     // Append to UI
-    function addBubble(role, htmlContent) {
+    function addBubble(role, htmlContent, meta = {}) {
         const div = document.createElement('div');
         div.style.maxWidth = '80%';
         div.style.padding = '12px 16px';
         div.style.borderRadius = '8px';
         div.style.lineHeight = '1.5';
+        div.style.position = 'relative';
 
         if (role === 'user') {
+            // New user message: clear old completed reactions
+            completedReactions.forEach(id => {
+                const el = document.getElementById(id);
+                if (el) el.remove();
+            });
+            completedReactions.clear();
+
             div.style.alignSelf = 'flex-end';
             div.style.background = 'var(--primary-glow)';
             div.style.color = '#fff';
@@ -91,263 +73,121 @@ export async function renderChat(container) {
 
         div.innerHTML = htmlContent;
         messagesDiv.appendChild(div);
+
+        if (meta.reaction) {
+            const reactionDiv = document.createElement('div');
+            reactionDiv.id = `reaction-${crypto.randomUUID()}`;
+            reactionDiv.innerText = meta.reaction;
+            reactionDiv.style.position = 'absolute';
+            reactionDiv.style.bottom = '-10px';
+            reactionDiv.style.left = '10px';
+            reactionDiv.style.fontSize = '14px';
+            reactionDiv.style.background = '#1a1a2e';
+            reactionDiv.style.borderRadius = '10px';
+            reactionDiv.style.padding = '2px 6px';
+            reactionDiv.style.border = '1px solid var(--card-border)';
+            div.appendChild(reactionDiv);
+            if (meta.done) completedReactions.add(reactionDiv.id);
+        }
+
         messagesDiv.scrollTop = messagesDiv.scrollHeight;
         return div;
     }
 
-    async function processOrchestrationLoop(initialUserMessage = null) {
-        try {
-            // Re-resolve profile rules logic (just in case they changed it in another tab)
-            const profile = await fetchApi('resolveProfile', { sessionId });
-            const policy = profile.profileConfig?.modelPolicy || {};
+    async function processOrchestratorResponse(result) {
+        if (!result) return;
 
-            let finalProviderId = policy.providerId || "openai";
-            let finalModelId = policy.modelId || "gpt-4o-mini";
-            let finalSystemPrompt = profile.profileConfig?.systemPrompt || "";
+        if (result.error) {
+            addBubble('system', '<span style="color:var(--danger)">❌ Error: ' + result.error + '</span>');
+            return;
+        }
 
-            // If we are spinning up a dynamic sub-agent loop
-            if (activeDelegation) {
-                finalModelId = activeDelegation.model_override || finalModelId;
-                if (finalModelId.includes("claude")) finalProviderId = "anthropic";
-                else if (finalModelId.includes("gemini")) finalProviderId = "google";
+        if (result.text) {
+            const isCompleted = result.status === 'completed';
+            addBubble('assistant', result.text.replace(/\n/g, '<br>'), {
+                reaction: isCompleted ? '✅' : (result.status === 'workflow_proposed' ? '⚡' : ''),
+                done: isCompleted
+            });
+        }
 
-                finalSystemPrompt = `You are a specialized sub-agent: ${activeDelegation.agentId}.
-Your primary instructions for this isolated task: ${activeDelegation.task_instructions}
-You have been explicitly forwarded the following strict capabilities: ${activeDelegation.forward_skills?.join(", ") || "None"}.
-Execute your task safely. If you need tools, propose them via <polar_workflow>.`;
-            } else {
-                // We are the Primary Orchestrator
-                finalSystemPrompt += `\n\n[MULTI-AGENT ORCHESTRATION ENGINE]
-You are the Primary Orchestrator. You handle simple queries natively.
-If the user asks for complex flows, deep reviews, long-running tasks, or writing assignments, YOU MUST DELEGATE to a sub-agent.
-When delegating, explicitly forward capabilities to the sub-agent.
+        if (result.status === 'workflow_proposed' && result.workflowId) {
+            const workflowId = result.workflowId;
+            const steps = result.steps || [];
 
-Available pre-configured sub-agents:
-${JSON.stringify(MULTI_AGENT_CONFIG.availableProfiles, null, 2)}
+            let wfHtml = `<strong>⚡ Proposed Execution Workflow:</strong><br><ul style="margin-top: 8px; padding-left: 16px; opacity: 0.8">`;
+            steps.forEach(s => {
+                wfHtml += `<li><code>${s.capabilityId}</code> (from ${s.extensionId})</li>`;
+            });
+            wfHtml += `</ul><div style="margin-top: 12px; display:flex; gap:8px;">
+                <button id="wf-approve-btn-${workflowId}" class="action-btn outline" style="font-size: 12px; padding: 6px 12px; color: var(--primary-glow); border-color: var(--primary-glow)">Execute</button>
+                <button id="wf-reject-btn-${workflowId}" class="action-btn outline" style="font-size: 12px; padding: 6px 12px; color: var(--danger); border-color: var(--danger)">Reject</button>
+            </div>`;
 
-Models allowlist (use these if spinning up unpinned profile):
-${JSON.stringify(MULTI_AGENT_CONFIG.allowlistedModels, null, 2)}
+            const wfDiv = addBubble('assistant', wfHtml);
 
-To delegate to a sub-agent, propose a workflow step using the tool "delegate_to_agent":
-{
-  "extensionId": "system",
-  "extensionType": "core",
-  "capabilityId": "delegate_to_agent",
-  "args": {
-    "agentId": "@writer_agent",
-    "model_override": "claude-3-5-opus-latest",
-    "task_instructions": "Review inbox...",
-    "forward_skills": ["email_mcp"]
-  }
-}
+            wfDiv.querySelector(`#wf-approve-btn-${workflowId}`).addEventListener('click', async () => {
+                wfDiv.querySelectorAll('button').forEach(b => b.remove());
+                addBubble('system', 'Executing Workflow Tools...');
 
-[WORKFLOW CAPABILITY ENGINE]
-You have the ability to propose deterministic workflows.
-If the request requires executing tools or delegating, explicitly propose a workflow by outputting a JSON block wrapped exactly in <polar_workflow>...</polar_workflow> tags.
-The JSON must be an array of step objects, where each step has "extensionId", "extensionType", "capabilityId", and "args".
-For delegation, use capabilityId: "delegate_to_agent", extensionId: "system", extensionType: "core".
-For sub-agent task completion, use capabilityId: "complete_task", extensionId: "system", extensionType: "core".
-Always explain your plan to the user briefly before outputting the <polar_workflow> block.`;
-            }
-
-            // Sync History
-            const historyData = await fetchApi('getSessionHistory', { sessionId, limit: 20 });
-            let messages = historyData?.items ? historyData.items.map(m => ({ role: m.role, content: m.text })) : [];
-
-            // Execute Generation
-            const generatingIndicator = addBubble('assistant', '<span class="pulsing">Generating bounds...</span>');
-
-            const result = await fetchApi('generateOutput', {
-                executionType: "handoff",
-                providerId: finalProviderId,
-                model: finalModelId,
-                system: finalSystemPrompt,
-                messages: messages,
-                prompt: ""
+                const execIndicator = addBubble('assistant', '<span class="pulsing">⚡ Executing & Summarizing...</span>');
+                try {
+                    const execResult = await fetchApi('executeWorkflow', { workflowId });
+                    execIndicator.remove();
+                    await processOrchestratorResponse(execResult);
+                } catch (e) {
+                    execIndicator.remove();
+                    addBubble('system', '<span style="color:var(--danger)">Error: ' + e.message + '</span>');
+                }
             });
 
+            wfDiv.querySelector(`#wf-reject-btn-${workflowId}`).addEventListener('click', async () => {
+                wfDiv.querySelectorAll('button').forEach(b => b.remove());
+                addBubble('system', 'Workflow Rejected.');
+                try {
+                    await fetchApi('rejectWorkflow', { workflowId });
+                } catch (e) {
+                    console.error("Failed to reject workflow", e);
+                }
+            });
+        }
+    }
+
+    async function handleOrchestratorTurn(text = null, messageId = null, replyToMessageId = null) {
+        try {
+            const generatingIndicator = addBubble('assistant', '<span class="pulsing">🧠 Thinking...</span>');
+
+            const payload = {
+                sessionId,
+                userId: "ui-user",
+                text: text || "",
+                messageId: messageId || crypto.randomUUID(),
+                replyToMessageId: replyToMessageId || undefined,
+                channelMetadata: {
+                    source: "polar-web-ui",
+                    userAgent: navigator.userAgent
+                }
+            };
+
+            const result = await fetchApi('orchestrate', payload);
             generatingIndicator.remove();
 
-            if (result && result.text) {
-                let responseText = result.text;
-                const workflowMatch = responseText.match(/<polar_workflow>([\s\S]*?)<\/polar_workflow>/);
-
-                if (workflowMatch) {
-                    const workflowJsonString = workflowMatch[1].trim();
-                    responseText = responseText.replace(workflowMatch[0], '').trim();
-
-                    if (responseText) {
-                        addBubble('assistant', responseText.replace(/\\n/g, '<br>'));
-                        await fetchApi('appendMessage', {
-                            sessionId,
-                            userId: "assistant",
-                            messageId: 'msg_a_' + Date.now(),
-                            role: "assistant",
-                            text: responseText,
-                            timestampMs: Date.now()
-                        });
-                    }
-
-                    try {
-                        pendingWorkflow = JSON.parse(workflowJsonString);
-
-                        // Render Workflow Box
-                        let wfHtml = `<strong>⚡ Proposed Execution Workflow:</strong><br><ul style="margin-top: 8px; padding-left: 16px; opacity: 0.8">`;
-                        pendingWorkflow.forEach(s => {
-                            wfHtml += `<li><code>${s.capabilityId}</code> (from ${s.extensionId})</li>`;
-                        });
-                        wfHtml += `</ul><div style="margin-top: 12px; display:flex; gap:8px;">
-                            <button id="wf-approve-btn" class="action-btn outline" style="font-size: 12px; padding: 6px 12px; color: var(--primary-glow); border-color: var(--primary-glow)">Execute</button>
-                            <button id="wf-reject-btn" class="action-btn outline" style="font-size: 12px; padding: 6px 12px; color: var(--danger); border-color: var(--danger)">Reject</button>
-                        </div>`;
-
-                        const wfDiv = addBubble('assistant', wfHtml);
-
-                        // Attach Listeners
-                        wfDiv.querySelector('#wf-approve-btn').addEventListener('click', async () => {
-                            wfDiv.querySelectorAll('button').forEach(b => b.remove()); // remove buttons
-                            await executePendingWorkflow();
-                        });
-                        wfDiv.querySelector('#wf-reject-btn').addEventListener('click', () => {
-                            wfDiv.querySelectorAll('button').forEach(b => b.remove()); // remove buttons
-                            addBubble('system', 'Workflow Rejected.');
-                            pendingWorkflow = null;
-                        });
-
-                    } catch (e) {
-                        addBubble('system', 'Agent proposed invalid JSON workflow block.');
-                    }
-                } else {
-                    addBubble('assistant', responseText.replace(/\\n/g, '<br>'));
-                    await fetchApi('appendMessage', {
-                        sessionId,
-                        userId: "assistant", // Using system UUID in production
-                        messageId: 'msg_a_' + Date.now(),
-                        role: "assistant",
-                        text: responseText,
-                        timestampMs: Date.now()
-                    });
-                }
-            }
+            await processOrchestratorResponse(result);
 
         } catch (e) {
             addBubble('system', '<span style="color:var(--danger)">Error talking to Control Plane: ' + e.message + '</span>');
         }
     }
 
-
-    async function executePendingWorkflow() {
-        if (!pendingWorkflow) return;
-        const stepsToRun = [...pendingWorkflow];
-        pendingWorkflow = null;
-
-        addBubble('system', 'Executing Workflow Tools...');
-        const toolResults = [];
-
-        for (const step of stepsToRun) {
-            const capabilityId = step.capabilityId;
-            const extensionId = step.extensionId;
-            const extensionType = step.extensionType || "mcp";
-            const parsedArgs = step.args || {};
-
-            if (capabilityId === "delegate_to_agent") {
-                activeDelegation = parsedArgs;
-                toolResults.push({
-                    tool: capabilityId,
-                    status: "delegated",
-                    output: `Successfully spun up sub-agent ${parsedArgs.agentId}.`
-                });
-
-                await fetchApi('appendMessage', {
-                    sessionId, userId: "system", role: "system",
-                    messageId: `msg_sys_${Date.now()}_delegation`,
-                    text: `[DELEGATION ACTIVE] ${JSON.stringify(parsedArgs)}`,
-                    timestampMs: Date.now()
-                });
-                addBubble('system', `🔄 Handoff to ${parsedArgs.agentId}...`);
-                continue;
-            }
-
-            if (capabilityId === "complete_task") {
-                toolResults.push({
-                    tool: capabilityId,
-                    status: "completed",
-                    output: "Handed control back to Primary Orchestrator."
-                });
-
-                activeDelegation = null;
-                await fetchApi('appendMessage', {
-                    sessionId, userId: "system", role: "system",
-                    messageId: `msg_sys_${Date.now()}_delegation_clear`,
-                    text: `[DELEGATION CLEARED]`,
-                    timestampMs: Date.now()
-                });
-                addBubble('system', `🔄 Returning control to Primary Orchestrator...`);
-                continue;
-            }
-
-            try {
-                // Execute Real Sandbox Call!
-                const output = await fetchApi('executeExtension', {
-                    extensionId: extensionId,
-                    extensionType: extensionType,
-                    capabilityId: capabilityId,
-                    sessionId: sessionId,
-                    userId: "ui-user",
-                    capabilityScope: {},
-                    input: parsedArgs
-                });
-
-                toolResults.push({
-                    tool: capabilityId,
-                    status: output?.status || "completed",
-                    output: output?.output || output?.error || "Silent completion."
-                });
-
-                addBubble('tool', `✅ ${capabilityId} (${output?.status})`);
-
-            } catch (err) {
-                toolResults.push({ tool: capabilityId, status: "error", error: err.message });
-                addBubble('tool', `❌ ${capabilityId} failed`);
-            }
-        }
-
-        // Write Results to Memory
-        await fetchApi('appendMessage', {
-            sessionId: sessionId,
-            userId: "system",
-            messageId: `msg_sys_${Date.now()}`,
-            role: "system",
-            text: `[TOOL RESULTS]\n${JSON.stringify(toolResults, null, 2)}`,
-            timestampMs: Date.now()
-        });
-
-        // Loop the AI back!
-        addBubble('system', 'Parsing Execution Results...');
-        await processOrchestrationLoop();
-    }
-
-
     inputForm.addEventListener('submit', async (e) => {
         e.preventDefault();
         const text = textarea.value.trim();
         if (!text) return;
 
-        // Reset
         textarea.value = '';
         addBubble('user', text);
 
-        // Append to memory
-        await fetchApi('appendMessage', {
-            sessionId,
-            userId: "ui-user",
-            messageId: 'msg_u_' + Date.now(),
-            role: "user",
-            text: text,
-            timestampMs: Date.now()
-        });
-
-        await processOrchestrationLoop();
+        const messageId = crypto.randomUUID();
+        await handleOrchestratorTurn(text, messageId);
     });
 
     // Populate existing history on load? Let's just say hello for now:

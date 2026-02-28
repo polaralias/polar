@@ -1,4 +1,7 @@
 import crypto from 'crypto';
+import { validateForwardSkills, validateModelOverride, computeCapabilityScope } from './capability-scope.mjs';
+import { classifyUserMessage, applyUserTurn, selectReplyAnchor } from './routing-policy-engine.mjs';
+import { parseModelProposal, expandTemplate, validateSteps } from './workflow-engine.mjs';
 
 /**
  * @typedef {Object} PolarEnvelope
@@ -20,16 +23,13 @@ export function createOrchestrator({
     gateway, // ControlPlaneGateway for config
     now = Date.now
 }) {
-    // In-memory workflow storage for demo/v1, should move to a state store if needed
     const PENDING_WORKFLOWS = new Map();
     const WORKFLOW_TTL_MS = 30 * 60 * 1000;
     const WORKFLOW_MAX_SIZE = 100;
 
-    // Thread State Storage: sessionId -> { threads: [], activeThreadId: null }
     const SESSION_THREADS = new Map();
-    const THREAD_TTL_MS = 60 * 60 * 1000; // 1 hour
+    const THREAD_TTL_MS = 60 * 60 * 1000;
 
-    // Periodic cleanup
     setInterval(() => {
         const currentTime = now();
         for (const [id, entry] of PENDING_WORKFLOWS) {
@@ -46,71 +46,51 @@ export function createOrchestrator({
     }, 5 * 60 * 1000);
 
     return Object.freeze({
-        /**
-         * Orchestrate a single conversation turn.
-         * @param {PolarEnvelope} envelope
-         */
         async orchestrate(envelope) {
             const { sessionId, userId, text, messageId, metadata = {} } = envelope;
             const polarSessionId = sessionId;
 
-            // 0. Deterministic Pre-Routing
-            const sessionState = SESSION_THREADS.get(polarSessionId) || { threads: [], activeThreadId: null };
+            let sessionState = SESSION_THREADS.get(polarSessionId) || { threads: [], activeThreadId: null };
             let routingRecommendation = null;
+            let currentTurnAnchor = null;
 
             if (text) {
-                const normalized = text.toLowerCase().trim().replace(/[?!.]+$/, '');
-                const statusNudges = ["any luck", "update", "status", "anyone there", "any news", "hello", "hi", "hey"];
-                const overrides = ["actually", "ignore", "stop", "cancel", "instead", "forget", "wait"];
+                const classification = classifyUserMessage({ text, sessionState });
+                sessionState = applyUserTurn({ sessionState, classification, rawText: text, now });
+                SESSION_THREADS.set(polarSessionId, sessionState);
 
-                if (statusNudges.includes(normalized) || statusNudges.some(n => normalized.startsWith(n + " "))) {
-                    const target = [...sessionState.threads].reverse().find(t => t.status === 'in_progress' || t.status === 'blocked' || t.status === 'waiting_for_user');
-                    if (target) routingRecommendation = `[ROUTING_HINT] This is a status nudge. Attach to thread: ${target.id} (${target.intent})`;
-                } else if (overrides.some(o => normalized.startsWith(o))) {
-                    routingRecommendation = `[ROUTING_HINT] This is an override/steering message. Priority: Attach to active thread and pivot.`;
-                } else {
-                    // Try to match pending questions in threads
-                    const waitingThread = sessionState.threads.find(t => t.status === 'waiting_for_user' && t.pending_question);
-                    if (waitingThread && normalized.length < 50) { // Short answers are likely slot fillers
-                        routingRecommendation = `[ROUTING_HINT] This looks like a direct answer to a pending question in thread: ${waitingThread.id}.`;
-                    }
+                const anchor = selectReplyAnchor({ sessionState, classification });
+                currentTurnAnchor = anchor.useInlineReply;
+
+                if (classification.type === "status_nudge") {
+                    routingRecommendation = `[ROUTING_HINT] This is a status nudge. Answer from the context of thread: ${classification.targetThreadId}`;
+                } else if (classification.type === "override") {
+                    routingRecommendation = `[ROUTING_HINT] This is an override/steering message. Priority: Handle in current active thread.`;
+                } else if (classification.type === "answer_to_pending") {
+                    routingRecommendation = `[ROUTING_HINT] This is an explicit slot fill for thread: ${classification.targetThreadId}. No need to clarify intent.`;
                 }
             }
 
-            // 1. Resolve Profile
             const profile = await profileResolutionGateway.resolve({ sessionId: polarSessionId });
-
-            // 2. Resolve Model Policy
             const policy = profile.profileConfig?.modelPolicy || {};
             const providerId = policy.providerId || "openai";
-            // BUG-013 fix: Use consistent default model name
             const model = policy.modelId || "gpt-4.1-mini";
 
             let systemPrompt = profile.profileConfig?.systemPrompt || "You are a helpful Polar AI assistant. Be concise and friendly.";
 
-            // 3. Load Multi-Agent Config
             let multiAgentConfig;
             try {
                 const configResult = await gateway.getConfig({ resourceType: 'multi_agent', resourceId: 'default' });
                 if (configResult.status === 'found' && configResult.record?.config) {
                     multiAgentConfig = configResult.record.config;
                 }
-            } catch {
-                // Config not found, use minimal defaults
-            }
+            } catch { }
 
             if (!multiAgentConfig) {
-                // Fallback defaults
                 multiAgentConfig = {
                     allowlistedModels: [
-                        "gpt-4.1-mini",
-                        "gpt-4.1-nano",
-                        "claude-sonnet-4-6",
-                        "claude-haiku-4-5",
-                        "gemini-3.1-pro-preview",
-                        "gemini-3-flash-preview",
-                        "deepseek-reasoner",
-                        "deepseek-chat"
+                        "gpt-4.1-mini", "gpt-4.1-nano", "claude-sonnet-4-6", "claude-haiku-4-5",
+                        "gemini-3.1-pro-preview", "gemini-3-flash-preview", "deepseek-reasoner", "deepseek-chat"
                     ],
                     availableProfiles: [
                         {
@@ -144,54 +124,50 @@ To delegate to a sub-agent, propose a workflow step using the tool "delegate_to_
 {
   "tool": "delegate_to_agent",
   "args": {
-    "agentId": "@writer_agent", // or "dynamic" for an ad-hoc specialized agent
-    "model_override": "gpt-4.1-mini", // Pick the smartest model from the allowlist for complex tasks if unpinned
-    "task_instructions": "Review the inbox and summarize urgent emails.",
-    "forward_skills": ["email_mcp", "search_web"] // Programmatic capabilities to give the sub-agent
+    "agentId": "@writer_agent",
+    "model_override": "gpt-4.1-mini",
+    "task_instructions": "Review inbox...",
+    "forward_skills": ["email_mcp", "search_web"]
   }
 }
-If delegating, do not do the work yourself. The sub-agent will communicate directly with the user to save tokens.
 
 [WORKFLOW CAPABILITY ENGINE]
-You have the ability to propose deterministic workflows.
-If the user's request requires executing tools or delegating, DO NOT just reply with text.
-Instead, explicitly propose a workflow by outputting a JSON block wrapped exactly in <polar_workflow>...</polar_workflow> tags.
-The JSON must be an array of step objects, where each step has "extensionId", "extensionType" (e.g. "mcp" or "skill"), "capabilityId" (the tool name), and "args" (object).
-For delegation, use capabilityId: "delegate_to_agent", extensionId: "system", extensionType: "core".
-For sub-agent task completion, use capabilityId: "complete_task", extensionId: "system", extensionType: "core".
-Always explain your plan to the user briefly before outputting the <polar_workflow> block.
+Propose workflows via <polar_action> blocks. You MUST only use established templates. Arbitrary step chains are not supported.
+
+Available Templates:
+- lookup_weather(location)
+- search_web(query)
+- draft_email(to, subject, body)
+- delegate_to_agent(agentId, task_instructions, forward_skills?, model_override?)
+
+Example:
+<polar_action>
+{
+  "template": "lookup_weather",
+  "args": { "location": "Swansea" }
+}
+</polar_action>
+
+For returning control after a task, use template "complete_task".
 
 [CONVERSATION ROUTER & THREAD STATE]
-You are a stateful orchestrator. You manage multiple "micro-threads" within a single chat.
+The backend manages state machine deterministically. You may optionally output a <thread_state> block to suggest slot values or suggest a status change.
+If you need to ask a question to fill a slot, suggest "pending_question", "slot_key", and "expected_type" (yes_no, location, date_time, freeform).
+
+Example:
+<thread_state>
+{
+  "status": "waiting_for_user",
+  "pending_question": "Which city?",
+  "slot_key": "location",
+  "expected_type": "location"
+}
+</thread_state>
+
 Current Session Threads:
 ${JSON.stringify(sessionState, null, 2)}
+${routingRecommendation || ""}`;
 
-${routingRecommendation || ""}
-
-Routing Rules (Priority Order):
-1. **Override/steering**: If user says "Actually...", "Stop", "Ignore that", attach to active thread and pivot.
-2. **Answer to pending**: If user message fits the "pending_question" slot of a thread, attach and proceed.
-3. **Status/progress**: If user says "Any luck?", "Update?", attach to the last in-progress thread and provide status.
-4. **New request**: Create a new thread.
-
-Output your internal state updates in a <thread_state> block (JSON):
-{
-  "activeThreadId": "uuid",
-  "threads": [
-    {
-      "id": "uuid",
-      "intent": "string",
-      "slots": { "key": "value" },
-      "status": "waiting_for_user" | "in_progress" | "blocked" | "done",
-      "pending_question": "string (optional)",
-      "summary": "1-3 line description"
-    }
-  ],
-  "useInlineReply": boolean // Set to true ONLY if responding to older messages or multiple threads are active/ambiguous.
-}
-Do not repeat the threads if they haven't changed, but ALWAYS update "lastActivityTs" implicitly by returning the JSON.`;
-
-            // 4. Append User Message
             await chatManagementGateway.appendMessage({
                 sessionId: polarSessionId,
                 userId: userId.toString(),
@@ -201,355 +177,187 @@ Do not repeat the threads if they haven't changed, but ALWAYS update "lastActivi
                 timestampMs: now()
             });
 
-            // 5. Apply Retention
-            try {
-                await chatManagementGateway.applyRetentionPolicy({
-                    sessionId: polarSessionId,
-                    retentionDays: profile.profileConfig?.retentionDays || 30
-                });
-            } catch { }
-
-            // 6. Fetch History
-            const contextWindowLimit = profile.profileConfig?.contextWindow || 20;
             const historyData = await chatManagementGateway.getSessionHistory({
                 sessionId: polarSessionId,
-                limit: 500
+                limit: profile.profileConfig?.contextWindow || 20
             });
 
-            let messages = [];
-            if (historyData?.items) {
-                messages = historyData.items.map(m => ({
-                    role: m.role,
-                    content: m.text
-                }));
+            let messages = historyData?.items ? historyData.items.map(m => ({ role: m.role, content: m.text })) : [];
 
-                if (messages.length > contextWindowLimit) {
-                    messages = messages.slice(messages.length - contextWindowLimit);
-                }
-            }
-
-            // 7. Generate Output
             const result = await providerGateway.generate({
                 executionType: "handoff",
                 providerId,
                 model,
                 system: systemPrompt,
-                messages: messages.length > 0 && messages[messages.length - 1].role === 'user'
-                    ? messages.slice(0, -1)
-                    : messages,
+                messages: messages.length > 0 && messages[messages.length - 1].role === 'user' ? messages.slice(0, -1) : messages,
                 prompt: text || "Process user message."
             });
 
             if (result && result.text) {
                 const responseText = result.text;
-                const workflowMatch = responseText.match(/<polar_workflow>([\s\S]*?)<\/polar_workflow>/);
+                const actionMatch = responseText.match(/<polar_action>([\s\S]*?)<\/polar_action>/) || responseText.match(/<polar_workflow>([\s\S]*?)<\/polar_workflow>/);
                 const stateMatch = responseText.match(/<thread_state>([\s\S]*?)<\/thread_state>/);
-
-                let useInlineReply = false;
-                if (stateMatch) {
-                    try {
-                        const stateUpdate = JSON.parse(stateMatch[1].trim());
-                        useInlineReply = stateUpdate.useInlineReply === true;
-
-                        // Update SESSION_THREADS
-                        const currentState = SESSION_THREADS.get(polarSessionId) || { threads: [], activeThreadId: null };
-                        if (stateUpdate.threads) {
-                            stateUpdate.threads.forEach(t => t.lastActivityTs = now());
-                        }
-                        SESSION_THREADS.set(polarSessionId, {
-                            ...currentState,
-                            ...stateUpdate
-                        });
-                    } catch (e) {
-                        console.warn("Failed to parse thread_state update", e);
-                    }
-                }
+                const assistantMessageId = `msg_a_${crypto.randomUUID()}`;
 
                 const cleanText = responseText
+                    .replace(/<polar_action>[\s\S]*?<\/polar_action>/, '')
                     .replace(/<polar_workflow>[\s\S]*?<\/polar_workflow>/, '')
                     .replace(/<thread_state>[\s\S]*?<\/thread_state>/, '')
                     .trim();
 
-                if (workflowMatch) {
-                    const workflowJsonString = workflowMatch[1].trim();
-
-                    if (cleanText) {
-                        await chatManagementGateway.appendMessage({
-                            sessionId: polarSessionId,
-                            userId: "assistant",
-                            messageId: `msg_a_${crypto.randomUUID()}`,
-                            role: "assistant",
-                            text: cleanText,
-                            timestampMs: now()
-                        });
-                    }
-
-                    try {
-                        const workflowSteps = JSON.parse(workflowJsonString);
-                        const workflowId = crypto.randomUUID();
-
-                        if (PENDING_WORKFLOWS.size >= WORKFLOW_MAX_SIZE) {
-                            let oldestKey = null;
-                            let oldestTime = Infinity;
-                            for (const [id, entry] of PENDING_WORKFLOWS) {
-                                if (entry.createdAt < oldestTime) {
-                                    oldestTime = entry.createdAt;
-                                    oldestKey = id;
-                                }
-                            }
-                            if (oldestKey) PENDING_WORKFLOWS.delete(oldestKey);
-                        }
-
-                        PENDING_WORKFLOWS.set(workflowId, {
-                            steps: workflowSteps,
-                            createdAt: now(),
-                            polarSessionId,
-                            multiAgentConfig // Keep for later use in execution
-                        });
-
-                        return {
-                            status: 'workflow_proposed',
-                            text: cleanText,
-                            workflowId,
-                            steps: workflowSteps,
-                            useInlineReply
-                        };
-                    } catch (jsonErr) {
-                        return {
-                            status: 'error',
-                            text: "⚠️ Failed to parse workflow: invalid JSON.",
-                            error: jsonErr.message
-                        };
-                    }
-                } else {
+                if (cleanText) {
                     await chatManagementGateway.appendMessage({
                         sessionId: polarSessionId,
                         userId: "assistant",
-                        messageId: `msg_a_${crypto.randomUUID()}`,
+                        messageId: assistantMessageId,
                         role: "assistant",
-                        text: cleanText || responseText,
+                        text: cleanText,
                         timestampMs: now()
                     });
+                }
+
+                if (stateMatch) {
+                    try {
+                        const stateUpdate = JSON.parse(stateMatch[1].trim());
+                        let st = SESSION_THREADS.get(polarSessionId) || { threads: [], activeThreadId: null };
+                        const threadRef = st.threads.find(t => t.id === (stateUpdate.activeThreadId || st.activeThreadId));
+                        if (threadRef) {
+                            if (stateUpdate.status === "done") {
+                                threadRef.status = "done";
+                                delete threadRef.pendingQuestion;
+                            } else if (stateUpdate.status === "waiting_for_user" && (stateUpdate.pending_question || stateUpdate.pendingQuestion)) {
+                                threadRef.status = "waiting_for_user";
+                                threadRef.pendingQuestion = {
+                                    key: stateUpdate.slot_key || stateUpdate.slotKey || "latest_answer",
+                                    expectedType: stateUpdate.expected_type || stateUpdate.expectedType || "freeform",
+                                    text: stateUpdate.pending_question || stateUpdate.pendingQuestion,
+                                    askedAtMessageId: assistantMessageId
+                                };
+                            }
+                            if (stateUpdate.slots) Object.assign(threadRef.slots, stateUpdate.slots);
+                            threadRef.lastActivityTs = now();
+                        }
+                        SESSION_THREADS.set(polarSessionId, st);
+                    } catch (e) { }
+                }
+
+                if (actionMatch) {
+                    const proposal = parseModelProposal(actionMatch[0]);
+                    if (!proposal || proposal.error) return { status: 'error', text: "⚠️ Failed to parse action proposal" };
+
+                    const workflowSteps = expandTemplate(proposal.templateId, proposal.args);
+                    const workflowId = crypto.randomUUID();
+                    PENDING_WORKFLOWS.set(workflowId, { steps: workflowSteps, createdAt: now(), polarSessionId, multiAgentConfig });
+
+                    let st = SESSION_THREADS.get(polarSessionId);
+                    if (st && st.activeThreadId) {
+                        const thread = st.threads.find(t => t.id === st.activeThreadId);
+                        if (thread) { thread.status = 'workflow_proposed'; thread.lastActivityTs = now(); }
+                    }
+
                     return {
-                        status: 'completed',
-                        text: cleanText || responseText,
-                        useInlineReply
+                        status: 'workflow_proposed',
+                        text: cleanText,
+                        workflowId,
+                        steps: workflowSteps,
+                        useInlineReply: selectReplyAnchor({ sessionState: st, classification: { type: 'new_request' } }).useInlineReply
                     };
                 }
-            }
 
-            return { status: 'error', text: "Wait, I didn't generate any text." };
+                return {
+                    status: 'completed',
+                    text: cleanText || responseText,
+                    useInlineReply: selectReplyAnchor({ sessionState: SESSION_THREADS.get(polarSessionId), classification: { type: 'filler' } }).useInlineReply
+                };
+            }
+            return { status: 'error', text: "No generation results." };
         },
 
         async executeWorkflow(workflowId) {
             const entry = PENDING_WORKFLOWS.get(workflowId);
-            if (!entry) return { status: 'error', text: "Workflow expired or not found!" };
+            if (!entry) return { status: 'error', text: "Workflow not found" };
 
             const { steps: workflowSteps, polarSessionId, multiAgentConfig } = entry;
             PENDING_WORKFLOWS.delete(workflowId);
 
             try {
+                const profile = await profileResolutionGateway.resolve({ sessionId: polarSessionId });
+                const baseAllowedSkills = profile.profileConfig?.allowedSkills || multiAgentConfig?.globalAllowedSkills || [];
+                const historyData = await chatManagementGateway.getSessionHistory({ sessionId: polarSessionId, limit: 15 });
+
+                let msgActiveDelegation = null;
+                if (historyData?.items) {
+                    for (const msg of [...historyData.items].reverse()) {
+                        if (msg.role === 'user') break;
+                        if (msg.role === 'system' && msg.text.startsWith('[DELEGATION CLEARED]')) break;
+                        if (msg.role === 'system' && msg.text.startsWith('[DELEGATION ACTIVE]')) {
+                            try { msgActiveDelegation = JSON.parse(msg.text.replace('[DELEGATION ACTIVE]', '').trim()); break; } catch (e) { }
+                        }
+                    }
+                }
+
+                const validation = validateSteps(workflowSteps, { allowedExtensionIds: ["system", ...(msgActiveDelegation?.forward_skills || baseAllowedSkills)] });
+                if (!validation.ok) return { status: 'error', text: "Workflow blocked: " + validation.errors.join(", ") };
+
                 const toolResults = [];
-                let activeDelegation = null;
+                let activeDelegation = msgActiveDelegation;
+                const capabilityScope = computeCapabilityScope({ sessionProfile: profile, multiAgentConfig, activeDelegation });
 
                 for (const step of workflowSteps) {
                     const { capabilityId, extensionId, args: parsedArgs = {}, extensionType = "mcp" } = step;
 
                     if (capabilityId === "delegate_to_agent") {
-                        activeDelegation = parsedArgs;
-                        toolResults.push({
-                            tool: capabilityId,
-                            status: "delegated",
-                            output: `Successfully spun up sub-agent ${parsedArgs.agentId}.`
-                        });
+                        const { allowedSkills, rejectedSkills, isBlocked } = validateForwardSkills({ forwardSkills: parsedArgs.forward_skills || [], sessionProfile: profile, multiAgentConfig });
+                        const { providerId, modelId, rejectedReason } = validateModelOverride({ modelOverride: parsedArgs.model_override, multiAgentConfig, basePolicy: profile.profileConfig?.modelPolicy || {} });
+
+                        if (isBlocked) {
+                            toolResults.push({ tool: capabilityId, status: "error", output: "Delegation blocked by security policy." });
+                            continue;
+                        }
+
+                        activeDelegation = { ...parsedArgs, forward_skills: allowedSkills, model_override: modelId, pinnedProvider: providerId };
+                        const output = `Successfully delegated to ${parsedArgs.agentId}.` + (rejectedSkills.length ? ` Clamped: ${rejectedSkills.join(", ")}` : "");
+                        toolResults.push({ tool: capabilityId, status: "delegated", output });
 
                         await chatManagementGateway.appendMessage({
-                            sessionId: polarSessionId,
-                            userId: "system",
-                            messageId: `msg_sys_${crypto.randomUUID()}_delegation`,
-                            role: "system",
-                            text: `[DELEGATION ACTIVE] ${JSON.stringify(parsedArgs)}`,
-                            timestampMs: now()
+                            sessionId: polarSessionId, userId: "system", role: "system",
+                            text: `[DELEGATION ACTIVE] ${JSON.stringify(activeDelegation)}`, timestampMs: now()
                         });
                         continue;
                     }
 
                     if (capabilityId === "complete_task") {
-                        toolResults.push({
-                            tool: capabilityId,
-                            status: "completed",
-                            output: "Handed control back to Primary Orchestrator."
-                        });
-
-                        await chatManagementGateway.appendMessage({
-                            sessionId: polarSessionId,
-                            userId: "system",
-                            messageId: `msg_sys_${crypto.randomUUID()}_delegation_clear`,
-                            role: "system",
-                            text: `[DELEGATION CLEARED]`,
-                            timestampMs: now()
-                        });
+                        toolResults.push({ tool: capabilityId, status: "completed", output: "Task completed." });
+                        await chatManagementGateway.appendMessage({ sessionId: polarSessionId, userId: "system", role: "system", text: `[DELEGATION CLEARED]`, timestampMs: now() });
                         continue;
                     }
 
-                    try {
-                        const output = await extensionGateway.execute({
-                            extensionId,
-                            extensionType,
-                            capabilityId,
-                            sessionId: polarSessionId,
-                            userId: "unknown",
-                            input: parsedArgs,
-                            capabilityScope: {}
-                        });
-
-                        toolResults.push({
-                            tool: capabilityId,
-                            status: output?.status || "completed",
-                            output: output?.output || output?.error || "Silent completion."
-                        });
-                    } catch (err) {
-                        toolResults.push({
-                            tool: capabilityId,
-                            status: "error",
-                            error: err.message
-                        });
-                    }
+                    const output = await extensionGateway.execute({
+                        extensionId, extensionType, capabilityId, sessionId: polarSessionId, userId: "unknown", input: parsedArgs,
+                        capabilityScope
+                    });
+                    toolResults.push({ tool: capabilityId, status: output?.status || "completed", output: output?.output || output?.error || "Done." });
                 }
 
-                await chatManagementGateway.appendMessage({
-                    sessionId: polarSessionId,
-                    userId: "system",
-                    messageId: `msg_sys_${crypto.randomUUID()}`,
-                    role: "system",
-                    text: `[TOOL RESULTS]\n${JSON.stringify(toolResults, null, 2)}`,
-                    timestampMs: now()
-                });
+                const deterministicHeader = "### 🛠️ Execution Results\n" + toolResults.map(r => (r.status === "failed" || r.status === "error" ? "❌ " : "✅ ") + `**${r.tool}**: ${typeof r.output === 'string' ? r.output.slice(0, 100) : 'Done.'}`).join("\n") + "\n\n";
+                await chatManagementGateway.appendMessage({ sessionId: polarSessionId, userId: "system", role: "system", text: `[TOOL RESULTS]\n${JSON.stringify(toolResults, null, 2)}`, timestampMs: now() });
 
-                // Final summary loop
-                const profile = await profileResolutionGateway.resolve({ sessionId: polarSessionId });
-                const policy = profile.profileConfig?.modelPolicy || {};
-
-                const historyData = await chatManagementGateway.getSessionHistory({ sessionId: polarSessionId, limit: 15 });
-                let messages = historyData?.items ? historyData.items.map(m => ({ role: m.role, content: m.text })) : [];
-
-                if (!activeDelegation && historyData?.items) {
-                    const reversed = [...historyData.items].reverse();
-                    for (const msg of reversed) {
-                        if (msg.role === 'user' && !msg.text.includes('[TOOL RESULTS]')) break;
-                        if (msg.role === 'system' && msg.text.startsWith('[DELEGATION CLEARED]')) break;
-                        if (msg.role === 'system' && msg.text.startsWith('[DELEGATION ACTIVE]')) {
-                            try { activeDelegation = JSON.parse(msg.text.replace('[DELEGATION ACTIVE]', '').trim()); break; } catch (e) { }
-                        }
-                    }
-                }
-
-                let finalProviderId = policy.providerId || "openai";
-                let finalModelId = policy.modelId || "gpt-4.1-mini";
-                let finalSystemPrompt = profile.profileConfig?.systemPrompt || "";
-
-                if (activeDelegation) {
-                    finalModelId = activeDelegation.model_override || finalModelId;
-                    if (activeDelegation.pinnedProvider) {
-                        finalProviderId = activeDelegation.pinnedProvider;
-                    } else {
-                        const agentProfile = multiAgentConfig?.availableProfiles?.find(p => p.agentId === activeDelegation.agentId);
-                        if (agentProfile?.pinnedProvider) finalProviderId = agentProfile.pinnedProvider;
-                    }
-
-                    finalSystemPrompt = `You are a specialized sub-agent: ${activeDelegation.agentId}.
-Your primary instructions for this isolated task: ${activeDelegation.task_instructions}
-You have been explicitly forwarded the following strict capabilities: ${activeDelegation.forward_skills?.join(", ") || "None"}.
-Execute your task safely, communicating directly with the user. If you need tools, propose them via <polar_workflow>.`;
-                }
-
+                const finalSystemPrompt = activeDelegation ? `You are sub-agent ${activeDelegation.agentId}. Task: ${activeDelegation.task_instructions}. Skills: ${activeDelegation.forward_skills?.join(", ")}` : profile.profileConfig?.systemPrompt;
                 const finalResult = await providerGateway.generate({
                     executionType: "handoff",
-                    providerId: finalProviderId,
-                    model: finalModelId,
+                    providerId: activeDelegation?.pinnedProvider || profile.profileConfig?.modelPolicy?.providerId || "openai",
+                    model: activeDelegation?.model_override || profile.profileConfig?.modelPolicy?.modelId || "gpt-4.1-mini",
                     system: finalSystemPrompt,
-                    messages,
-                    prompt: "Summarize the tool results and respond to the user."
+                    messages: historyData?.items ? historyData.items.map(m => ({ role: m.role, content: m.text })) : [],
+                    prompt: `Analyze these execution results and summarize for the user. Do NOT hide any failures listed in the header.\n\n${deterministicHeader}`
                 });
 
-                if (finalResult && finalResult.text) {
-                    const responseText = finalResult.text;
-                    const workflowMatch = responseText.match(/<polar_workflow>([\s\S]*?)<\/polar_workflow>/);
-                    const stateMatch = responseText.match(/<thread_state>([\s\S]*?)<\/thread_state>/);
+                const responseText = finalResult?.text || "Execution complete.";
+                const cleanText = responseText.replace(/<polar_workflow>[\s\S]*?<\/polar_workflow>/, '').replace(/<thread_state>[\s\S]*?<\/thread_state>/, '').trim();
 
-                    let useInlineReply = false;
-                    if (stateMatch) {
-                        try {
-                            const stateUpdate = JSON.parse(stateMatch[1].trim());
-                            useInlineReply = stateUpdate.useInlineReply === true;
-
-                            const currentState = SESSION_THREADS.get(polarSessionId) || { threads: [], activeThreadId: null };
-                            if (stateUpdate.threads) {
-                                stateUpdate.threads.forEach(t => t.lastActivityTs = now());
-                            }
-                            SESSION_THREADS.set(polarSessionId, {
-                                ...currentState,
-                                ...stateUpdate
-                            });
-                        } catch (e) {
-                            console.warn("Failed to parse thread_state update in workflow summary", e);
-                        }
-                    }
-
-                    const cleanText = responseText
-                        .replace(/<polar_workflow>[\s\S]*?<\/polar_workflow>/, '')
-                        .replace(/<thread_state>[\s\S]*?<\/thread_state>/, '')
-                        .trim();
-
-                    if (workflowMatch) {
-                        // Support recursive workflows from summary
-                        const workflowJsonString = workflowMatch[1].trim();
-                        try {
-                            const workflowSteps = JSON.parse(workflowJsonString);
-                            const nextWorkflowId = crypto.randomUUID();
-                            PENDING_WORKFLOWS.set(nextWorkflowId, {
-                                steps: workflowSteps,
-                                createdAt: now(),
-                                polarSessionId,
-                                multiAgentConfig
-                            });
-
-                            if (cleanText) {
-                                await chatManagementGateway.appendMessage({
-                                    sessionId: polarSessionId,
-                                    userId: "assistant",
-                                    messageId: `msg_a_${crypto.randomUUID()}`,
-                                    role: "assistant",
-                                    text: cleanText,
-                                    timestampMs: now()
-                                });
-                            }
-
-                            return {
-                                status: 'workflow_proposed',
-                                text: cleanText,
-                                workflowId: nextWorkflowId,
-                                steps: workflowSteps,
-                                useInlineReply
-                            };
-                        } catch (e) { }
-                    }
-
-                    await chatManagementGateway.appendMessage({
-                        sessionId: polarSessionId,
-                        userId: "assistant",
-                        messageId: `msg_a_${crypto.randomUUID()}`,
-                        role: "assistant",
-                        text: cleanText || responseText,
-                        timestampMs: now()
-                    });
-                    return { status: 'completed', text: cleanText || responseText, useInlineReply };
-                }
-
-                return { status: 'completed', text: "Tools executed successfully." };
-            } catch (execErr) {
-                return { status: 'error', text: `Workflow execution crashed: ${execErr.message}` };
-            }
+                await chatManagementGateway.appendMessage({ sessionId: polarSessionId, userId: "assistant", role: "assistant", text: cleanText, timestampMs: now() });
+                return { status: 'completed', text: deterministicHeader + cleanText, useInlineReply: selectReplyAnchor({ sessionState: SESSION_THREADS.get(polarSessionId), classification: { type: 'filler' } }).useInlineReply };
+            } catch (err) { return { status: 'error', text: `Crashed: ${err.message}` }; }
         },
 
         async rejectWorkflow(workflowId) {
@@ -557,5 +365,4 @@ Execute your task safely, communicating directly with the user. If you need tool
             return { status: 'rejected' };
         }
     });
-
 }

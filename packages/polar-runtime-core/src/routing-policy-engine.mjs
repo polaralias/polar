@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import {
   ContractValidationError,
   HANDOFF_PROFILE_RESOLUTION_SCOPES,
@@ -566,4 +567,176 @@ export function createRoutingPolicyEngine(config = {}) {
       );
     },
   });
+}
+
+/**
+ * Classifies a user message for routing to appropriate thread operations.
+ * @param {Object} args
+ * @param {string} args.text The raw user message
+ * @param {Object} args.sessionState The current threads in the session
+ * @returns {{ type: 'override'|'answer_to_pending'|'status_nudge'|'new_request'|'filler', targetThreadId?: string, intent?: string, slotKey?: string, slotValue?: string }}
+ */
+export function classifyUserMessage({ text = "", sessionState = { threads: [], activeThreadId: null } }) {
+  const normalized = text.toLowerCase().trim().replace(/[?!.]+$/, "");
+
+  // 1) Override / steering beats everything
+  const overrideKeywords = ["actually", "ignore", "stop", "cancel", "instead", "forget", "wait", "scrap that", "scrap it"];
+  if (overrideKeywords.some(o => normalized.startsWith(o))) {
+    return {
+      type: "override",
+      targetThreadId: sessionState.activeThreadId
+    };
+  }
+
+  // 2) Status/progress nudge
+  // Architecture says: "attaches to most recent in_progress/blocked thread even if another thread has pending_question"
+  const statusNudgeKeywords = ["any luck", "update", "status", "anyone there", "any news", "hello", "hi", "hey", "?"];
+  if (statusNudgeKeywords.includes(normalized) ||
+    (normalized.length === 0 && text.trim() === "?") ||
+    statusNudgeKeywords.some(n => normalized.startsWith(n + " "))) {
+
+    const target = [...sessionState.threads].reverse().find(t =>
+      ['in_progress', 'blocked', 'workflow_proposed'].includes(t.status)
+    );
+    if (target) {
+      return {
+        type: "status_nudge",
+        targetThreadId: target.id
+      };
+    }
+  }
+
+  // 3) Answer to pending question
+  const pendingThread = [...sessionState.threads].reverse().find(t =>
+    t.status === 'waiting_for_user' && t.pendingQuestion
+  );
+
+  if (pendingThread) {
+    const { expectedType } = pendingThread.pendingQuestion;
+    if (isFittedAnswer(text, expectedType)) {
+      return {
+        type: "answer_to_pending",
+        targetThreadId: pendingThread.id,
+        slotKey: pendingThread.pendingQuestion.key,
+        slotValue: text
+      };
+    }
+  }
+
+  // 4) Filler (e.g. "ok", "thanks", "cool") - non-mutating
+  const fillerKeywords = ["ok", "okay", "thanks", "thank you", "cool", "got it", "nice", "great", "well done"];
+  if (fillerKeywords.includes(normalized)) {
+    return { type: "filler" };
+  }
+
+  // 5) New request
+  return { type: "new_request" };
+}
+
+/**
+ * Checks if the text likely fits the expected type for a slot.
+ */
+function isFittedAnswer(text, expectedType) {
+  if (!expectedType) return true;
+  const normalized = text.toLowerCase().trim();
+
+  switch (expectedType) {
+    case 'yes_no':
+      return /^(yes|no|y|n|yep|nope|sure|nah|ok|okay|confirm|cancel)$/.test(normalized);
+    case 'location':
+      // Heuristic: No commands, at least a couple chars
+      return !/^(actually|ignore|stop|update|status|any luck)/.test(normalized) && text.length >= 2;
+    case 'date_time':
+      return /(today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|january|february|march|april|may|june|july|august|september|october|november|december|at|pm|am|clock|next|last|now)/.test(normalized);
+    case 'freeform':
+      return text.length > 0;
+    default:
+      return true;
+  }
+}
+
+/**
+ * Mutates session state deterministically based on classification.
+ */
+export function applyUserTurn({ sessionState = { threads: [], activeThreadId: null }, classification, rawText, now = Date.now }) {
+  const nextState = {
+    threads: sessionState.threads.map(t => ({ ...t })),
+    activeThreadId: sessionState.activeThreadId
+  };
+
+  const ts = typeof now === 'function' ? now() : Date.now();
+
+  if (classification.type === "new_request") {
+    const newThread = {
+      id: crypto.randomUUID(),
+      intent: "unknown",
+      slots: {},
+      status: "in_progress",
+      summary: rawText.substring(0, 50) + (rawText.length > 50 ? "..." : ""),
+      lastActivityTs: ts,
+      createdAt: ts
+    };
+    nextState.threads.push(newThread);
+    nextState.activeThreadId = newThread.id;
+  }
+  else if (classification.type === "override" && classification.targetThreadId) {
+    const thread = nextState.threads.find(t => t.id === classification.targetThreadId);
+    if (thread) {
+      thread.status = "in_progress";
+      delete thread.pendingQuestion;
+      thread.lastActivityTs = ts;
+      nextState.activeThreadId = thread.id;
+    }
+  }
+  else if (classification.type === "answer_to_pending" && classification.targetThreadId) {
+    const thread = nextState.threads.find(t => t.id === classification.targetThreadId);
+    if (thread) {
+      thread.status = "in_progress";
+      if (classification.slotKey) {
+        thread.slots[classification.slotKey] = classification.slotValue;
+      } else {
+        thread.slots["latest_answer"] = classification.slotValue;
+      }
+      delete thread.pendingQuestion;
+      thread.lastActivityTs = ts;
+      nextState.activeThreadId = thread.id;
+    }
+  }
+  else if (classification.type === "status_nudge" && classification.targetThreadId) {
+    const thread = nextState.threads.find(t => t.id === classification.targetThreadId);
+    if (thread) {
+      thread.lastActivityTs = ts;
+      nextState.activeThreadId = thread.id;
+    }
+  }
+
+  return nextState;
+}
+
+/**
+ * Determines whether to use an inline reply style and to what anchor.
+ */
+export function selectReplyAnchor({ sessionState, classification }) {
+  const activeThreads = sessionState.threads.filter(t => !["done", "failed"].includes(t.status));
+
+  // Rules for inline reply:
+  // 1. Multiple active threads (ambiguity risk)
+  const multipleActive = activeThreads.length > 1;
+
+  // 2. Replying to a non-active thread (topic switch or jumping back)
+  const isTargetingNonActive = classification.targetThreadId && classification.targetThreadId !== sessionState.activeThreadId;
+
+  // 3. Repair / Override
+  const isRepair = classification.type === "override";
+
+  if (multipleActive || isTargetingNonActive || isRepair) {
+    const targetId = classification.targetThreadId || sessionState.activeThreadId;
+    const targetThread = sessionState.threads.find(t => t.id === targetId);
+    return {
+      useInlineReply: true,
+      anchorMessageId: targetThread?.pendingQuestion?.askedAtMessageId
+    };
+  }
+
+  return { useInlineReply: false };
 }

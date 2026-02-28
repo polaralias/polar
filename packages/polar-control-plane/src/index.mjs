@@ -683,16 +683,18 @@ export function createControlPlaneService(config = {}) {
     },
 
     /**
-     * @param {string} workflowId
+     * @param {string | { workflowId: string }} request
      */
-    async executeWorkflow(workflowId) {
+    async executeWorkflow(request) {
+      const workflowId = typeof request === 'string' ? request : request.workflowId;
       return orchestrator.executeWorkflow(workflowId);
     },
 
     /**
-     * @param {string} workflowId
+     * @param {string | { workflowId: string }} request
      */
-    async rejectWorkflow(workflowId) {
+    async rejectWorkflow(request) {
+      const workflowId = typeof request === 'string' ? request : request.workflowId;
       return orchestrator.rejectWorkflow(workflowId);
     }
   });

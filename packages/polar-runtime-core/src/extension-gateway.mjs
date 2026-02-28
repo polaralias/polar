@@ -260,11 +260,11 @@ export function createExtensionGateway({
     const extensionType = /** @type {"skill"|"mcp"|"plugin"} */ (input.extensionType);
     const operation = /** @type {string} */ (input.operation);
     const requestedPermissions = normalizePermissions(
-      /** @type {readonly string[]|undefined} */ (input.requestedPermissions),
+      /** @type {readonly string[]|undefined} */(input.requestedPermissions),
     );
     const currentState = extensionStates.get(extensionId);
     const previousPermissions = normalizePermissions(
-      /** @type {readonly string[]|undefined} */ (currentState?.permissions),
+      /** @type {readonly string[]|undefined} */(currentState?.permissions),
     );
     if (
       currentState &&
@@ -489,6 +489,32 @@ export function createExtensionGateway({
         error: Object.freeze({
           code: "POLAR_EXTENSION_NOT_ENABLED",
           message: "Extension must be enabled before execution",
+        }),
+      };
+    }
+
+    const capabilityScope = input.capabilityScope;
+    if (!capabilityScope || !isPlainObject(capabilityScope) || !isPlainObject(capabilityScope.allowed)) {
+      return {
+        ...base,
+        status: "failed",
+        error: Object.freeze({
+          code: "POLAR_EXTENSION_POLICY_DENIED",
+          message: "Execution blocked: empty or invalid capability scope",
+        }),
+      };
+    }
+
+    const { allowed = {}, constraints = {} } = capabilityScope;
+    const allowedCaps = allowed[extensionId];
+
+    if (!allowedCaps || (Array.isArray(allowedCaps) && !allowedCaps.includes(capabilityId) && !allowedCaps.includes("*"))) {
+      return {
+        ...base,
+        status: "failed",
+        error: Object.freeze({
+          code: "POLAR_EXTENSION_POLICY_DENIED",
+          message: `Execution blocked: capability ${capabilityId} from extension ${extensionId} is not in session scope`,
         }),
       };
     }
