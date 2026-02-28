@@ -1294,3 +1294,34 @@ Last updated: 2026-02-28
 - Add retention/compaction policy and rotation controls for durable lineage files.
 - Add production multi-node/shared backend support for lineage storage (sqlite/postgres/object-store) beyond single-node file durability.
 - Add alerting/reporting views over `policy.decision` and repair lifecycle streams in telemetry alert surfaces.
+
+
+
+### 2026-03-01 — BUG-025 — CryptoVault case-insensitive field detection — Done
+**Owner:** Jules
+**Scope:** Improve secret field detection in CryptoVault to be case-insensitive and more comprehensive.
+**Summary:**
+- Updated `CryptoVault.encryptSecretsInObject` to convert keys to lowercase before matching.
+- Expanded detection patterns to use `includes('secret')`, `includes('password')`, `endsWith('key')`, and `endsWith('token')`.
+- Verified fix with new test cases covering various casings and nested structures.
+
+**Architecture refs:**
+- `docs/architecture/deterministic-orchestration-architecture.md`
+
+**Files changed:**
+- `packages/polar-runtime-core/src/crypto-vault.mjs`
+
+**Tests run (exact):**
+- `node tests/bug-fixes-comprehensive.test.mjs`
+- `node tests/repro-bug-025.test.mjs`
+
+**Manual verification (evidence, not vibes):**
+- Confirmed that `DB_PASSWORD`, `db_password`, `user_password`, and `secret_ref` are now correctly encrypted.
+- Confirmed that nested objects and arrays are processed recursively with the new logic.
+
+**Notes / decisions:**
+- Balanced detection breadth with performance by using simple string operations (`includes`, `endsWith`).
+- Prioritized security (over-encryption) over missing secrets (under-encryption).
+
+**Follow-ups:**
+- None identified.

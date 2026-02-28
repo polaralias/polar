@@ -119,7 +119,10 @@ export function createCryptoVault(config = {}) {
             for (const [k, v] of Object.entries(value)) {
                 // BUG-025 fix: case-insensitive field name matching for secret detection
                 const lk = k.toLowerCase();
-                const isSecretField = lk.endsWith("secret") || lk.endsWith("key") || lk.endsWith("token") || lk === "apikey" || lk === "secretref" || lk === "password";
+                const isSecretField = lk.includes("secret") || 
+                    lk.includes("password") || 
+                    lk.endsWith("key") || 
+                    lk.endsWith("token");
 
                 if (isSecretField && typeof v === "string" && !v.startsWith(PREFIX)) {
                     result[k] = this.encrypt(v);
