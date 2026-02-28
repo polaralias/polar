@@ -421,7 +421,7 @@ export function createNativeHttpAdapter(config) {
                         return parsed.candidates?.[0]?.content?.parts?.[0]?.text || "";
                     } else if (endpointMode === "responses") {
                         if (parsed.type === "response.output_text.delta") {
-                            return parsed.delta || "";
+                            return typeof parsed.delta === "string" ? parsed.delta : "";
                         }
                         if (parsed.choices?.[0]?.delta?.content) {
                             return parsed.choices[0].delta.content;

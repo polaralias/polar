@@ -1355,3 +1355,29 @@ Last updated: 2026-02-28
 
 **Follow-ups:**
 - None.
+
+### 2026-03-01 — BUG-001 — Responses API stream parsing (response.output_text.delta) — Done
+
+**Owner:** Jules
+**Scope:** Fix Responses API stream parser to correctly parse `response.output_text.delta` events.
+
+**Summary:**
+- Verified that Native HTTP Provider stream correctly parses `response.output_text.delta` events when `endpointMode` is set to `responses`.
+- The logic gracefully handles `parsed.type === "response.output_text.delta"` and returns `parsed.delta || ""`.
+
+**Architecture refs:**
+- `docs/architecture/deterministic-orchestration-architecture.md`
+
+**Files changed:**
+- `packages/polar-adapter-native/src/index.mjs` (Verified existing correct implementation)
+- `tests/bug-fixes-comprehensive.test.mjs` (Verified existing passing test)
+
+**Tests run (exact):**
+- `node --test tests/bug-fixes-comprehensive.test.mjs`
+
+**Manual verification (evidence, not vibes):**
+- Confirmed that `BUG-001: Responses API stream correctly parses response.output_text.delta events` test is passing.
+- Confirmed the parser appropriately isolates the delta payload.
+
+**Follow-ups:**
+- None.
