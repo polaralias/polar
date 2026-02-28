@@ -696,6 +696,14 @@ export function createControlPlaneService(config = {}) {
     async rejectWorkflow(request) {
       const workflowId = typeof request === 'string' ? request : request.workflowId;
       return orchestrator.rejectWorkflow(workflowId);
+    },
+
+    /**
+     * Handle a repair selection event (button click: A or B).
+     * @param {{ sessionId: string, selection: 'A'|'B', correlationId: string }} request
+     */
+    async handleRepairSelection(request) {
+      return orchestrator.handleRepairSelectionEvent(request);
     }
   });
 }

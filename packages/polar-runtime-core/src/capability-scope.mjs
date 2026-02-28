@@ -74,16 +74,24 @@ export function validateModelOverride({ modelOverride, multiAgentConfig = {}, ba
 }
 /**
  * Computes a strict capability scope for tool execution.
+ * Only explicitly mapped skills grant capabilities — unknown skills are rejected.
  * @param {Object} args
  * @param {Object} args.sessionProfile
  * @param {Object} args.multiAgentConfig
  * @param {Object} [args.activeDelegation]
- * @returns {Object} { allowed: { [extensionId]: string[] }, constraints: Object }
+ * @returns {{ allowed: Record<string, string[]>, constraints: Object, rejectedSkills: string[] }}
  */
 export function computeCapabilityScope({ sessionProfile = {}, multiAgentConfig = {}, activeDelegation }) {
     const scope = {
         allowed: {},
-        constraints: {}
+        constraints: {},
+    };
+    const rejectedSkills = [];
+
+    // Known skill → extension/capability mapping (strict, exhaustive)
+    const SKILL_MAP = {
+        search_web: { extensionId: 'web', capabilities: ['search_web'] },
+        email_mcp: { extensionId: 'email', capabilities: ['draft_email'] },
     };
 
     // 1. Determine base allowed extensions/skills
@@ -97,23 +105,23 @@ export function computeCapabilityScope({ sessionProfile = {}, multiAgentConfig =
     // System is always allowed for core orchestration tasks
     scope.allowed["system"] = ["lookup_weather", "delegate_to_agent", "complete_task"];
 
-    // Map skills to extension/capability pairs
-    // Note: In a real system, this would be a lookup table in the contract registry or similar.
-    // For this implementation, we assume skill name == extensionId for simplicity, 
-    // or we map specific known skills.
+    // Map skills to extension/capability pairs using the strict map
     for (const skill of effectiveAllowedSkills) {
-        if (skill === "search_web") {
-            scope.allowed["web"] = scope.allowed["web"] || [];
-            scope.allowed["web"].push("search_web");
-        } else if (skill === "email_mcp") {
-            scope.allowed["email"] = scope.allowed["email"] || [];
-            scope.allowed["email"].push("draft_email");
+        const mapping = SKILL_MAP[skill];
+        if (mapping) {
+            const existing = scope.allowed[mapping.extensionId] || [];
+            for (const cap of mapping.capabilities) {
+                if (!existing.includes(cap)) {
+                    existing.push(cap);
+                }
+            }
+            scope.allowed[mapping.extensionId] = existing;
         } else {
-            // Default: assume the skill name maps to an extension and allow all its capabilities?
-            // Actually, be stricter: if it's an extension ID, allow it.
-            scope.allowed[skill] = ["*"];
+            // Unknown skill: reject it (least privilege)
+            rejectedSkills.push(skill);
         }
     }
 
+    scope.rejectedSkills = rejectedSkills;
     return scope;
 }

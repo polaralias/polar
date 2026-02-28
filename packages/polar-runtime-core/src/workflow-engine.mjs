@@ -43,20 +43,33 @@ export function expandTemplate(templateId, args) {
 }
 
 /**
- * Validates step list against policy context.
- * Phase 4: Policy backstop via extensionGateway capabilityScope will use this to ensure
- * model hasn't somehow bypassed expansion.
+ * Validates step list against computed capability scope.
+ * Each step must have its extensionId in capabilityScope.allowed,
+ * and its capabilityId must be explicitly listed (or covered by '*').
+ * This pre-check mirrors the real enforcement in extension-gateway.
+ *
+ * @param {Object[]} steps
+ * @param {{ capabilityScope?: { allowed?: Record<string, string[]> } }} policyContext
+ * @returns {{ ok: boolean, errors: string[] }}
  */
 export function validateSteps(steps, policyContext = {}) {
     const errors = [];
-    const allowedExtensions = policyContext.allowedExtensionIds || [];
-    const scopeRules = policyContext.capabilityScope || {};
+    const allowed = policyContext.capabilityScope?.allowed;
+
+    // If no scope provided, skip validation (backwards-compat / tests)
+    if (!allowed) {
+        return { ok: true, errors };
+    }
 
     for (const step of steps) {
-        if (step.extensionId !== "system" && allowedExtensions.length > 0) {
-            if (!allowedExtensions.includes(step.extensionId)) {
-                errors.push(`Extension ${step.extensionId} is not fully allowed globally by policy`);
-            }
+        const allowedCaps = allowed[step.extensionId];
+        if (!allowedCaps) {
+            errors.push(`Extension "${step.extensionId}" is not allowed by capability scope`);
+            continue;
+        }
+        // '*' means all capabilities on that extension are allowed
+        if (!allowedCaps.includes('*') && !allowedCaps.includes(step.capabilityId)) {
+            errors.push(`Capability "${step.capabilityId}" on extension "${step.extensionId}" is not allowed by capability scope`);
         }
     }
 

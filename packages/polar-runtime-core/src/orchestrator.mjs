@@ -1,6 +1,6 @@
 import crypto from 'crypto';
 import { validateForwardSkills, validateModelOverride, computeCapabilityScope } from './capability-scope.mjs';
-import { classifyUserMessage, applyUserTurn, selectReplyAnchor } from './routing-policy-engine.mjs';
+import { classifyUserMessage, applyUserTurn, selectReplyAnchor, detectOfferInText, setOpenOffer, computeRepairDecision, handleRepairSelection } from './routing-policy-engine.mjs';
 import { parseModelProposal, expandTemplate, validateSteps } from './workflow-engine.mjs';
 
 /**
@@ -29,6 +29,8 @@ export function createOrchestrator({
 
     const SESSION_THREADS = new Map();
     const THREAD_TTL_MS = 60 * 60 * 1000;
+    const PENDING_REPAIRS = new Map();
+    const REPAIR_TTL_MS = 5 * 60 * 1000;
 
     setInterval(() => {
         const currentTime = now();
@@ -43,6 +45,11 @@ export function createOrchestrator({
                 SESSION_THREADS.delete(id);
             }
         }
+        for (const [id, entry] of PENDING_REPAIRS) {
+            if (currentTime - entry.createdAt > REPAIR_TTL_MS) {
+                PENDING_REPAIRS.delete(id);
+            }
+        }
     }, 5 * 60 * 1000);
 
     return Object.freeze({
@@ -53,21 +60,82 @@ export function createOrchestrator({
             let sessionState = SESSION_THREADS.get(polarSessionId) || { threads: [], activeThreadId: null };
             let routingRecommendation = null;
             let currentTurnAnchor = null;
+            let currentAnchorMessageId = null;
 
             if (text) {
                 const classification = classifyUserMessage({ text, sessionState });
                 sessionState = applyUserTurn({ sessionState, classification, rawText: text, now });
                 SESSION_THREADS.set(polarSessionId, sessionState);
 
+                // Check if repair is needed (ambiguous short follow-up with multiple open offers)
+                const repairDecision = computeRepairDecision(sessionState, classification, text);
+                if (repairDecision) {
+                    // Attempt LLM-assisted phrasing (optional — code picks candidates, LLM only phrases)
+                    let repairedQuestion = repairDecision.question;
+                    let repairedLabels = null;
+                    try {
+                        const labelA = repairDecision.options[0].label;
+                        const labelB = repairDecision.options[1].label;
+                        const phrasingResult = await providerGateway.generate({
+                            executionType: 'handoff',
+                            providerId,
+                            model,
+                            system: 'You are a disambiguation assistant. You must respond with ONLY a valid JSON object, no markdown, no explanation.',
+                            messages: [],
+                            prompt: `The user said: "${text}"\nTwo possible topics exist:\n  A: "${labelA}"\n  B: "${labelB}"\n\nWrite a short, friendly disambiguation question and relabel the options clearly.\nRespond with ONLY this JSON shape:\n{"question": "...", "labelA": "...", "labelB": "..."}`
+                        });
+                        if (phrasingResult?.text) {
+                            const rawJson = phrasingResult.text.replace(/```json?\s*/g, '').replace(/```/g, '').trim();
+                            const parsed = JSON.parse(rawJson);
+                            if (parsed.question && typeof parsed.question === 'string'
+                                && parsed.labelA && typeof parsed.labelA === 'string'
+                                && parsed.labelB && typeof parsed.labelB === 'string') {
+                                repairedQuestion = parsed.question;
+                                repairedLabels = { A: parsed.labelA, B: parsed.labelB };
+                            }
+                        }
+                    } catch {
+                        // LLM phrasing failed — use canned fallback (deterministic)
+                    }
+
+                    // Apply LLM labels if valid
+                    if (repairedLabels) {
+                        repairDecision.options[0].label = repairedLabels.A;
+                        repairDecision.options[1].label = repairedLabels.B;
+                    }
+                    repairDecision.question = repairedQuestion;
+
+                    PENDING_REPAIRS.set(repairDecision.correlationId, {
+                        ...repairDecision,
+                        createdAt: now(),
+                        sessionId: polarSessionId
+                    });
+                    return {
+                        status: 'repair_question',
+                        type: 'repair_question',
+                        question: repairDecision.question,
+                        correlationId: repairDecision.correlationId,
+                        options: repairDecision.options
+                    };
+                }
+
                 const anchor = selectReplyAnchor({ sessionState, classification });
                 currentTurnAnchor = anchor.useInlineReply;
+                currentAnchorMessageId = anchor.anchorMessageId || null;
 
-                if (classification.type === "status_nudge") {
+                if (classification.type === "accept_offer") {
+                    routingRecommendation = `[ROUTING_HINT] User accepted an offer on thread: ${classification.targetThreadId}. Continue with the offered action.`;
+                } else if (classification.type === "reject_offer") {
+                    routingRecommendation = `[ROUTING_HINT] User declined an offer on thread: ${classification.targetThreadId}. Acknowledge and move on.`;
+                } else if (classification.type === "status_nudge") {
                     routingRecommendation = `[ROUTING_HINT] This is a status nudge. Answer from the context of thread: ${classification.targetThreadId}`;
                 } else if (classification.type === "override") {
                     routingRecommendation = `[ROUTING_HINT] This is an override/steering message. Priority: Handle in current active thread.`;
                 } else if (classification.type === "answer_to_pending") {
                     routingRecommendation = `[ROUTING_HINT] This is an explicit slot fill for thread: ${classification.targetThreadId}. No need to clarify intent.`;
+                } else if (classification.type === "error_inquiry") {
+                    const ed = classification.errorDetail || {};
+                    routingRecommendation = `[ROUTING_HINT] User is asking about a recent error. Thread: ${classification.targetThreadId}. Error: ${ed.capabilityId || 'unknown'} on ${ed.extensionId || 'unknown'}. Output: ${(ed.output || '').slice(0, 200)}. Explain what went wrong.`;
                 }
             }
 
@@ -111,8 +179,8 @@ export function createOrchestrator({
 
             systemPrompt += `\n\n[MULTI-AGENT ORCHESTRATION ENGINE]
 You are the Primary Orchestrator. You handle simple queries natively.
-If the user asks for complex flows, deep reviews, long-running tasks, or writing assignments, YOU MUST DELEGATE to a sub-agent.
-When delegating, you explicitly forward skills/MCP servers to the sub-agent so they can complete the task securely.
+For complex flows, deep reviews, long-running tasks, or writing assignments, you should consider delegating to a sub-agent.
+When delegating, explicitly forward skills/MCP servers to the sub-agent so they can complete the task securely.
 
 Available pre-configured sub-agents:
 ${JSON.stringify(multiAgentConfig.availableProfiles, null, 2)}
@@ -132,7 +200,7 @@ To delegate to a sub-agent, propose a workflow step using the tool "delegate_to_
 }
 
 [WORKFLOW CAPABILITY ENGINE]
-Propose workflows via <polar_action> blocks. You MUST only use established templates. Arbitrary step chains are not supported.
+Propose workflows via <polar_action> blocks. Only use established templates. Arbitrary step chains are not supported.
 
 Available Templates:
 - lookup_weather(location)
@@ -195,13 +263,12 @@ ${routingRecommendation || ""}`;
 
             if (result && result.text) {
                 const responseText = result.text;
-                const actionMatch = responseText.match(/<polar_action>([\s\S]*?)<\/polar_action>/) || responseText.match(/<polar_workflow>([\s\S]*?)<\/polar_workflow>/);
+                const actionMatch = responseText.match(/<polar_action>([\s\S]*?)<\/polar_action>/);
                 const stateMatch = responseText.match(/<thread_state>([\s\S]*?)<\/thread_state>/);
                 const assistantMessageId = `msg_a_${crypto.randomUUID()}`;
 
                 const cleanText = responseText
                     .replace(/<polar_action>[\s\S]*?<\/polar_action>/, '')
-                    .replace(/<polar_workflow>[\s\S]*?<\/polar_workflow>/, '')
                     .replace(/<thread_state>[\s\S]*?<\/thread_state>/, '')
                     .trim();
 
@@ -214,6 +281,23 @@ ${routingRecommendation || ""}`;
                         text: cleanText,
                         timestampMs: now()
                     });
+                }
+
+                // Detect offers in assistant response and set open offer on active thread
+                if (cleanText) {
+                    const offerDetection = detectOfferInText(cleanText);
+                    if (offerDetection.isOffer) {
+                        let st = SESSION_THREADS.get(polarSessionId) || { threads: [], activeThreadId: null };
+                        const activeThread = st.threads.find(t => t.id === st.activeThreadId);
+                        if (activeThread) {
+                            setOpenOffer(activeThread, {
+                                offerType: offerDetection.offerType,
+                                target: offerDetection.offerText,
+                                askedAtMessageId: assistantMessageId
+                            }, now());
+                            SESSION_THREADS.set(polarSessionId, st);
+                        }
+                    }
                 }
 
                 if (stateMatch) {
@@ -247,12 +331,24 @@ ${routingRecommendation || ""}`;
 
                     const workflowSteps = expandTemplate(proposal.templateId, proposal.args);
                     const workflowId = crypto.randomUUID();
-                    PENDING_WORKFLOWS.set(workflowId, { steps: workflowSteps, createdAt: now(), polarSessionId, multiAgentConfig });
+                    const ownerThreadId = sessionState.activeThreadId;
+                    PENDING_WORKFLOWS.set(workflowId, {
+                        steps: workflowSteps,
+                        createdAt: now(),
+                        polarSessionId,
+                        multiAgentConfig,
+                        threadId: ownerThreadId  // canonical thread→workflow link
+                    });
 
+                    // Mark the owner thread as awaiting approval
                     let st = SESSION_THREADS.get(polarSessionId);
-                    if (st && st.activeThreadId) {
-                        const thread = st.threads.find(t => t.id === st.activeThreadId);
-                        if (thread) { thread.status = 'workflow_proposed'; thread.lastActivityTs = now(); }
+                    if (st && ownerThreadId) {
+                        const thread = st.threads.find(t => t.id === ownerThreadId);
+                        if (thread) {
+                            thread.status = 'workflow_proposed';
+                            thread.awaitingApproval = { workflowId, proposedAtMessageId: assistantMessageId };
+                            thread.lastActivityTs = now();
+                        }
                     }
 
                     return {
@@ -260,14 +356,16 @@ ${routingRecommendation || ""}`;
                         text: cleanText,
                         workflowId,
                         steps: workflowSteps,
-                        useInlineReply: selectReplyAnchor({ sessionState: st, classification: { type: 'new_request' } }).useInlineReply
+                        useInlineReply: currentTurnAnchor ?? false,
+                        anchorMessageId: currentAnchorMessageId
                     };
                 }
 
                 return {
                     status: 'completed',
                     text: cleanText || responseText,
-                    useInlineReply: selectReplyAnchor({ sessionState: SESSION_THREADS.get(polarSessionId), classification: { type: 'filler' } }).useInlineReply
+                    useInlineReply: currentTurnAnchor ?? false,
+                    anchorMessageId: currentAnchorMessageId
                 };
             }
             return { status: 'error', text: "No generation results." };
@@ -277,8 +375,26 @@ ${routingRecommendation || ""}`;
             const entry = PENDING_WORKFLOWS.get(workflowId);
             if (!entry) return { status: 'error', text: "Workflow not found" };
 
-            const { steps: workflowSteps, polarSessionId, multiAgentConfig } = entry;
+            const { steps: workflowSteps, polarSessionId, multiAgentConfig, threadId: ownerThreadId } = entry;
             PENDING_WORKFLOWS.delete(workflowId);
+
+            // Resolve the target thread — use stored threadId, never rely on activeThreadId drift
+            const runId = `run_${crypto.randomUUID()}`;
+            let st = SESSION_THREADS.get(polarSessionId);
+            const targetThreadId = ownerThreadId || st?.activeThreadId;
+
+            // Mark thread as in-flight and ensure it's active
+            if (st && targetThreadId) {
+                const thread = st.threads.find(t => t.id === targetThreadId);
+                if (thread) {
+                    thread.status = 'in_progress';
+                    thread.inFlight = { runId, workflowId, startedAt: now() };
+                    delete thread.awaitingApproval;
+                    thread.lastActivityTs = now();
+                }
+                // Force active thread to the workflow's thread
+                st.activeThreadId = targetThreadId;
+            }
 
             try {
                 const profile = await profileResolutionGateway.resolve({ sessionId: polarSessionId });
@@ -296,12 +412,31 @@ ${routingRecommendation || ""}`;
                     }
                 }
 
-                const validation = validateSteps(workflowSteps, { allowedExtensionIds: ["system", ...(msgActiveDelegation?.forward_skills || baseAllowedSkills)] });
-                if (!validation.ok) return { status: 'error', text: "Workflow blocked: " + validation.errors.join(", ") };
+                // Compute capability scope before validation — this is what extension-gateway enforces
+                let activeDelegation = msgActiveDelegation;
+                let capabilityScope = computeCapabilityScope({ sessionProfile: profile, multiAgentConfig, activeDelegation });
+
+                const validation = validateSteps(workflowSteps, { capabilityScope });
+                if (!validation.ok) {
+                    // Validation failure: clear inFlight, set lastError
+                    st = SESSION_THREADS.get(polarSessionId);
+                    if (st && targetThreadId) {
+                        const thread = st.threads.find(t => t.id === targetThreadId);
+                        if (thread) {
+                            thread.lastError = {
+                                runId, workflowId, threadId: targetThreadId,
+                                extensionId: 'orchestrator', capabilityId: 'validateSteps',
+                                output: validation.errors.join(', ').slice(0, 300),
+                                messageId: `msg_err_${crypto.randomUUID()}`, timestampMs: now()
+                            };
+                            thread.status = 'failed';
+                            delete thread.inFlight;
+                        }
+                    }
+                    return { status: 'error', text: "Workflow blocked: " + validation.errors.join(", ") };
+                }
 
                 const toolResults = [];
-                let activeDelegation = msgActiveDelegation;
-                const capabilityScope = computeCapabilityScope({ sessionProfile: profile, multiAgentConfig, activeDelegation });
 
                 for (const step of workflowSteps) {
                     const { capabilityId, extensionId, args: parsedArgs = {}, extensionType = "mcp" } = step;
@@ -316,6 +451,8 @@ ${routingRecommendation || ""}`;
                         }
 
                         activeDelegation = { ...parsedArgs, forward_skills: allowedSkills, model_override: modelId, pinnedProvider: providerId };
+                        // Recompute capability scope after delegation change
+                        capabilityScope = computeCapabilityScope({ sessionProfile: profile, multiAgentConfig, activeDelegation });
                         const output = `Successfully delegated to ${parsedArgs.agentId}.` + (rejectedSkills.length ? ` Clamped: ${rejectedSkills.join(", ")}` : "");
                         toolResults.push({ tool: capabilityId, status: "delegated", output });
 
@@ -327,6 +464,9 @@ ${routingRecommendation || ""}`;
                     }
 
                     if (capabilityId === "complete_task") {
+                        activeDelegation = null;
+                        // Recompute capability scope after delegation cleared
+                        capabilityScope = computeCapabilityScope({ sessionProfile: profile, multiAgentConfig, activeDelegation });
                         toolResults.push({ tool: capabilityId, status: "completed", output: "Task completed." });
                         await chatManagementGateway.appendMessage({ sessionId: polarSessionId, userId: "system", role: "system", text: `[DELEGATION CLEARED]`, timestampMs: now() });
                         continue;
@@ -336,11 +476,54 @@ ${routingRecommendation || ""}`;
                         extensionId, extensionType, capabilityId, sessionId: polarSessionId, userId: "unknown", input: parsedArgs,
                         capabilityScope
                     });
-                    toolResults.push({ tool: capabilityId, status: output?.status || "completed", output: output?.output || output?.error || "Done." });
+                    const stepStatus = output?.status || "completed";
+                    toolResults.push({ tool: capabilityId, status: stepStatus, output: output?.output || output?.error || "Done." });
+
+                    // Record lastError on owning thread if step failed
+                    if (stepStatus === 'failed' || stepStatus === 'error') {
+                        st = SESSION_THREADS.get(polarSessionId);
+                        if (st && targetThreadId) {
+                            const thread = st.threads.find(t => t.id === targetThreadId);
+                            if (thread) {
+                                thread.lastError = {
+                                    runId, workflowId, threadId: targetThreadId,
+                                    extensionId, capabilityId,
+                                    output: (output?.error || output?.output || 'Unknown error').slice(0, 300),
+                                    messageId: `msg_err_${crypto.randomUUID()}`, timestampMs: now()
+                                };
+                                thread.status = 'failed';
+                                delete thread.inFlight;
+                            }
+                        }
+                    }
+                }
+
+                // Post-loop: clear inFlight on owning thread, set final status
+                st = SESSION_THREADS.get(polarSessionId);
+                const anyFailed = toolResults.some(r => r.status === 'failed' || r.status === 'error');
+                if (st && targetThreadId) {
+                    const thread = st.threads.find(t => t.id === targetThreadId);
+                    if (thread) {
+                        delete thread.inFlight;
+                        if (anyFailed && !thread.lastError) {
+                            const failedStep = toolResults.find(r => r.status === 'failed' || r.status === 'error');
+                            thread.lastError = {
+                                runId, workflowId, threadId: targetThreadId,
+                                extensionId: failedStep?.tool || 'unknown',
+                                capabilityId: failedStep?.tool || 'unknown',
+                                output: (failedStep?.output || 'Execution failed').slice(0, 300),
+                                messageId: `msg_err_${crypto.randomUUID()}`, timestampMs: now()
+                            };
+                            thread.status = 'failed';
+                        } else if (!anyFailed) {
+                            thread.status = 'in_progress'; // workflow done, thread continues
+                        }
+                        thread.lastActivityTs = now();
+                    }
                 }
 
                 const deterministicHeader = "### 🛠️ Execution Results\n" + toolResults.map(r => (r.status === "failed" || r.status === "error" ? "❌ " : "✅ ") + `**${r.tool}**: ${typeof r.output === 'string' ? r.output.slice(0, 100) : 'Done.'}`).join("\n") + "\n\n";
-                await chatManagementGateway.appendMessage({ sessionId: polarSessionId, userId: "system", role: "system", text: `[TOOL RESULTS]\n${JSON.stringify(toolResults, null, 2)}`, timestampMs: now() });
+                await chatManagementGateway.appendMessage({ sessionId: polarSessionId, userId: "system", role: "system", text: `[TOOL RESULTS] threadId=${targetThreadId} runId=${runId}\n${JSON.stringify(toolResults, null, 2)}`, timestampMs: now() });
 
                 const finalSystemPrompt = activeDelegation ? `You are sub-agent ${activeDelegation.agentId}. Task: ${activeDelegation.task_instructions}. Skills: ${activeDelegation.forward_skills?.join(", ")}` : profile.profileConfig?.systemPrompt;
                 const finalResult = await providerGateway.generate({
@@ -353,16 +536,84 @@ ${routingRecommendation || ""}`;
                 });
 
                 const responseText = finalResult?.text || "Execution complete.";
-                const cleanText = responseText.replace(/<polar_workflow>[\s\S]*?<\/polar_workflow>/, '').replace(/<thread_state>[\s\S]*?<\/thread_state>/, '').trim();
+                const cleanText = responseText.replace(/<polar_action>[\s\S]*?<\/polar_action>/, '').replace(/<thread_state>[\s\S]*?<\/thread_state>/, '').trim();
 
                 await chatManagementGateway.appendMessage({ sessionId: polarSessionId, userId: "assistant", role: "assistant", text: cleanText, timestampMs: now() });
-                return { status: 'completed', text: deterministicHeader + cleanText, useInlineReply: selectReplyAnchor({ sessionState: SESSION_THREADS.get(polarSessionId), classification: { type: 'filler' } }).useInlineReply };
-            } catch (err) { return { status: 'error', text: `Crashed: ${err.message}` }; }
+                const sessionStateForReply = SESSION_THREADS.get(polarSessionId) || { threads: [], activeThreadId: null };
+                return { status: 'completed', text: deterministicHeader + cleanText, useInlineReply: selectReplyAnchor({ sessionState: sessionStateForReply, classification: { type: 'status_nudge', targetThreadId: targetThreadId } }).useInlineReply };
+            } catch (err) {
+                // Crash path: record lastError on the owning thread (using stored threadId)
+                st = SESSION_THREADS.get(polarSessionId);
+                if (st && targetThreadId) {
+                    const thread = st.threads.find(t => t.id === targetThreadId);
+                    if (thread) {
+                        thread.lastError = {
+                            runId, workflowId, threadId: targetThreadId,
+                            extensionId: 'orchestrator', capabilityId: 'executeWorkflow',
+                            output: err.message?.slice(0, 300) || 'Unknown crash',
+                            messageId: `msg_err_${crypto.randomUUID()}`, timestampMs: now()
+                        };
+                        thread.status = 'failed';
+                        delete thread.inFlight;
+                        thread.lastActivityTs = now();
+                    }
+                    // Keep failed thread active — don't let next message spawn a greeting
+                    st.activeThreadId = targetThreadId;
+                }
+                return { status: 'error', text: `Crashed: ${err.message}` };
+            }
         },
 
         async rejectWorkflow(workflowId) {
+            const entry = PENDING_WORKFLOWS.get(workflowId);
+            if (entry) {
+                // Clear awaitingApproval on the owning thread
+                const st = SESSION_THREADS.get(entry.polarSessionId);
+                if (st && entry.threadId) {
+                    const thread = st.threads.find(t => t.id === entry.threadId);
+                    if (thread) {
+                        thread.status = 'in_progress';
+                        delete thread.awaitingApproval;
+                        thread.lastActivityTs = now();
+                    }
+                }
+            }
             PENDING_WORKFLOWS.delete(workflowId);
             return { status: 'rejected' };
+        },
+
+        /**
+         * Handle a repair selection event (button click: A or B).
+         * Deterministic — no LLM call needed.
+         * @param {{ sessionId: string, selection: 'A'|'B', correlationId: string }} event
+         * @returns {{ status: string, selectedThreadId?: string }}
+         */
+        async handleRepairSelectionEvent({ sessionId, selection, correlationId }) {
+            const repairContext = PENDING_REPAIRS.get(correlationId);
+            if (!repairContext) {
+                return { status: 'error', text: 'Repair context not found or expired.' };
+            }
+
+            if (repairContext.sessionId !== sessionId) {
+                return { status: 'error', text: 'Session mismatch for repair selection.' };
+            }
+
+            if (selection !== 'A' && selection !== 'B') {
+                return { status: 'error', text: 'Invalid selection. Must be A or B.' };
+            }
+
+            let sessionState = SESSION_THREADS.get(sessionId) || { threads: [], activeThreadId: null };
+            sessionState = handleRepairSelection(sessionState, selection, correlationId, repairContext, now());
+            SESSION_THREADS.set(sessionId, sessionState);
+            PENDING_REPAIRS.delete(correlationId);
+
+            const selectedOption = repairContext.options.find(o => o.id === selection);
+            return {
+                status: 'completed',
+                text: `Got it — continuing with: ${selectedOption?.label || selection}`,
+                selectedThreadId: selectedOption?.threadId,
+                useInlineReply: false
+            };
         }
     });
 }

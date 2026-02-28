@@ -218,9 +218,18 @@ async function processGroupedMessages(polarSessionId, items) {
             }
         });
 
-        // Logic for inline replies (only if the orchestrator explicitly requests it)
+        // Logic for inline replies: only set reply-to when backend explicitly requests it
+        // AND provides a concrete anchor message. Otherwise send a normal message.
         const useInlineReply = result.useInlineReply === true;
-        const replyOptions = useInlineReply ? { reply_parameters: { message_id: telegramMessageId } } : {};
+        const anchorId = result.anchorMessageId; // specific message to reply to, if provided
+        // anchorMessageId may be a synthetic internal ID (e.g. "msg_err_<uuid>") — only use
+        // it for Telegram reply_parameters if it's a valid numeric message ID.
+        const numericAnchor = typeof anchorId === 'number' ? anchorId : (Number.isFinite(Number(anchorId)) ? Number(anchorId) : null);
+        let replyOptions = {};
+        if (useInlineReply) {
+            const replyToId = numericAnchor || telegramMessageId;
+            replyOptions = { reply_parameters: { message_id: replyToId } };
+        }
 
         if (result.status === 'workflow_proposed') {
             // Send the explanation text first
@@ -248,6 +257,21 @@ async function processGroupedMessages(polarSessionId, items) {
                     ]
                 }
             });
+        } else if (result.status === 'repair_question') {
+            // Render repair disambiguation with A/B inline keyboard buttons
+            const optA = result.options.find(o => o.id === 'A');
+            const optB = result.options.find(o => o.id === 'B');
+            await ctx.reply(result.question, {
+                ...replyOptions,
+                reply_markup: {
+                    inline_keyboard: [
+                        [
+                            { text: `🅰️ ${optA?.label || 'Option A'}`, callback_data: `repair_sel:A:${result.correlationId}` },
+                            { text: `🅱️ ${optB?.label || 'Option B'}`, callback_data: `repair_sel:B:${result.correlationId}` }
+                        ]
+                    ]
+                }
+            });
         } else if (result.status === 'completed') {
             await ctx.reply(result.text, replyOptions);
         } else if (result.status === 'error') {
@@ -258,9 +282,9 @@ async function processGroupedMessages(polarSessionId, items) {
         if (result.status === 'completed') {
             await safeReact(ctx, '👌', telegramMessageId);
             markReactionCompleted(polarSessionId, telegramMessageId);
-        } else if (result.status === 'workflow_proposed') {
+        } else if (result.status === 'workflow_proposed' || result.status === 'repair_question') {
             await safeReact(ctx, '⏳', telegramMessageId);
-            // We do NOT mark workflow_proposed as completed because it's still "blocked" waiting for user approval.
+            // Both are "blocked" waiting for user button press
         } else {
             // Errors keep their 👎 or transient icons
         }
@@ -416,6 +440,40 @@ bot.on('callback_query', async (ctx) => {
         await ctx.answerCbQuery("Workflow Rejected.");
         await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
         await ctx.reply("❌ The workflow was abandoned.");
+
+    } else if (callbackData.startsWith('repair_sel:')) {
+        // Repair disambiguation button click: repair_sel:A:correlationId or repair_sel:B:correlationId
+        const parts = callbackData.split(':');
+        const selection = parts[1]; // 'A' or 'B'
+        const correlationId = parts.slice(2).join(':'); // correlationId (UUID, no colons, but be safe)
+
+        // Resolve session ID from the chat
+        let sessionId;
+        try {
+            sessionId = await resolvePolarSessionId(ctx);
+        } catch {
+            sessionId = `telegram:chat:${ctx.callbackQuery.message?.chat?.id}`;
+        }
+
+        await ctx.answerCbQuery(`Selected option ${selection}...`);
+        await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
+
+        try {
+            const result = await controlPlane.handleRepairSelection({
+                sessionId,
+                selection,
+                correlationId
+            });
+
+            if (result.status === 'completed') {
+                await ctx.reply(`✅ ${result.text}`);
+            } else {
+                await ctx.reply(`⚠️ ${result.text || 'Could not process selection.'}`);
+            }
+        } catch (repairErr) {
+            console.error('[REPAIR_SELECTION_ERROR]', repairErr);
+            await ctx.reply('⚠️ Something went wrong processing your selection.');
+        }
     }
 
 });

@@ -28,17 +28,17 @@ test("workflow-engine expands template deterministically", () => {
     assert.equal(steps[0].args.agentId, "@writer");
 });
 
-test("workflow-engine validateSteps checks allowed extensions", () => {
+test("workflow-engine validateSteps checks against capabilityScope", () => {
     const steps = [
-        { extensionId: "email_mcp", capabilityId: "draft_email" }
+        { extensionId: "email", capabilityId: "draft_email" }
     ];
 
     const validation = validateSteps(steps, {
-        allowedExtensionIds: ["system"] // strict env
+        capabilityScope: { allowed: { "system": ["lookup_weather"] } } // no email allowed
     });
 
     assert.equal(validation.ok, false);
-    assert.ok(validation.errors[0].includes("email_mcp"));
+    assert.ok(validation.errors[0].includes("email"));
 });
 test("workflow-engine rejects missing required args during expansion", () => {
     assert.throws(() => {

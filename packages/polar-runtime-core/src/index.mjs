@@ -25,7 +25,17 @@ export {
   registerTaskBoardContracts,
 } from "./task-board-gateway.mjs";
 export { createTaskBoardRunLinker } from "./task-board-run-linker.mjs";
-export { createRoutingPolicyEngine } from "./routing-policy-engine.mjs";
+export {
+  createRoutingPolicyEngine,
+  classifyUserMessage,
+  applyUserTurn,
+  selectReplyAnchor,
+  detectOfferInText,
+  setOpenOffer,
+  pushRecentOffer,
+  computeRepairDecision,
+  handleRepairSelection,
+} from "./routing-policy-engine.mjs";
 export { createHandoffRoutingTelemetryCollector } from "./handoff-routing-telemetry.mjs";
 export {
   createHandoffRoutingTelemetryGateway,

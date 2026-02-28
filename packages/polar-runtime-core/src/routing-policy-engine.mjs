@@ -569,6 +569,241 @@ export function createRoutingPolicyEngine(config = {}) {
   });
 }
 
+// ─── Open-loop / change-of-mind / repair helpers ─────
+
+const YES_SET = new Set([
+  'yes', 'y', 'ye', 'yh', 'ya', 'yep', 'yup', 'yeah', 'yea', 'sure',
+  'ok', 'okay', 'go on', 'do it', 'please', 'go ahead', 'continue',
+  'proceed', 'absolutely', 'definitely', 'of course', 'right', 'alright',
+  'fine', 'cool', 'sounds good', 'lets go', 'let\'s go', 'aye', 'indeed'
+]);
+
+/** Short-affirmative prefixes for tiny messages (≤4 chars). */
+const YES_PREFIXES = ['ye', 'ya', 'yu'];
+
+/**
+ * Returns true if `normalized` is a short affirmative.
+ * Exact match against YES_SET, or prefix match when message is tiny (≤ 4 chars).
+ * @param {string} normalized - lowercased, trim'd, punctuation-stripped text
+ * @returns {boolean}
+ */
+function isShortAffirmative(normalized) {
+  if (YES_SET.has(normalized)) return true;
+  if (normalized.length <= 4 && YES_PREFIXES.some(p => normalized.startsWith(p))) return true;
+  return false;
+}
+
+const NO_SET = new Set([
+  'no', 'n', 'nah', 'nope', 'leave it', 'skip', 'pass', 'never mind',
+  'dont', 'don\'t', 'cancel', 'stop', 'forget it', 'no thanks',
+  'no thank you', 'not now', 'not really'
+]);
+
+/** Matches "actually yes/yeah/sure/ye/ya" style reversals. */
+const AFFIRM_AFTER_REJECT = /^(actually|wait|hmm|oh)\s*(ye[ahps]*|ya|yh|yup|sure|ok|okay|go on|go ahead|do it|please|fine)/i;
+
+/** Matches "explain more / go on / tell me more" short follow-ups. */
+const EXPLAIN_MORE = /^(explain\s*more|go\s*on|tell\s*me\s*more|more\??|elaborate|keep\s*going|continue|carry\s*on)$/i;
+
+/** Low-information messages that might attach to any open loop. */
+const LOW_INFO = /^(more|that|yeah|ye|ok|okay|sure|yep|yh|ya|go on|\?|please|right|fine|cool)$/i;
+
+/** Short error-inquiry words: must be exact match to prevent false positives on normal questions. */
+const ERROR_INQUIRY_SHORT = /^(why|huh|wtf|wth)$/i;
+/** Multi-word error inquiry phrases: leading-anchored, allow trailing prepositions ("for", "about"). */
+const ERROR_INQUIRY_LONG = /^(what\s*happened|what\s*went\s*wrong|what the|explain the (error|crash|failure)|what was that|what\s*error|show me the error|what was the workflow|what did you (try|do|run)|what failed|what crashed|what broke)/i;
+
+/**
+ * Maximum age (ms) for a lastError to be considered "recent" for auto-attachment.
+ * 5 minutes.
+ */
+const LAST_ERROR_TTL_MS = 5 * 60 * 1000;
+
+/**
+ * Detects whether assistant text contains an offer.
+ * Returns { isOffer, offerType, offerText } — purely heuristic.
+ * @param {string} text
+ * @returns {{ isOffer: boolean, offerType?: string, offerText?: string }}
+ */
+export function detectOfferInText(text) {
+  if (!text || typeof text !== 'string') return { isOffer: false };
+  const lower = text.toLowerCase();
+
+  // Patterns: "want me to …?", "shall I …?", "should I …?", "would you like me to …?"
+  const offerPatterns = [
+    /want me to\s+(.{3,60})\??/i,
+    /shall i\s+(.{3,60})\??/i,
+    /should i\s+(.{3,60})\??/i,
+    /would you like me to\s+(.{3,60})\??/i,
+    /i can\s+(.{3,60})(?:\s+if you (?:want|like))/i,
+  ];
+
+  for (const pattern of offerPatterns) {
+    const m = lower.match(pattern);
+    if (m) {
+      const target = m[1].replace(/[?.!]+$/, '').trim();
+      let offerType = 'general';
+      if (/explain|elaborate|detail|more about/i.test(target)) offerType = 'explain';
+      else if (/troubleshoot|diagnos|debug|fix|investigate/i.test(target)) offerType = 'troubleshoot';
+      else if (/search|look up|find/i.test(target)) offerType = 'search';
+      return { isOffer: true, offerType, offerText: target };
+    }
+  }
+
+  return { isOffer: false };
+}
+
+/**
+ * Push an offer to a thread's recentOffers ring buffer (max 3).
+ * Mutates the thread object.
+ * @param {Object} thread
+ * @param {{ offerType: string, target?: string, askedAtMessageId: string, timestampMs: number }} offer
+ */
+export function pushRecentOffer(thread, offer) {
+  if (!Array.isArray(thread.recentOffers)) thread.recentOffers = [];
+  thread.recentOffers.push({ ...offer, outcome: 'pending' });
+  if (thread.recentOffers.length > 3) {
+    thread.recentOffers = thread.recentOffers.slice(-3);
+  }
+}
+
+/**
+ * Set openOffer on a thread and push to recentOffers.
+ * @param {Object} thread
+ * @param {{ offerType: string, target?: string, askedAtMessageId: string }} offer
+ * @param {number} timestampMs
+ */
+export function setOpenOffer(thread, offer, timestampMs) {
+  thread.openOffer = { ...offer };
+  pushRecentOffer(thread, { ...offer, timestampMs });
+}
+
+/**
+ * Gathers all open loops across all active threads.
+ * @param {{ threads: Object[], activeThreadId: string|null }} sessionState
+ * @returns {{ threadId: string, loopType: string, detail: Object }[]}
+ */
+function gatherOpenLoops(sessionState) {
+  const loops = [];
+  for (const t of sessionState.threads) {
+    // Include 'failed' threads for lastError loop detection
+    if (t.status === 'done') continue;
+    if (t.pendingQuestion) loops.push({ threadId: t.id, loopType: 'pending_question', detail: t.pendingQuestion });
+    if (t.inFlight) loops.push({ threadId: t.id, loopType: 'in_flight', detail: t.inFlight });
+    if (t.openOffer) loops.push({ threadId: t.id, loopType: 'open_offer', detail: t.openOffer });
+    if (t.awaitingApproval) loops.push({ threadId: t.id, loopType: 'awaiting_approval', detail: t.awaitingApproval });
+    if (t.lastError) loops.push({ threadId: t.id, loopType: 'last_error', detail: t.lastError });
+  }
+  return loops;
+}
+
+/**
+ * Compute whether repair is needed and build the repair_question response.
+ * Returns null when repair is not needed.
+ * @param {{ threads: Object[], activeThreadId: string|null }} sessionState
+ * @param {{ type: string, text?: string }} classification
+ * @param {string} rawText
+ * @returns {null|{ type: 'repair_question', question: string, correlationId: string, options: Object[] }}
+ */
+export function computeRepairDecision(sessionState, classification, rawText) {
+  // Only consider open offers across active threads
+  const offerLoops = gatherOpenLoops(sessionState).filter(l => l.loopType === 'open_offer');
+
+  // Repair only when two or more plausible offers exist
+  if (offerLoops.length < 2) return null;
+
+  // And the message is low-info / ambiguous
+  const normalized = (rawText || '').toLowerCase().trim().replace(/[?!.]+$/, '');
+  if (!LOW_INFO.test(normalized) && !EXPLAIN_MORE.test(normalized)) return null;
+
+  // Build A/B from the two most recent offer loops
+  const candidates = offerLoops.slice(-2);
+  const correlationId = crypto.randomUUID();
+
+  const threadA = sessionState.threads.find(t => t.id === candidates[0].threadId);
+  const threadB = sessionState.threads.find(t => t.id === candidates[1].threadId);
+
+  return {
+    type: 'repair_question',
+    question: `I'm not sure which topic you mean. Could you pick one?`,
+    correlationId,
+    options: [
+      {
+        id: 'A',
+        label: threadA?.openOffer?.target || threadA?.summary || 'Option A',
+        threadId: candidates[0].threadId,
+        action: 'attach_to_thread'
+      },
+      {
+        id: 'B',
+        label: threadB?.openOffer?.target || threadB?.summary || 'Option B',
+        threadId: candidates[1].threadId,
+        action: 'attach_to_thread'
+      }
+    ]
+  };
+}
+
+/**
+ * Apply a repair selection deterministically.
+ * @param {{ threads: Object[], activeThreadId: string|null }} sessionState
+ * @param {'A'|'B'} selection
+ * @param {string} correlationId
+ * @param {{ type: 'repair_question', options: Object[] }} repairContext
+ * @param {number} [now]
+ * @returns {{ threads: Object[], activeThreadId: string|null }}
+ */
+export function handleRepairSelection(sessionState, selection, correlationId, repairContext, now) {
+  const ts = now || Date.now();
+  if (!repairContext || repairContext.correlationId !== correlationId) {
+    return sessionState; // stale/invalid selection — no-op
+  }
+
+  if (selection !== 'A' && selection !== 'B') {
+    return sessionState; // only A/B are valid
+  }
+
+  const option = repairContext.options.find(o => o.id === selection);
+  if (!option) return sessionState;
+
+  const nextState = {
+    threads: sessionState.threads.map(t => ({ ...t })),
+    activeThreadId: sessionState.activeThreadId
+  };
+
+  if (option.action === 'create_new_thread') {
+    const newThread = {
+      id: crypto.randomUUID(),
+      intent: 'unknown',
+      slots: {},
+      status: 'in_progress',
+      summary: option.label,
+      lastActivityTs: ts,
+      createdAt: ts
+    };
+    nextState.threads.push(newThread);
+    nextState.activeThreadId = newThread.id;
+  } else {
+    // attach_to_thread
+    const thread = nextState.threads.find(t => t.id === option.threadId);
+    if (thread) {
+      thread.status = 'in_progress';
+      if (thread.openOffer) {
+        // Accept the offer on that thread
+        const recent = (thread.recentOffers || []).find(
+          r => r.askedAtMessageId === thread.openOffer.askedAtMessageId
+        );
+        if (recent) recent.outcome = 'accepted';
+        delete thread.openOffer;
+      }
+      thread.lastActivityTs = ts;
+      nextState.activeThreadId = thread.id;
+    }
+  }
+
+  return nextState;
+}
+
 /**
  * Classifies a user message for routing to appropriate thread operations.
  * @param {Object} args
@@ -580,6 +815,31 @@ export function classifyUserMessage({ text = "", sessionState = { threads: [], a
   const normalized = text.toLowerCase().trim().replace(/[?!.]+$/, "");
 
   // 1) Override / steering beats everything
+  // But "actually yes/yeah/sure" is a reversal, not an override — check first
+  if (AFFIRM_AFTER_REJECT.test(normalized)) {
+    // Change-of-mind: look for a recently-rejected offer on the active thread
+    const activeThread = sessionState.threads.find(t => t.id === sessionState.activeThreadId);
+    const recentRejected = activeThread?.recentOffers?.slice().reverse().find(r => r.outcome === 'rejected');
+    if (recentRejected || activeThread?.openOffer) {
+      return {
+        type: 'accept_offer',
+        targetThreadId: activeThread.id,
+        offerDetail: recentRejected || activeThread.openOffer
+      };
+    }
+    // Also check all threads for a recent rejected offer
+    for (const t of [...sessionState.threads].reverse()) {
+      const rej = t.recentOffers?.slice().reverse().find(r => r.outcome === 'rejected');
+      if (rej) {
+        return {
+          type: 'accept_offer',
+          targetThreadId: t.id,
+          offerDetail: rej
+        };
+      }
+    }
+  }
+
   const overrideKeywords = ["actually", "ignore", "stop", "cancel", "instead", "forget", "wait", "scrap that", "scrap it"];
   if (overrideKeywords.some(o => normalized.startsWith(o))) {
     return {
@@ -589,7 +849,6 @@ export function classifyUserMessage({ text = "", sessionState = { threads: [], a
   }
 
   // 2) Status/progress nudge
-  // Architecture says: "attaches to most recent in_progress/blocked thread even if another thread has pending_question"
   const statusNudgeKeywords = ["any luck", "update", "status", "anyone there", "any news", "hello", "hi", "hey", "?"];
   if (statusNudgeKeywords.includes(normalized) ||
     (normalized.length === 0 && text.trim() === "?") ||
@@ -606,7 +865,68 @@ export function classifyUserMessage({ text = "", sessionState = { threads: [], a
     }
   }
 
-  // 3) Answer to pending question
+  // 3) Open offer handling: accept / reject / explain-more
+  // Gather all open offers across active threads
+  const threadsWithOffers = sessionState.threads.filter(
+    t => t.openOffer && !['done', 'failed'].includes(t.status)
+  );
+
+  // 3a) Short affirmative → accept offer (exact match or prefix for tiny messages)
+  if (isShortAffirmative(normalized) && threadsWithOffers.length > 0) {
+    if (threadsWithOffers.length === 1) {
+      return {
+        type: 'accept_offer',
+        targetThreadId: threadsWithOffers[0].id,
+        offerDetail: threadsWithOffers[0].openOffer
+      };
+    }
+    // Multiple offers: will fall through to repair check below
+  }
+
+  // 3b) Short negative → reject offer
+  if (NO_SET.has(normalized) && threadsWithOffers.length > 0) {
+    // Reject the offer on the active thread, or the most recent one
+    const activeWithOffer = threadsWithOffers.find(t => t.id === sessionState.activeThreadId);
+    const target = activeWithOffer || threadsWithOffers[threadsWithOffers.length - 1];
+    return {
+      type: 'reject_offer',
+      targetThreadId: target.id,
+      offerDetail: target.openOffer
+    };
+  }
+
+  // 3c) "Explain more" / "Go on" — accept if single offer, repair if multiple
+  if (EXPLAIN_MORE.test(normalized) && threadsWithOffers.length > 0) {
+    if (threadsWithOffers.length === 1) {
+      return {
+        type: 'accept_offer',
+        targetThreadId: threadsWithOffers[0].id,
+        offerDetail: threadsWithOffers[0].openOffer
+      };
+    }
+    // Multiple: fall through to repair
+  }
+
+  // 3d) Error inquiry: "what happened?" / "why?" / "huh?" — attach to lastError if recent
+  // Note: "?" normalizes to "" after punctuation strip, so check raw text as fallback
+  const isErrorInquiry = ERROR_INQUIRY_SHORT.test(normalized) || ERROR_INQUIRY_LONG.test(normalized) || (text.trim() === '?');
+  if (isErrorInquiry) {
+    const now = Date.now();
+    // Find the most recent thread with a lastError within TTL
+    const errorThread = [...sessionState.threads].reverse().find(t => {
+      if (!t.lastError) return false;
+      return (now - (t.lastError.timestampMs || 0)) < LAST_ERROR_TTL_MS;
+    });
+    if (errorThread) {
+      return {
+        type: 'error_inquiry',
+        targetThreadId: errorThread.id,
+        errorDetail: errorThread.lastError
+      };
+    }
+  }
+
+  // 4) Answer to pending question
   const pendingThread = [...sessionState.threads].reverse().find(t =>
     t.status === 'waiting_for_user' && t.pendingQuestion
   );
@@ -623,13 +943,13 @@ export function classifyUserMessage({ text = "", sessionState = { threads: [], a
     }
   }
 
-  // 4) Filler (e.g. "ok", "thanks", "cool") - non-mutating
-  const fillerKeywords = ["ok", "okay", "thanks", "thank you", "cool", "got it", "nice", "great", "well done"];
+  // 5) Filler (e.g. "thanks", "cool") - non-mutating
+  const fillerKeywords = ["thanks", "thank you", "cool", "got it", "nice", "great", "well done"];
   if (fillerKeywords.includes(normalized)) {
     return { type: "filler" };
   }
 
-  // 5) New request
+  // 6) New request
   return { type: "new_request" };
 }
 
@@ -660,7 +980,13 @@ function isFittedAnswer(text, expectedType) {
  */
 export function applyUserTurn({ sessionState = { threads: [], activeThreadId: null }, classification, rawText, now = Date.now }) {
   const nextState = {
-    threads: sessionState.threads.map(t => ({ ...t })),
+    threads: sessionState.threads.map(t => ({
+      ...t,
+      recentOffers: t.recentOffers ? [...t.recentOffers] : undefined,
+      openOffer: t.openOffer ? { ...t.openOffer } : undefined,
+      inFlight: t.inFlight ? { ...t.inFlight } : undefined,
+      awaitingApproval: t.awaitingApproval ? { ...t.awaitingApproval } : undefined,
+    })),
     activeThreadId: sessionState.activeThreadId
   };
 
@@ -709,6 +1035,51 @@ export function applyUserTurn({ sessionState = { threads: [], activeThreadId: nu
       nextState.activeThreadId = thread.id;
     }
   }
+  else if (classification.type === "accept_offer" && classification.targetThreadId) {
+    const thread = nextState.threads.find(t => t.id === classification.targetThreadId);
+    if (thread) {
+      thread.status = "in_progress";
+      // Mark the offer as accepted in recentOffers
+      if (thread.openOffer) {
+        const recent = (thread.recentOffers || []).find(
+          r => r.askedAtMessageId === thread.openOffer.askedAtMessageId && r.outcome !== 'accepted'
+        );
+        if (recent) recent.outcome = 'accepted';
+        delete thread.openOffer;
+      } else if (classification.offerDetail?.askedAtMessageId) {
+        // Reversal: re-accepting a previously rejected offer
+        const recent = (thread.recentOffers || []).find(
+          r => r.askedAtMessageId === classification.offerDetail.askedAtMessageId
+        );
+        if (recent) recent.outcome = 'accepted';
+      }
+      thread.lastActivityTs = ts;
+      nextState.activeThreadId = thread.id;
+    }
+  }
+  else if (classification.type === "reject_offer" && classification.targetThreadId) {
+    const thread = nextState.threads.find(t => t.id === classification.targetThreadId);
+    if (thread) {
+      // Mark offer as rejected but keep in recentOffers for change-of-mind
+      if (thread.openOffer) {
+        const recent = (thread.recentOffers || []).find(
+          r => r.askedAtMessageId === thread.openOffer.askedAtMessageId && r.outcome === 'pending'
+        );
+        if (recent) recent.outcome = 'rejected';
+        delete thread.openOffer;
+      }
+      thread.lastActivityTs = ts;
+      nextState.activeThreadId = thread.id;
+    }
+  }
+  else if (classification.type === "error_inquiry" && classification.targetThreadId) {
+    const thread = nextState.threads.find(t => t.id === classification.targetThreadId);
+    if (thread) {
+      thread.status = "in_progress";
+      thread.lastActivityTs = ts;
+      nextState.activeThreadId = thread.id;
+    }
+  }
 
   return nextState;
 }
@@ -717,25 +1088,28 @@ export function applyUserTurn({ sessionState = { threads: [], activeThreadId: nu
  * Determines whether to use an inline reply style and to what anchor.
  */
 export function selectReplyAnchor({ sessionState, classification }) {
-  const activeThreads = sessionState.threads.filter(t => !["done", "failed"].includes(t.status));
+  // Only use inline reply when we have a concrete anchor message to reply to.
+  // Multiple active threads alone is NOT sufficient — it causes reply-to on every message.
 
-  // Rules for inline reply:
-  // 1. Multiple active threads (ambiguity risk)
-  const multipleActive = activeThreads.length > 1;
+  const targetId = classification.targetThreadId || sessionState.activeThreadId;
+  const targetThread = sessionState.threads?.find(t => t.id === targetId);
 
-  // 2. Replying to a non-active thread (topic switch or jumping back)
-  const isTargetingNonActive = classification.targetThreadId && classification.targetThreadId !== sessionState.activeThreadId;
+  // Find a concrete anchorMessageId from the target thread
+  const anchorMessageId = targetThread?.pendingQuestion?.askedAtMessageId
+    || targetThread?.lastError?.messageId
+    || null;
 
-  // 3. Repair / Override
-  const isRepair = classification.type === "override";
+  // Rules for inline reply (require a concrete anchor):
+  // 1. Override / steering — only if we have a message to anchor to
+  // 2. Topic switch to a thread with a pending question or error
+  // 3. Error inquiry — reply to the error message
+  const isOverride = classification.type === 'override';
+  const isTargetingNonActive = classification.targetThreadId
+    && classification.targetThreadId !== sessionState.activeThreadId;
+  const isErrorInquiry = classification.type === 'error_inquiry';
 
-  if (multipleActive || isTargetingNonActive || isRepair) {
-    const targetId = classification.targetThreadId || sessionState.activeThreadId;
-    const targetThread = sessionState.threads.find(t => t.id === targetId);
-    return {
-      useInlineReply: true,
-      anchorMessageId: targetThread?.pendingQuestion?.askedAtMessageId
-    };
+  if (anchorMessageId && (isOverride || isTargetingNonActive || isErrorInquiry)) {
+    return { useInlineReply: true, anchorMessageId };
   }
 
   return { useInlineReply: false };

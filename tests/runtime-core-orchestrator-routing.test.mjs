@@ -53,7 +53,7 @@ test("routing-policy-engine selectReplyAnchor rules", () => {
     };
     assert.equal(selectReplyAnchor({ sessionState: s1, classification: { type: "new_request" } }).useInlineReply, false);
 
-    // 2. Multiple active threads -> inline reply
+    // 2. Multiple active threads WITHOUT a concrete anchor -> no inline reply (stricter policy)
     const s2 = {
         activeThreadId: "t1",
         threads: [
@@ -61,9 +61,9 @@ test("routing-policy-engine selectReplyAnchor rules", () => {
             { id: "t2", status: "blocked" }
         ]
     };
-    assert.equal(selectReplyAnchor({ sessionState: s2, classification: { type: "new_request" } }).useInlineReply, true);
+    assert.equal(selectReplyAnchor({ sessionState: s2, classification: { type: "new_request" } }).useInlineReply, false);
 
-    // 3. Repair/Override -> inline reply
+    // 3. Override with concrete anchor (pending question) -> inline reply
     const s3 = {
         activeThreadId: "t1",
         threads: [{ id: "t1", status: "waiting_for_user", pendingQuestion: { text: "Y/N?", askedAtMessageId: "m1" } }]
@@ -72,4 +72,38 @@ test("routing-policy-engine selectReplyAnchor rules", () => {
     const a3 = selectReplyAnchor({ sessionState: s3, classification: c3 });
     assert.equal(a3.useInlineReply, true);
     assert.equal(a3.anchorMessageId, "m1");
+
+    // 4. Error inquiry with lastError anchor -> inline reply
+    const s4 = {
+        activeThreadId: "t1",
+        threads: [{ id: "t1", status: "failed", lastError: { messageId: "msg_err_1", capabilityId: "search_web" } }]
+    };
+    const c4 = { type: "error_inquiry", targetThreadId: "t1" };
+    const a4 = selectReplyAnchor({ sessionState: s4, classification: c4 });
+    assert.equal(a4.useInlineReply, true);
+    assert.equal(a4.anchorMessageId, "msg_err_1");
+
+    // 5. Topic switch to thread WITH a pending question -> inline reply
+    const s5 = {
+        activeThreadId: "t1",
+        threads: [
+            { id: "t1", status: "in_progress" },
+            { id: "t2", status: "waiting_for_user", pendingQuestion: { text: "Where?", askedAtMessageId: "m2" } }
+        ]
+    };
+    const c5 = { type: "status_nudge", targetThreadId: "t2" };
+    const a5 = selectReplyAnchor({ sessionState: s5, classification: c5 });
+    assert.equal(a5.useInlineReply, true);
+    assert.equal(a5.anchorMessageId, "m2");
+
+    // 6. Topic switch to thread WITHOUT a pending question -> no inline reply (no anchor)
+    const s6 = {
+        activeThreadId: "t1",
+        threads: [
+            { id: "t1", status: "in_progress" },
+            { id: "t2", status: "blocked" }
+        ]
+    };
+    const c6 = { type: "status_nudge", targetThreadId: "t2" };
+    assert.equal(selectReplyAnchor({ sessionState: s6, classification: c6 }).useInlineReply, false);
 });
