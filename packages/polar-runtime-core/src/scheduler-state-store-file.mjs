@@ -6,7 +6,7 @@ import {
   RuntimeExecutionError,
   SCHEDULER_EVENT_PROCESS_STATUSES,
   SCHEDULER_EVENT_SOURCES,
-} from "../../polar-domain/src/index.mjs";
+} from "@polar/domain";
 
 const DEFAULT_STATE_VERSION = 1;
 const processStatuses = new Set(SCHEDULER_EVENT_PROCESS_STATUSES);

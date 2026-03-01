@@ -1,7 +1,7 @@
 import {
     ContractValidationError,
     RuntimeExecutionError,
-} from "../../polar-domain/src/index.mjs";
+} from "@polar/domain";
 
 /**
  * Production-grade SQLite Durable Scheduler Queue Backend

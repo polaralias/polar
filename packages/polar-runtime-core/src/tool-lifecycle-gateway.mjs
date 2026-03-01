@@ -10,7 +10,7 @@ import {
   enumField,
   jsonField,
   stringField,
-} from "../../polar-domain/src/index.mjs";
+} from "@polar/domain";
 
 const lifecycleRequestSchema = createStrictObjectSchema({
   schemaId: "tool.lifecycle.gateway.request",

@@ -13,7 +13,7 @@ import {
   numberField,
   stringArrayField,
   stringField,
-} from "../../polar-domain/src/index.mjs";
+} from "@polar/domain";
 
 const heartbeatRequestSchema = createStrictObjectSchema({
   schemaId: "heartbeat.gateway.tick.request",

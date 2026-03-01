@@ -41,6 +41,7 @@ export {
   computeRepairDecision,
   handleRepairSelection,
 } from "./routing-policy-engine.mjs";
+export { computeCapabilityScope } from "./capability-scope.mjs";
 export { createHandoffRoutingTelemetryCollector } from "./handoff-routing-telemetry.mjs";
 export {
   createHandoffRoutingTelemetryGateway,

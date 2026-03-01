@@ -12,7 +12,7 @@ import {
     enumField,
     numberField,
     stringField,
-} from "../../polar-domain/src/index.mjs";
+} from "@polar/domain";
 
 const upsertPolicyRequestSchema = createStrictObjectSchema({
     schemaId: "budget.gateway.policy.upsert.request",

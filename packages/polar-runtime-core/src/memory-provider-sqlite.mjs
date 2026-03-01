@@ -1,6 +1,6 @@
 import {
     RuntimeExecutionError,
-} from "../../polar-domain/src/index.mjs";
+} from "@polar/domain";
 
 /**
  * SQLite implementation of a Memory Provider for persistent fact storage.

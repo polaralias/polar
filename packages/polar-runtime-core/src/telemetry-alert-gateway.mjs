@@ -15,7 +15,7 @@ import {
   booleanField,
   jsonField,
   stringField,
-} from "../../polar-domain/src/index.mjs";
+} from "@polar/domain";
 
 const telemetryAlertRequestFields = Object.freeze({
   executionType: enumField(["tool", "handoff", "automation", "heartbeat"], {

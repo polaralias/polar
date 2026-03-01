@@ -5,7 +5,7 @@ import {
   RuntimeExecutionError,
   parseExecutionType,
   validateSchemaOrThrow,
-} from "../../polar-domain/src/index.mjs";
+} from "@polar/domain";
 import {
   createDurableLineageStore,
   isRuntimeDevMode,

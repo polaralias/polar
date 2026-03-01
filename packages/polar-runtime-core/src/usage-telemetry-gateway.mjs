@@ -11,7 +11,7 @@ import {
   booleanField,
   numberField,
   stringField,
-} from "../../polar-domain/src/index.mjs";
+} from "@polar/domain";
 
 const listRequestSchema = createStrictObjectSchema({
   schemaId: "usage.telemetry.gateway.list.request",

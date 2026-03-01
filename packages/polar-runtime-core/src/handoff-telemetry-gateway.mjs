@@ -9,7 +9,7 @@ import {
   enumField,
   numberField,
   stringField,
-} from "../../polar-domain/src/index.mjs";
+} from "@polar/domain";
 
 const listRequestSchema = createStrictObjectSchema({
   schemaId: "handoff.telemetry.gateway.list.request",

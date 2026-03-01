@@ -13,7 +13,7 @@ import {
   numberField,
   stringArrayField,
   stringField,
-} from "../../polar-domain/src/index.mjs";
+} from "@polar/domain";
 
 const commonGatewayFields = {
   endpointMode: enumField(["responses", "chat", "anthropic_messages", "gemini_generate_content"], { required: false }),

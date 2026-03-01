@@ -8,5 +8,8 @@
   },
   "scripts": {
     "test": "node --test ../../tests/*adapter-extensions*.test.mjs"
+  },
+  "dependencies": {
+    "@polar/domain": "*"
   }
 }

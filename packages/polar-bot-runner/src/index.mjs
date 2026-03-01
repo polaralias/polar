@@ -1,13 +1,12 @@
 import { Telegraf } from 'telegraf';
 import { message } from 'telegraf/filters';
 import dotenv from 'dotenv';
-import { createPolarPlatform, defaultDbPath } from '@polar/platform';
+import { createPolarPlatform } from '@polar/platform';
 import fs from 'fs';
 import path from 'path';
 import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
 const pdfParse = require('pdf-parse');
-import crypto from 'crypto';
 
 dotenv.config();
 
@@ -23,7 +22,7 @@ const bot = new Telegraf(BOT_TOKEN);
 
 // 2. Initialize Polar Framework (Headless Orchestrator)
 const platform = createPolarPlatform({
-    dbPath: defaultDbPath()
+    dbPath: path.resolve(process.cwd(), '../../polar-system.db')
 });
 const controlPlane = platform.controlPlane;
 

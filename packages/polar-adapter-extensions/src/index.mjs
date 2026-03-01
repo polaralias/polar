@@ -1,7 +1,7 @@
 /**
  * Extension adapter registry for skills, MCP tools, and plugin wrappers.
  */
-import { RuntimeExecutionError } from "../../polar-domain/src/index.mjs";
+import { RuntimeExecutionError } from "@polar/domain";
 
 export function createExtensionAdapterRegistry() {
   const extensions = new Map();

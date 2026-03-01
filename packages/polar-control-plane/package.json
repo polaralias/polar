@@ -5,5 +5,11 @@
   "type": "module",
   "exports": {
     ".": "./src/index.mjs"
+  },
+  "dependencies": {
+    "@polar/adapter-channels": "*",
+    "@polar/adapter-extensions": "*",
+    "@polar/adapter-native": "*",
+    "@polar/runtime-core": "*"
   }
 }

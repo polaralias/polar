@@ -8,13 +8,13 @@ import {
   mapPluginDescriptor,
   verifyPluginAuthBindings,
   createPluginCapabilityAdapter,
-} from "../../polar-adapter-extensions/src/index.mjs";
+} from "@polar/adapter-extensions";
 import {
   createDefaultIngressHealthChecks,
   createDefaultIngressNormalizers,
-} from "../../polar-adapter-channels/src/index.mjs";
-import { createNativeHttpAdapter } from "../../polar-adapter-native/src/index.mjs";
-import { computeCapabilityScope } from "../../polar-runtime-core/src/capability-scope.mjs";
+} from "@polar/adapter-channels";
+import { createNativeHttpAdapter } from "@polar/adapter-native";
+import { computeCapabilityScope } from "@polar/runtime-core";
 import {
   createChatIngressGateway,
   createChatManagementGateway,
@@ -64,11 +64,11 @@ import {
   createDurableLineageStore,
   isRuntimeDevMode,
   createSqliteSchedulerStateStore,
-} from "../../polar-runtime-core/src/index.mjs";
+} from "@polar/runtime-core";
 
 /**
  * @param {{
- *   middleware?: readonly import("../../polar-runtime-core/src/middleware-pipeline.mjs").RuntimeMiddleware[],
+ *   middleware?: readonly import("@polar/runtime-core").RuntimeMiddleware[],
  *   initialRecords?: readonly Record<string, unknown>[],
  *   initialSessions?: readonly Record<string, unknown>[],
  *   initialMessages?: readonly Record<string, unknown>[],
@@ -85,8 +85,8 @@ import {
  *     slack?: () => unknown|Promise<unknown>,
  *     discord?: () => unknown|Promise<unknown>
  *   },
- *   handoffRoutingTelemetryCollector?: ReturnType<import("../../polar-runtime-core/src/handoff-routing-telemetry.mjs").createHandoffRoutingTelemetryCollector>,
- *   usageTelemetryCollector?: ReturnType<import("../../polar-runtime-core/src/usage-telemetry.mjs").createUsageTelemetryCollector>,
+ *   handoffRoutingTelemetryCollector?: ReturnType<import("@polar/runtime-core").createHandoffRoutingTelemetryCollector>,
+ *   usageTelemetryCollector?: ReturnType<import("@polar/runtime-core").createUsageTelemetryCollector>,
  *   schedulerStateStore?: {
  *     hasProcessedEvent?: (request: { eventId: string }) => Promise<unknown>|unknown,
  *     storeProcessedEvent?: (request: Record<string, unknown>) => Promise<unknown>|unknown,
@@ -779,7 +779,7 @@ export function createControlPlaneService(config = {}) {
     },
 
     /**
-     * @param {import("../../polar-runtime-core/src/orchestrator.mjs").PolarEnvelope} request
+     * @param {import("@polar/runtime-core").PolarEnvelope} request
      */
     async orchestrate(request) {
       return orchestrator.orchestrate(request);

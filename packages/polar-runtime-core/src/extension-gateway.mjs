@@ -13,7 +13,7 @@ import {
   jsonField,
   stringArrayField,
   stringField,
-} from "../../polar-domain/src/index.mjs";
+} from "@polar/domain";
 
 const lifecycleRequestSchema = createStrictObjectSchema({
   schemaId: "extension.gateway.lifecycle.request",

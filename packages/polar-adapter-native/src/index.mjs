@@ -1,4 +1,4 @@
-import { RuntimeExecutionError } from "../../polar-domain/src/index.mjs";
+import { RuntimeExecutionError } from "@polar/domain";
 
 /**
  * Creates a native HTTP provider adapter implementing the routing strategies
@@ -16,7 +16,7 @@ import { RuntimeExecutionError } from "../../polar-domain/src/index.mjs";
  *   baseUrl: string,
  *   apiKey?: string | (() => Promise<string> | string),
  *   defaultHeaders?: Record<string, string>,
- *   capabilities?: import("../../polar-runtime-core/src/provider-gateway.mjs").ProviderCapabilities,
+ *   capabilities?: import("@polar/runtime-core").ProviderCapabilities,
  *   fetcher?: typeof fetch,
  *   timeoutMs?: number
  * }} config

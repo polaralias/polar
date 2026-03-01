@@ -10,7 +10,7 @@ import {
   numberField,
   stringArrayField,
   stringField,
-} from "../../polar-domain/src/index.mjs";
+} from "@polar/domain";
 
 const providerActionIds = Object.freeze([
   "provider.generate",

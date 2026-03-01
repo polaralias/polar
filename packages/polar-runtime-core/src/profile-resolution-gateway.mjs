@@ -10,7 +10,7 @@ import {
   numberField,
   stringField,
   booleanField,
-} from "../../polar-domain/src/index.mjs";
+} from "@polar/domain";
 
 const resolveProfileRequestSchema = createStrictObjectSchema({
   schemaId: "profile.resolve.gateway.request",

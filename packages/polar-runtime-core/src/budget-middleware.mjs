@@ -1,4 +1,4 @@
-import { RuntimeExecutionError } from '../../polar-domain/src/index.mjs';
+import { RuntimeExecutionError } from '@polar/domain';
 
 /**
  * @param {{

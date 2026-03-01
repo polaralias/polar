@@ -9,7 +9,7 @@ import {
   enumField,
   jsonField,
   stringField,
-} from "../../polar-domain/src/index.mjs";
+} from "@polar/domain";
 
 const pluginInstallerRequestSchema = createStrictObjectSchema({
   schemaId: "plugin.installer.gateway.request",

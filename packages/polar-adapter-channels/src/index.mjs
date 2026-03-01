@@ -7,7 +7,7 @@ import {
   stringArrayField,
   stringField,
   createStrictObjectSchema,
-} from "../../polar-domain/src/index.mjs";
+} from "@polar/domain";
 
 const webIngressSchema = createStrictObjectSchema({
   schemaId: "chat.web.ingress.input",
@@ -148,7 +148,7 @@ function parseIsoTimestampToMs(value) {
 
 /**
  * @param {unknown} value
- * @param {import("../../polar-domain/src/runtime-contracts.mjs").StrictObjectSchema} schema
+ * @param {import("@polar/domain").StrictObjectSchema} schema
  * @param {string} adapterId
  * @returns {Record<string, unknown>}
  */

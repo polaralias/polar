@@ -2,7 +2,7 @@ import {
     RuntimeExecutionError,
     createStrictObjectSchema,
     stringArrayField
-} from '../../polar-domain/src/index.mjs';
+} from '@polar/domain';
 
 const toolSynthesisResponseSchema = createStrictObjectSchema({
     schemaId: 'tool.synthesis.response',

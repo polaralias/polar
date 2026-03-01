@@ -17,7 +17,7 @@ import {
   jsonField,
   numberField,
   stringField,
-} from "../../polar-domain/src/index.mjs";
+} from "@polar/domain";
 
 const processPersistedEventRequestSchema = createStrictObjectSchema({
   schemaId: "scheduler.gateway.event.process.request",

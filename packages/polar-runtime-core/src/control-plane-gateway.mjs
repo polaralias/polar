@@ -10,7 +10,7 @@ import {
   jsonField,
   numberField,
   stringField,
-} from "../../polar-domain/src/index.mjs";
+} from "@polar/domain";
 
 const upsertRequestSchema = createStrictObjectSchema({
   schemaId: "control-plane.gateway.upsert.request",

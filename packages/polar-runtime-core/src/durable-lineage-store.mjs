@@ -4,7 +4,7 @@ import { dirname, resolve } from "node:path";
 import {
   ContractValidationError,
   RuntimeExecutionError,
-} from "../../polar-domain/src/index.mjs";
+} from "@polar/domain";
 
 const lineageQuerySchemaId = "runtime.lineage.query.request";
 

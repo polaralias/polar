@@ -1,70 +1,99 @@
 import { defineConfig } from 'vite';
-import { createPolarPlatform, defaultDbPath } from '@polar/platform';
-import { resolve, relative, normalize } from 'path';
+import { createPolarPlatform } from '@polar/platform';
+import { fileURLToPath } from 'url';
+import { dirname, isAbsolute, normalize, relative, resolve } from 'path';
 import fs from 'fs/promises';
 
+const moduleDir = dirname(fileURLToPath(import.meta.url));
+const repoRoot = resolve(moduleDir, '../..');
 const platform = createPolarPlatform({
-    dbPath: defaultDbPath()
+    dbPath: resolve(repoRoot, 'polar-system.db')
 });
 const controlPlane = platform.controlPlane;
 
 // BUG-002 fix: API authorization via a simple bearer token from env
 const API_SECRET = process.env.POLAR_UI_API_SECRET || null;
 
-// BUG-003 fix: Allowlisted filenames for readMD/writeMD
-const ALLOWED_MD_FILES = new Set([
-    'AGENTS.md',
-    'SKILLS.md',
-    'MEMORY.md',
-    'REACTIONS.md',
-    'HEARTBEAT.md',
-]);
-
-// BUG-002 fix: Allowlisted control plane methods to prevent arbitrary method invocation
+// Explicit control-plane method allowlist for Web UI dispatch.
 const ALLOWED_ACTIONS = new Set([
     'health',
     'upsertConfig', 'getConfig', 'listConfigs',
     'checkInitialBudget', 'upsertBudgetPolicy', 'getBudgetPolicy',
-    'resolveProfile',
-    'normalizeIngress', 'checkIngressHealth',
     'appendMessage', 'listSessions', 'getSessionHistory', 'searchMessages', 'applySessionRetentionPolicy',
     'upsertTask', 'transitionTask', 'listTasks', 'listTaskEvents', 'replayTaskRunLinks',
     'listHandoffRoutingTelemetry', 'listUsageTelemetry', 'listTelemetryAlerts', 'routeTelemetryAlerts',
     'listSchedulerEventQueue', 'runSchedulerQueueAction',
     'generateOutput', 'listModels', 'streamOutput', 'embedText',
     'executeExtension', 'applyExtensionLifecycle', 'listExtensionStates',
-    'installSkill', 'syncMcpServer', 'installPlugin',
+    'installSkill', 'reviewSkillInstallProposal', 'syncMcpServer', 'installPlugin',
+    'submitSkillMetadataOverride', 'listBlockedSkills', 'listCapabilityAuthorityStates',
     'searchMemory', 'getMemory', 'upsertMemory', 'compactMemory',
-    'orchestrate', 'executeWorkflow', 'rejectWorkflow', 'handleRepairSelection'
+    'orchestrate', 'updateMessageChannelId', 'executeWorkflow', 'rejectWorkflow', 'handleRepairSelection'
 ]);
 
 /**
- * BUG-003 fix: Validate that a filename is in the allowlist and doesn't traverse
+ * Validate markdown file paths for read/write operations.
+ * Allow:
+ * - AGENTS.md (root, read/write)
+ * - docs/**/*.md (read/write)
+ * - artifacts/**/*.md (read-only)
+ * Reject absolute paths, traversal, and non-markdown files.
  * @param {string} filename
+ * @param {"read"|"write"} mode
  * @returns {string} resolved safe path
  */
-function validateMdFilename(filename) {
-    if (typeof filename !== 'string' || filename.length === 0) {
+function validateMdFilename(filename, mode) {
+    if (typeof filename !== 'string' || filename.trim().length === 0) {
         throw new Error('filename must be a non-empty string');
     }
-
-    // Normalize and extract just the basename to prevent path traversal
-    const normalized = normalize(filename).replace(/^(\.\.(\/|\\|$))+/, '');
-    const basename = normalized.split(/[/\\]/).pop();
-
-    // Ensure the basename (with forced .md extension) is in the allowlist
-    const finalName = basename.endsWith('.md') ? basename : `${basename}.md`;
-    if (!ALLOWED_MD_FILES.has(finalName)) {
-        throw new Error(`File "${finalName}" is not in the allowed files list`);
+    if (mode !== 'read' && mode !== 'write') {
+        throw new Error('invalid markdown file mode');
+    }
+    if (filename.includes('\0')) {
+        throw new Error('invalid filename');
+    }
+    if (isAbsolute(filename)) {
+        throw new Error('absolute paths are not allowed');
     }
 
-    const projectRoot = resolve(process.cwd(), '../../');
-    const resolvedPath = resolve(projectRoot, finalName);
+    const normalizedPath = normalize(filename).replace(/\\/g, '/');
+    if (
+        normalizedPath === '..' ||
+        normalizedPath.startsWith('../') ||
+        normalizedPath.includes('/../')
+    ) {
+        throw new Error('path traversal detected');
+    }
+    if (!normalizedPath.endsWith('.md')) {
+        throw new Error('only .md files are allowed');
+    }
 
-    // Double-check the resolved path stays within the project root
-    const rel = relative(projectRoot, resolvedPath);
-    if (rel.startsWith('..') || resolve(projectRoot, rel) !== resolvedPath) {
-        throw new Error('Path traversal detected');
+    let pathGroup = '';
+    if (normalizedPath === 'AGENTS.md') {
+        pathGroup = 'root';
+    } else if (normalizedPath.startsWith('docs/')) {
+        pathGroup = 'docs';
+    } else if (normalizedPath.startsWith('artifacts/')) {
+        pathGroup = 'artifacts';
+    } else {
+        throw new Error('file path is not allowlisted');
+    }
+
+    if (mode === 'write' && pathGroup === 'artifacts') {
+        throw new Error('artifacts markdown files are read-only');
+    }
+
+    const resolvedPath = resolve(repoRoot, normalizedPath);
+    const rel = relative(repoRoot, resolvedPath).replace(/\\/g, '/');
+    if (rel.startsWith('..') || isAbsolute(rel)) {
+        throw new Error('resolved path escapes repository root');
+    }
+
+    if (pathGroup === 'docs' && !rel.startsWith('docs/')) {
+        throw new Error('resolved docs path is invalid');
+    }
+    if (pathGroup === 'artifacts' && !rel.startsWith('artifacts/')) {
+        throw new Error('resolved artifacts path is invalid');
     }
 
     return resolvedPath;
@@ -107,8 +136,7 @@ export default defineConfig({
                                 // Custom routes for MD File editing
                                 if (action === 'readMD') {
                                     try {
-                                        // BUG-003 fix: Validate filename against allowlist
-                                        const filePath = validateMdFilename(payload.filename);
+                                        const filePath = validateMdFilename(payload.filename, 'read');
                                         const content = await fs.readFile(filePath, 'utf-8');
                                         res.setHeader('Content-Type', 'application/json');
                                         res.end(JSON.stringify({ content }));
@@ -121,8 +149,7 @@ export default defineConfig({
 
                                 if (action === 'writeMD') {
                                     try {
-                                        // BUG-003 fix: Validate filename against allowlist
-                                        const filePath = validateMdFilename(payload.filename);
+                                        const filePath = validateMdFilename(payload.filename, 'write');
                                         await fs.writeFile(filePath, payload.content || '', 'utf-8');
                                         res.setHeader('Content-Type', 'application/json');
                                         res.end(JSON.stringify({ status: 'ok' }));

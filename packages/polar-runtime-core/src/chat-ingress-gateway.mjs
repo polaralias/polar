@@ -11,7 +11,7 @@ import {
   jsonField,
   numberField,
   stringField,
-} from "../../polar-domain/src/index.mjs";
+} from "@polar/domain";
 
 const gatewayRequestSchema = createStrictObjectSchema({
   schemaId: "chat.ingress.gateway.request",

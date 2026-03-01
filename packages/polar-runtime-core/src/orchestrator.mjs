@@ -6,7 +6,7 @@ import {
     stringArrayField,
     stringField,
     RuntimeExecutionError
-} from '../../polar-domain/src/index.mjs';
+} from '@polar/domain';
 import {
     createDurableLineageStore,
     isRuntimeDevMode

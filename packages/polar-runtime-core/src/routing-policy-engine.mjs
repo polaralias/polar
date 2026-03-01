@@ -9,7 +9,7 @@ import {
   jsonField,
   stringArrayField,
   stringField,
-} from "../../polar-domain/src/index.mjs";
+} from "@polar/domain";
 
 const routingRequestSchema = createStrictObjectSchema({
   schemaId: "agent.handoff.routing.request",

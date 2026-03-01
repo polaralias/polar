@@ -2,7 +2,7 @@ import {
   ContractRegistryError,
   RISK_CLASSES,
   TRUST_CLASSES,
-} from "../../polar-domain/src/index.mjs";
+} from "@polar/domain";
 
 const riskClasses = new Set(RISK_CLASSES);
 const trustClasses = new Set(TRUST_CLASSES);
@@ -109,7 +109,7 @@ function validateContract(contract) {
 }
 
 /**
- * @typedef {import("../../polar-domain/src/runtime-contracts.mjs").ActionContract} ActionContract
+ * @typedef {import("@polar/domain").ActionContract} ActionContract
  */
 
 /**

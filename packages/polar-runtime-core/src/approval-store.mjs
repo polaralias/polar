@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
-import { RuntimeExecutionError } from '../../polar-domain/src/index.mjs';
+import { RuntimeExecutionError } from '@polar/domain';
 
 /**
  * @typedef {Object} ApprovalGrant

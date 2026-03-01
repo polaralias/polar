@@ -12,7 +12,7 @@ import {
   jsonField,
   numberField,
   stringField,
-} from "../../polar-domain/src/index.mjs";
+} from "@polar/domain";
 
 const memorySearchRequestSchema = createStrictObjectSchema({
   schemaId: "memory.gateway.search.request",

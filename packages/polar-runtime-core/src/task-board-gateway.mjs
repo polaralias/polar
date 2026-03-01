@@ -13,7 +13,7 @@ import {
   numberField,
   stringArrayField,
   stringField,
-} from "../../polar-domain/src/index.mjs";
+} from "@polar/domain";
 
 const upsertRequestSchema = createStrictObjectSchema({
   schemaId: "task-board.gateway.task.upsert.request",

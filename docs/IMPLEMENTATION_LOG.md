@@ -148,3 +148,161 @@ Commands run and outcomes:
 - **Next prompt:** `Prompt 02: Migrate remaining surfaces/entrypoints to @polar/platform`
 - **Suggested starting point:** `packages/polar-cli/` bootstrap path(s), then boundary checker script alignment with workspace rules.
 - **Notes for next run:** `@polar/platform` exists and bot/web surfaces now consume it; continue convergence on single composition-root usage.
+
+## 2026-03-01 (UTC) - Prompt 02: Refactor Telegram runner to use @polar/platform
+
+**Branch:** `main`  
+**Commit:** `a1a3fcb`  
+**Prompt reference:** `Prompt 02` (from chat prompt pack / docs)  
+**Specs referenced:**  
+- `docs/specs/BOOTSTRAP.md`  
+- `docs/specs/TELEGRAM_SURFACE.md`  
+- `docs/specs/BOUNDARIES.md`
+
+### Summary
+- Confirmed Telegram runner is wired through `@polar/platform` and remains a thin surface over `platform.controlPlane`.
+- Updated runner bootstrap to call `createPolarPlatform({ dbPath })` with explicit existing `polar-system.db` path behavior.
+- Removed unused bot-runner dependencies left from pi-era wiring (`@mariozechner/pi-agent-core`, `@mariozechner/pi-ai`, `mcp-client`, `ws`).
+- Verified zero cross-package `/src` imports in bot runner source.
+
+### Scope and decisions
+- **In scope:** Telegram runner bootstrap conformance tweaks, dependency cleanup, validation, and implementation log update.
+- **Out of scope:** behavioural changes to threading/grouping/callback/reaction flows, broader boundary script overhaul, other surfaces.
+- **Key decisions:** keep runtime behavior unchanged by preserving existing DB path resolution (`path.resolve(process.cwd(), '../../polar-system.db')`) while simplifying imports.
+
+### Files changed
+- `packages/polar-bot-runner/src/index.mjs` - kept `@polar/platform` composition root usage, switched to explicit dbPath resolution, removed unused `defaultDbPath` and `crypto` imports.
+- `packages/polar-bot-runner/package.json` - removed unused dependencies (`@mariozechner/pi-agent-core`, `@mariozechner/pi-ai`, `mcp-client`, `ws`).
+- `package-lock.json` - updated workspace lockfile after dependency removal.
+- `docs/IMPLEMENTATION_LOG.md` - appended Prompt 02 entry.
+
+### Data model / migrations (if applicable)
+- **Tables created/changed:** none
+- **Migration notes:** none
+- **Risk:** low (surface wiring/dependency cleanup only; no schema or orchestration contract changes)
+
+### Security and safety checks
+- **Allowlist changes:** none
+- **Capabilities/middleware affected:** none; Telegram runner continues to call control-plane APIs only.
+- **Sensitive operations:** none added; no direct provider wiring introduced.
+
+### Tests and validation
+Commands run and outcomes:
+- `npm install` - ✅ (removed unused packages)
+- `npm test` - ✅ (361 passed, 0 failed)
+- `npm run check:boundaries` - ✅
+- `rg "\.\./.*polar-.*/src/|\.\./\.\./.*polar-.*/src/|/polar-.*/src/" packages/polar-bot-runner/src/index.mjs` - ✅ (no matches)
+
+### Known issues / follow-ups
+- Boundary enforcement script is still pi-import-focused (`scripts/check-pi-mono-imports.mjs`) rather than full workspace boundary checks from spec.
+- Telegram reaction persistence still writes to `REACTIONS.md`; `docs/specs/TELEGRAM_SURFACE.md` defines migration to SQLite feedback events for a follow-up prompt.
+
+### Next
+- **Next prompt:** `Prompt 03: Refactor Web UI surface to use @polar/platform`
+- **Suggested starting point:** `packages/polar-web-ui/vite.config.js` and `packages/polar-web-ui/package.json`.
+- **Notes for next run:** Telegram runner is composition-root compliant with dependency cleanup complete; continue thin-surface convergence on remaining surfaces.
+
+## 2026-03-01 (UTC) - Prompt 03: Refactor Web UI wiring and tighten MD allowlist
+
+**Branch:** `main`  
+**Commit:** `a1a3fcb`  
+**Prompt reference:** `Prompt 03` (from chat prompt pack / docs)  
+**Specs referenced:**  
+- `docs/specs/BOOTSTRAP.md`  
+- `docs/specs/WEB_UI_SURFACE.md`  
+- `docs/specs/CONTROL_PLANE_API.md`  
+- `docs/specs/BOUNDARIES.md`
+
+### Summary
+- Kept Web UI bootstrapping via `@polar/platform` and removed `defaultDbPath` coupling in favor of explicit repo-root `polar-system.db` resolution.
+- Replaced markdown filename allowlist with path-based policy for `AGENTS.md`, `docs/**/*.md`, and `artifacts/**/*.md` (read-only).
+- Hardened markdown path validation to reject absolute paths, traversal, non-markdown files, and escaped resolved paths.
+- Aligned Web UI `ALLOWED_ACTIONS` with control-plane API spec by removing non-listed methods and including listed skill/metadata and message-binding methods.
+- Updated Web UI file selector options to use `docs/...` paths matching the new allowlist policy.
+
+### Scope and decisions
+- **In scope:** `vite.config.js` wiring/path-validation/API-allowlist updates, file selector path updates, validation, implementation log update.
+- **Out of scope:** control-plane internals, broader UI redesign, boundary-checker script replacement.
+- **Key decisions:** keep `artifacts/**/*.md` read-only by default; keep all API exposure behind an explicit allowlist matching `CONTROL_PLANE_API`.
+
+### Files changed
+- `packages/polar-web-ui/vite.config.js` - tightened markdown path policy, aligned control-plane action allowlist, and used explicit `createPolarPlatform({ dbPath })` composition-root wiring.
+- `packages/polar-web-ui/src/views/config.js` - updated file editor selector values to allowlisted `docs/...` paths plus root `AGENTS.md`.
+- `docs/IMPLEMENTATION_LOG.md` - appended Prompt 03 entry.
+
+### Data model / migrations (if applicable)
+- **Tables created/changed:** none
+- **Migration notes:** none
+- **Risk:** low (surface API gating/path validation changes only; no schema changes)
+
+### Security and safety checks
+- **Allowlist changes:** `readMD`/`writeMD` now allow only `AGENTS.md`, `docs/**/*.md`, and `artifacts/**/*.md` with writes blocked for `artifacts/`; traversal and absolute paths are rejected.
+- **Capabilities/middleware affected:** Web UI dispatch remains constrained by explicit `ALLOWED_ACTIONS`, now aligned with `docs/specs/CONTROL_PLANE_API.md`.
+- **Sensitive operations:** markdown write surface narrowed; arbitrary filesystem writes blocked by resolved-path validation and directory allowlist checks.
+
+### Tests and validation
+Commands run and outcomes:
+- `npm test` - ✅ (361 passed, 0 failed)
+- `npm run check:boundaries` - ✅
+
+### Known issues / follow-ups
+- Existing boundary checker (`scripts/check-pi-mono-imports.mjs`) still does not enforce full workspace boundary rules described in `docs/specs/BOUNDARIES.md`.
+
+### Next
+- **Next prompt:** `Prompt 04: Align CLI/bootstrap usage and boundary enforcement with @polar/platform`
+- **Suggested starting point:** `packages/polar-cli/` entrypoint wiring and `scripts/check-pi-mono-imports.mjs` replacement/expansion.
+- **Notes for next run:** Web UI path validation and API allowlisting are tightened; confirm CLI is on the same composition-root and allowlist discipline.
+
+## 2026-03-01 (UTC) - Prompt 04: Remove cross-package /src imports across workspace
+
+**Branch:** `main`  
+**Commit:** `a1a3fcb`  
+**Prompt reference:** `Prompt 04` (from chat prompt pack / docs)  
+**Specs referenced:**  
+- `docs/specs/BOUNDARIES.md`
+
+### Summary
+- Replaced cross-package `/src` import specifiers across workspace packages with workspace package imports (`@polar/*`).
+- Updated control-plane and adapter/runtime imports to consume package exports only.
+- Added missing package dependencies for newly explicit workspace imports.
+- Exported `computeCapabilityScope` from `@polar/runtime-core` to support clean imports from `@polar/control-plane`.
+
+### Scope and decisions
+- **In scope:** import refactor across `packages/`, minimal export/dependency updates required to keep imports clean and resolvable, validation, implementation log update.
+- **Out of scope:** feature behavior changes, API semantics, boundary checker script redesign.
+- **Key decisions:** preserve runtime behavior and only replace import paths; add package exports/dependencies where needed rather than reintroducing cross-package path traversal.
+
+### Files changed
+- `packages/polar-control-plane/` - switched adapter/runtime imports from sibling `/src` paths to `@polar/*` workspace imports; added explicit workspace deps in package manifest.
+- `packages/polar-runtime-core/` - switched domain imports and JSDoc import paths to `@polar/domain`; exported `computeCapabilityScope`; added `@polar/domain` dependency.
+- `packages/polar-adapter-native/` - switched to `@polar/domain` import and added dependency.
+- `packages/polar-adapter-channels/` - switched to `@polar/domain` import and added dependency.
+- `packages/polar-adapter-extensions/` - switched to `@polar/domain` imports and added dependency.
+- `packages/polar-adapter-pi/` - switched to `@polar/domain` import and added dependency.
+- `package-lock.json` - updated lockfile for workspace dependency graph changes.
+- `docs/IMPLEMENTATION_LOG.md` - appended Prompt 04 entry.
+
+### Data model / migrations (if applicable)
+- **Tables created/changed:** none
+- **Migration notes:** none
+- **Risk:** medium-low (large import-path churn across many files, but mechanical and validated with full test suite)
+
+### Security and safety checks
+- **Allowlist changes:** none
+- **Capabilities/middleware affected:** none
+- **Sensitive operations:** none
+
+### Tests and validation
+Commands run and outcomes:
+- `npm install` - ✅
+- `npm test` - ✅ (361 passed, 0 failed)
+- `npm run check:boundaries` - ✅
+- `rg -n "polar-.*?/src/" packages` - ✅ (only non-import comment remains in `packages/polar-runtime-core/src/workflow-templates.mjs`)
+
+### Known issues / follow-ups
+- Boundary checker script still focuses on pi-mono imports; it does not yet enforce full workspace boundary policy described in `docs/specs/BOUNDARIES.md`.
+
+### Next
+- **Next prompt:** `Prompt 05: Replace boundary checker with full workspace boundary enforcement`
+- **Suggested starting point:** `scripts/check-pi-mono-imports.mjs`, `package.json` `check:boundaries` script, and related boundary tests.
+- **Notes for next run:** Cross-package `/src` import usage in package code has been removed; next step is enforcing this rule comprehensively in CI checks.

@@ -12,7 +12,7 @@ import {
   numberField,
   stringArrayField,
   stringField,
-} from "../../polar-domain/src/index.mjs";
+} from "@polar/domain";
 
 const appendMessageRequestSchema = createStrictObjectSchema({
   schemaId: "chat.management.gateway.message.append.request",

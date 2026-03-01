@@ -6,7 +6,7 @@ import {
   jsonField,
   numberField,
   stringField,
-} from "../../polar-domain/src/index.mjs";
+} from "@polar/domain";
 
 const automationRunRecordSchema = createStrictObjectSchema({
   schemaId: "task-board.run-linker.automation-record",

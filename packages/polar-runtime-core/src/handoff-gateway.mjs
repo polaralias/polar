@@ -9,7 +9,7 @@ import {
   jsonField,
   stringArrayField,
   stringField,
-} from "../../polar-domain/src/index.mjs";
+} from "@polar/domain";
 import { createRoutingPolicyEngine } from "./routing-policy-engine.mjs";
 
 const handoffRequestSchema = createStrictObjectSchema({

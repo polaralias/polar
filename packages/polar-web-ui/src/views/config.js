@@ -225,10 +225,14 @@ export async function renderConfig(container) {
           <div style="display:flex; gap: 16px; margin-bottom: 16px;">
              <select id="file-selector" style="background: rgba(0,0,0,0.4); border: 1px solid var(--accent-color); color: #fff; padding: 8px; border-radius: 6px; outline:none; min-width: 200px;">
                 <option value="AGENTS.md" style="color:#000;">AGENTS.md</option>
-                <option value="SKILLS.md" style="color:#000;">SKILLS.md</option>
-                <option value="MEMORY.md" style="color:#000;">MEMORY.md</option>
-                <option value="REACTIONS.md" style="color:#000;">REACTIONS.md</option>
-                <option value="HEARTBEAT.md" style="color:#000;">HEARTBEAT.md</option>
+                <option value="docs/README.md" style="color:#000;">docs/README.md</option>
+                <option value="docs/ARCHITECTURE.md" style="color:#000;">docs/ARCHITECTURE.md</option>
+                <option value="docs/SECURITY.md" style="color:#000;">docs/SECURITY.md</option>
+                <option value="docs/DEVELOPMENT.md" style="color:#000;">docs/DEVELOPMENT.md</option>
+                <option value="docs/SKILLS.md" style="color:#000;">docs/SKILLS.md</option>
+                <option value="docs/AUTOMATIONS.md" style="color:#000;">docs/AUTOMATIONS.md</option>
+                <option value="docs/MEMORY_AND_FEEDBACK.md" style="color:#000;">docs/MEMORY_AND_FEEDBACK.md</option>
+                <option value="docs/IMPLEMENTATION_LOG.md" style="color:#000;">docs/IMPLEMENTATION_LOG.md</option>
              </select>
              <button id="file-load" class="action-btn outline">Load File</button>
              <button id="file-save" class="action-btn" style="margin-left: auto;">Save Changes</button>

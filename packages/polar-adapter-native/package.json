@@ -1,10 +1,12 @@
 {
-    "name": "@polar/adapter-native",
-    "version": "0.1.0",
-    "private": true,
-    "type": "module",
-    "dependencies": {},
-    "exports": {
-        ".": "./src/index.mjs"
-    }
+  "name": "@polar/adapter-native",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@polar/domain": "*"
+  },
+  "exports": {
+    ".": "./src/index.mjs"
+  }
 }

@@ -1,4 +1,4 @@
-import { RuntimeExecutionError } from '../../polar-domain/src/index.mjs';
+import { RuntimeExecutionError } from '@polar/domain';
 import { WORKFLOW_TEMPLATES } from './workflow-templates.mjs';
 
 /**

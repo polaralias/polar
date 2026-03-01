@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { RuntimeExecutionError } from "../../polar-domain/src/index.mjs";
+import { RuntimeExecutionError } from "@polar/domain";
 
 const DEFAULT_ALGORITHM = "aes-256-gcm";
 const KEY_LENGTH = 32;
