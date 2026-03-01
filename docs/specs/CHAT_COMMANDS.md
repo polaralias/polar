@@ -50,9 +50,14 @@ Implement a deterministic gate:
 
 Current Telegram config keys:
 - `resourceType=policy`, `resourceId=telegram_command_access`
-  - `operatorUserIds: string[]`
-  - `adminUserIds: string[]`
+  - `operatorTelegramUserIds: string[]`
+  - `adminTelegramUserIds: string[]`
   - `allowBangCommands: boolean` (optional, enables `!command`)
+
+Environment overrides and bootstrap:
+- `POLAR_DISABLE_CHAT_ADMIN=1` denies operator/admin commands.
+- `POLAR_ADMIN_TELEGRAM_IDS` / `POLAR_OPERATOR_TELEGRAM_IDS` (comma separated) override bootstrap when either is set.
+- `POLAR_SINGLE_USER_ADMIN_BOOTSTRAP=1` (default on when unset) enables private-chat-only first-user admin bootstrap when explicit allowlists are absent.
 
 Rules:
 - Never expose secrets back into chat.
@@ -308,6 +313,24 @@ Security:
 
 ---
 
+
+### Agent profiles and pinning (operator/admin for registry; pin use can be public)
+See `docs/specs/AGENT_PROFILES.md`.
+
+- `/agents` (list available sub-agent profiles)
+- `/agents show <agentId>`
+- `/agents register <agentId> | <profileId> | <description>` (operator/admin)
+- `/agents unregister <agentId>` (operator/admin)
+- `/agents pin <agentId> [--session|--user|--global]`
+- `/agents unpin [--session|--user|--global]`
+- `/agents pins` (show current effective pinned profile/agent)
+
+Notes:
+- `register` maps an `agentId` to an existing `profileId` plus metadata.
+- `pin` resolves agentId → profileId and writes the appropriate `profile-pin:*` policy record.
+- Registry storage key: `resourceType=policy`, `resourceId=agent-registry:default`.
+
+
 ### 10) Config records (operator/admin; optional)
 Only if you can gate reliably.
 
@@ -336,11 +359,12 @@ Only for dev builds.
 - Do not leak internal stack traces in chat. Log them.
 
 ## Acceptance criteria
-- Commands execute without calling orchestrate unless the command explicitly triggers an orchestrated action (preview, automation run).
+- Commands execute deterministically and use side-effect-free orchestrator confirmations for state-changing mutations.
 - Command text is never appended to session history.
+- `/status`, `/whoami`, and `/help` remain deterministic factual outputs.
 - Operator/admin commands are denied for non-authorised users.
 - Every command logs an audit event.
-- Tests cover: parsing, gating, and “no orchestrate/no appendMessage” for config commands.
+- Tests cover: parsing, gating, and side-effect-free orchestrated confirmations for state-changing commands.
 
 ## Agent checklist
 - Check `AGENTS.md` first.

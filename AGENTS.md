@@ -22,6 +22,12 @@ Implementation-grade specs (read the relevant ones before coding):
 - `docs/specs/AUTOMATION_RUNNER.md`
 - `docs/specs/BOUNDARIES.md`
 - `docs/specs/TESTING_STRATEGY.md`
+- `docs/specs/CHAT_COMMANDS.md`
+- `docs/specs/TELEGRAM_THREADING_AND_EMOJI.md`
+- `docs/specs/PERSONALISATION.md`
+- `docs/specs/PERSONALITY_STORAGE.md`
+- `docs/specs/AGENT_PROFILES.md`
+- `docs/specs/AGENT_REGISTRY_AND_PINNING_APIS.md`
 
 Change and decision history:
 - `docs/IMPLEMENTATION_LOG.md`

@@ -5,6 +5,8 @@ import { createPolarPlatform } from '@polar/platform';
 import path from 'path';
 import { createRequire } from 'module';
 import { createTelegramCommandRouter } from './commands.mjs';
+import { createTelegramReactionController } from './reaction-state.mjs';
+import { handleTextMessageIngress } from './text-ingress.mjs';
 const require = createRequire(import.meta.url);
 const pdfParse = require('pdf-parse');
 
@@ -65,23 +67,6 @@ async function recordAutomationProposalDecision({ proposalId, toStatus, sessionI
     }
 }
 
-const REACTION_EMOJI_BY_STATE = Object.freeze({
-    received: '👀',
-    thinking: '✍️',
-    waiting_user: '⏳',
-    done: '✅',
-    error: '❌',
-});
-const REACTION_DONE_CLEAR_MS = 45_000;
-const REACTION_CLEAR_RATE_LIMIT_MS = 250;
-const reactionStateMap = new Map(); // reactionKey -> { state, lastSetAtMs, clearAtMs? }
-const reactionClearTimers = new Map(); // reactionKey -> Timeout
-const reactionClearRateLimit = new Map(); // reactionKey -> lastClearMs
-
-function createReactionKey(chatId, messageId) {
-    return `${chatId}:${messageId}`;
-}
-
 function parseFinitePositiveInteger(value) {
     const parsed = typeof value === 'number' ? value : Number(value);
     return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
@@ -99,96 +84,6 @@ function deriveThreadKey(messageContext) {
         return `reply:${chatId}:${messageContext.reply_to_message.message_id}`;
     }
     return `root:${chatId}`;
-}
-
-async function safeReact(ctx, emoji, messageId, chatIdOverride) {
-    try {
-        await ctx.telegram.setMessageReaction(
-            chatIdOverride ?? ctx.chat?.id ?? ctx.message?.chat?.id,
-            messageId || ctx.message?.message_id,
-            [{ type: 'emoji', emoji }]
-        );
-    } catch (err) {
-        console.warn(`[REACTION_FAIL] Could not set reaction ${emoji}: ${err.message}`);
-    }
-}
-
-async function clearReaction(ctx, chatId, inboundMessageId) {
-    const reactionKey = createReactionKey(chatId, inboundMessageId);
-    const nowMs = Date.now();
-    const lastClearMs = reactionClearRateLimit.get(reactionKey) || 0;
-    if (nowMs - lastClearMs < REACTION_CLEAR_RATE_LIMIT_MS) {
-        return;
-    }
-    reactionClearRateLimit.set(reactionKey, nowMs);
-    try {
-        await ctx.telegram.setMessageReaction(chatId, inboundMessageId, []);
-    } catch (err) {
-        // no-op: message can be stale/deleted or the reaction may already be cleared
-    } finally {
-        reactionStateMap.delete(reactionKey);
-        const timer = reactionClearTimers.get(reactionKey);
-        if (timer) {
-            clearTimeout(timer);
-            reactionClearTimers.delete(reactionKey);
-        }
-    }
-}
-
-async function setReactionState(ctx, chatId, inboundMessageId, state) {
-    const emoji = REACTION_EMOJI_BY_STATE[state];
-    if (!emoji) {
-        return;
-    }
-    const reactionKey = createReactionKey(chatId, inboundMessageId);
-    const existing = reactionStateMap.get(reactionKey);
-    if (existing?.state === state) {
-        return;
-    }
-    await safeReact(ctx, emoji, inboundMessageId, chatId);
-    reactionStateMap.set(reactionKey, {
-        state,
-        lastSetAtMs: Date.now(),
-    });
-
-    const existingTimer = reactionClearTimers.get(reactionKey);
-    if (existingTimer) {
-        clearTimeout(existingTimer);
-        reactionClearTimers.delete(reactionKey);
-    }
-
-    if (state === 'done') {
-        const clearAtMs = Date.now() + REACTION_DONE_CLEAR_MS;
-        reactionStateMap.set(reactionKey, {
-            state,
-            lastSetAtMs: Date.now(),
-            clearAtMs,
-        });
-        const timer = setTimeout(() => {
-            clearReaction(ctx, chatId, inboundMessageId).catch(() => undefined);
-        }, REACTION_DONE_CLEAR_MS);
-        if (typeof timer.unref === "function") {
-            timer.unref();
-        }
-        reactionClearTimers.set(reactionKey, timer);
-    }
-}
-
-function parseCallbackOriginMessageId(callbackData) {
-    const parts = callbackData.split(':');
-    const maybeId = parts[parts.length - 1];
-    const parsed = parseFinitePositiveInteger(maybeId);
-    return parsed;
-}
-
-async function transitionWaitingReactionToDone(ctx, callbackData) {
-    const messageContext = resolveTelegramMessageContext(ctx);
-    const chatId = messageContext?.chat?.id ?? ctx.chat?.id;
-    const originMessageId = parseCallbackOriginMessageId(callbackData);
-    if (chatId === undefined || originMessageId === null) {
-        return;
-    }
-    await setReactionState(ctx, chatId, originMessageId, 'done');
 }
 
 async function resolveAnchorChannelMessageId(sessionId, anchorId) {
@@ -311,24 +206,60 @@ async function resolvePolarSessionContext(ctx) {
 
 function parseTelegramIdAllowlist(rawValue) {
     if (typeof rawValue !== 'string' || rawValue.trim().length === 0) {
-        return new Set();
+        return [];
     }
-    return new Set(
-        rawValue
-            .split(',')
-            .map((value) => value.trim())
-            .filter((value) => value.length > 0)
+    const ids = new Set(
+      rawValue
+        .split(',')
+        .map((value) => value.trim())
+        .filter((value) => value.length > 0)
     );
+    return [...ids];
 }
 
-const OPERATOR_TELEGRAM_IDS = parseTelegramIdAllowlist(process.env.POLAR_OPERATOR_TELEGRAM_IDS);
-const ADMIN_TELEGRAM_IDS = parseTelegramIdAllowlist(process.env.POLAR_ADMIN_TELEGRAM_IDS);
+function parseToggleDefaultOn(rawValue) {
+    if (rawValue === undefined) {
+        return true;
+    }
+    const normalized = String(rawValue).trim().toLowerCase();
+    return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
+}
+
+const hasExplicitOperatorAllowlist = Object.prototype.hasOwnProperty.call(
+    process.env,
+    "POLAR_OPERATOR_TELEGRAM_IDS"
+);
+const hasExplicitAdminAllowlist = Object.prototype.hasOwnProperty.call(
+    process.env,
+    "POLAR_ADMIN_TELEGRAM_IDS"
+);
+const explicitOperatorUserIds = parseTelegramIdAllowlist(process.env.POLAR_OPERATOR_TELEGRAM_IDS);
+const explicitAdminUserIds = parseTelegramIdAllowlist(process.env.POLAR_ADMIN_TELEGRAM_IDS);
+const singleUserAdminBootstrapEnabled = parseToggleDefaultOn(
+    process.env.POLAR_SINGLE_USER_ADMIN_BOOTSTRAP
+);
+const disableChatAdmin = String(process.env.POLAR_DISABLE_CHAT_ADMIN ?? "").trim() === "1";
+
+const reactionController = createTelegramReactionController({ logger: console });
+const { setReactionState } = reactionController;
+
+async function transitionWaitingReactionToDone(ctx, callbackData) {
+    await reactionController.transitionWaitingReactionToDone(
+        ctx,
+        callbackData,
+        resolveTelegramMessageContext,
+    );
+}
 
 const commandRouter = createTelegramCommandRouter({
     controlPlane,
     dbPath: platform.dbPath,
-    fallbackOperatorUserIds: [...OPERATOR_TELEGRAM_IDS],
-    fallbackAdminUserIds: [...ADMIN_TELEGRAM_IDS],
+    explicitOperatorUserIds,
+    explicitAdminUserIds,
+    hasExplicitOperatorAllowlist,
+    hasExplicitAdminAllowlist,
+    singleUserAdminBootstrapEnabled,
+    disableChatAdmin,
     resolveSessionContext: resolvePolarSessionContext,
     deriveThreadKey,
     setReactionState,
@@ -400,17 +331,13 @@ async function handleMessageDebounced(ctx) {
 
 // --- Handlers ---
 bot.on(message('text'), async (ctx) => {
-    try {
-        const result = await commandRouter.handle(ctx);
-        if (result.handled) {
-            return;
-        }
-    } catch (error) {
-        console.error('[COMMAND_ROUTER_ERROR]', error);
-        await ctx.reply(`❌ Command failed: ${error.message}`, buildTopicReplyOptions(ctx.message));
-        return;
-    }
-    await handleMessageDebounced(ctx);
+    await handleTextMessageIngress({
+        ctx,
+        commandRouter,
+        handleMessageDebounced,
+        buildTopicReplyOptions,
+        logger: console,
+    });
 });
 
 async function processGroupedMessages(polarSessionId, items) {
@@ -446,7 +373,9 @@ async function processGroupedMessages(polarSessionId, items) {
             text: userText,
             messageId: `msg_u_${telegramMessageId}`,
             metadata: {
-                threadId: envelope.threadId,
+                ...(typeof envelope.threadId === "string" && envelope.threadId.length > 0
+                    ? { threadId: envelope.threadId }
+                    : {}),
                 threadKey,
                 replyToMessageId: ctx.message.reply_to_message?.message_id,
                 ...(ctx.message.message_thread_id !== undefined

@@ -1460,6 +1460,127 @@ test("control-plane service stores model registry and applies default model poli
   });
 });
 
+test("control-plane service manages agent registry and profile pin helpers", async () => {
+  const service = createControlPlaneService();
+
+  await service.upsertConfig({
+    resourceType: "profile",
+    resourceId: "profile.writer",
+    config: {
+      systemPrompt: "writer profile",
+      modelPolicy: { providerId: "anthropic", modelId: "claude-sonnet-4-6" },
+      allowedSkills: ["web"],
+    },
+  });
+
+  const registered = await service.registerAgentProfile({
+    agentId: "@writer",
+    profileId: "profile.writer",
+    description: "Writes polished docs",
+    allowedForwardSkills: ["web"],
+    tags: ["writing"],
+  });
+  assert.equal(registered.status, "applied");
+  assert.equal(registered.agent.agentId, "@writer");
+
+  const listed = await service.listAgentProfiles();
+  assert.equal(listed.status, "ok");
+  assert.equal(listed.totalCount, 1);
+  assert.equal(listed.items[0].profileId, "profile.writer");
+
+  const got = await service.getAgentProfile({ agentId: "@writer" });
+  assert.equal(got.status, "found");
+  assert.equal(got.agent.description, "Writes polished docs");
+
+  const pinned = await service.pinProfileForScope({
+    scope: "session",
+    sessionId: "session-99",
+    profileId: "profile.writer",
+  });
+  assert.equal(pinned.status, "applied");
+  assert.equal(pinned.pinResourceId, "profile-pin:session:session-99");
+
+  const effective = await service.getEffectivePinnedProfile({
+    sessionId: "session-99",
+    userId: "user-99",
+  });
+  assert.equal(effective.status, "found");
+  assert.equal(effective.profileId, "profile.writer");
+  assert.equal(effective.scope, "session");
+
+  const unpinned = await service.unpinProfileForScope({
+    scope: "session",
+    sessionId: "session-99",
+  });
+  assert.equal(unpinned.status, "applied");
+
+  const afterUnpin = await service.getEffectivePinnedProfile({
+    sessionId: "session-99",
+    userId: "user-99",
+  });
+  assert.equal(afterUnpin.status, "not_found");
+});
+
+test("control-plane agent registry validation rejects invalid records", async () => {
+  const service = createControlPlaneService();
+
+  await assert.rejects(
+    async () =>
+      service.registerAgentProfile({
+        agentId: "writer",
+        profileId: "profile.writer",
+        description: "bad id",
+      }),
+    (error) =>
+      error instanceof ContractValidationError &&
+      error.code === "POLAR_CONTRACT_VALIDATION_ERROR",
+  );
+
+  await service.upsertConfig({
+    resourceType: "policy",
+    resourceId: "agent-registry:default",
+    config: {
+      agents: [],
+    },
+  });
+  await assert.rejects(
+    async () => service.getAgentRegistry({}),
+    (error) =>
+      error instanceof ContractValidationError &&
+      error.code === "POLAR_CONTRACT_VALIDATION_ERROR",
+  );
+
+  await service.upsertConfig({
+    resourceType: "policy",
+    resourceId: "agent-registry:default",
+    config: {
+      version: 1,
+      agents: [{ agentId: "@writer", description: "missing profile" }],
+    },
+  });
+  await assert.rejects(
+    async () => service.getAgentRegistry({}),
+    (error) =>
+      error instanceof ContractValidationError &&
+      error.code === "POLAR_CONTRACT_VALIDATION_ERROR",
+  );
+
+  await service.upsertConfig({
+    resourceType: "policy",
+    resourceId: "agent-registry:default",
+    config: {
+      version: 1,
+      agents: [{ agentId: "@writer", profileId: "", description: "missing profile" }],
+    },
+  });
+  await assert.rejects(
+    async () => service.getAgentRegistry({}),
+    (error) =>
+      error instanceof ContractValidationError &&
+      error.code === "POLAR_CONTRACT_VALIDATION_ERROR",
+  );
+});
+
 test("control-plane service preserves contract validation errors", async () => {
   const service = createControlPlaneService();
 

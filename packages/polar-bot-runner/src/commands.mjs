@@ -1,4 +1,6 @@
 import crypto from "node:crypto";
+import fs from "node:fs/promises";
+import path from "node:path";
 
 const COMMAND_ACCESS_CONFIG = Object.freeze({
   resourceType: "policy",
@@ -10,6 +12,11 @@ const MODEL_REGISTRY_EMPTY = Object.freeze({
   entries: Object.freeze([]),
   defaults: null,
 });
+const MAX_MEMORY_RENDER_CHARS = 1200;
+const MAX_MEMORY_RECORDS_PER_PAGE = 20;
+const MAX_SKILL_LIST_PAGE_SIZE = 30;
+const SENSITIVE_FIELD_PATTERN =
+  /(token|secret|password|api[_-]?key|credential|authorization|cookie|bearer)/i;
 
 /**
  * @param {string} value
@@ -26,6 +33,17 @@ function asTrimmed(value) {
 }
 
 /**
+ * @param {string} value
+ * @param {number} maxLength
+ */
+function truncateWithEllipsis(value, maxLength) {
+  if (value.length <= maxLength) {
+    return value;
+  }
+  return `${value.slice(0, Math.max(0, maxLength - 3))}...`;
+}
+
+/**
  * @param {unknown} value
  */
 function isPlainObject(value) {
@@ -34,6 +52,121 @@ function isPlainObject(value) {
     value !== null &&
     Object.getPrototypeOf(value) === Object.prototype
   );
+}
+
+/**
+ * @param {unknown} value
+ * @param {{ maxDepth?: number, maxStringLength?: number, maxArrayLength?: number, maxObjectKeys?: number }} [options]
+ */
+function redactForChat(value, options = {}) {
+  const maxDepth = typeof options.maxDepth === "number" ? options.maxDepth : 4;
+  const maxStringLength =
+    typeof options.maxStringLength === "number" ? options.maxStringLength : 220;
+  const maxArrayLength =
+    typeof options.maxArrayLength === "number" ? options.maxArrayLength : 12;
+  const maxObjectKeys =
+    typeof options.maxObjectKeys === "number" ? options.maxObjectKeys : 24;
+  const seen = new WeakSet();
+
+  /**
+   * @param {unknown} input
+   * @param {number} depth
+   * @returns {unknown}
+   */
+  function visit(input, depth) {
+    if (input === null || input === undefined) {
+      return input;
+    }
+    if (typeof input === "string") {
+      return truncateWithEllipsis(input, maxStringLength);
+    }
+    if (
+      typeof input === "number" ||
+      typeof input === "boolean" ||
+      typeof input === "bigint"
+    ) {
+      return input;
+    }
+    if (typeof input === "function") {
+      return "[Function]";
+    }
+    if (depth >= maxDepth) {
+      return "[Truncated]";
+    }
+    if (Array.isArray(input)) {
+      return input.slice(0, maxArrayLength).map((entry) => visit(entry, depth + 1));
+    }
+    if (!isPlainObject(input)) {
+      return String(input);
+    }
+    if (seen.has(input)) {
+      return "[Circular]";
+    }
+    seen.add(input);
+    const result = {};
+    for (const [index, [key, nested]] of Object.entries(input).entries()) {
+      if (index >= maxObjectKeys) {
+        result.__truncated = true;
+        break;
+      }
+      if (SENSITIVE_FIELD_PATTERN.test(key)) {
+        result[key] = "[REDACTED]";
+        continue;
+      }
+      result[key] = visit(nested, depth + 1);
+    }
+    return result;
+  }
+
+  return visit(value, 0);
+}
+
+/**
+ * @param {unknown} value
+ */
+function formatJsonForChat(value) {
+  const json = JSON.stringify(redactForChat(value), null, 2);
+  if (!json) {
+    return "(empty)";
+  }
+  return truncateWithEllipsis(json, MAX_MEMORY_RENDER_CHARS);
+}
+
+/**
+ * @param {readonly string[]} tokens
+ * @param {number} startIndex
+ */
+function parseLimitCursor(tokens, startIndex = 0) {
+  let limit = 10;
+  let cursor = undefined;
+  let index = startIndex;
+  for (; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (token === "--limit") {
+      const parsed = Number.parseInt(tokens[index + 1] ?? "", 10);
+      if (!Number.isInteger(parsed) || parsed <= 0) {
+        throw new Error("Invalid --limit value.");
+      }
+      limit = parsed;
+      index += 1;
+      continue;
+    }
+    if (token === "--cursor") {
+      const parsed = asTrimmed(tokens[index + 1]);
+      if (!parsed) {
+        throw new Error("Invalid --cursor value.");
+      }
+      cursor = parsed;
+      index += 1;
+      continue;
+    }
+    break;
+  }
+  return {
+    limit,
+    cursor,
+    nextIndex: index,
+  };
 }
 
 /**
@@ -91,6 +224,25 @@ export function parseSchedulePromptPair(raw) {
     ok: true,
     schedule,
     promptTemplate,
+  };
+}
+
+/**
+ * @param {string} raw
+ */
+function parseAgentRegistrationTriple(raw) {
+  const parts = raw.split("|").map((item) => item.trim()).filter((item) => item.length > 0);
+  if (parts.length !== 3) {
+    return {
+      ok: false,
+      error: "Expected format: <agentId> | <profileId> | <description>",
+    };
+  }
+  return {
+    ok: true,
+    agentId: parts[0],
+    profileId: parts[1],
+    description: parts[2],
   };
 }
 
@@ -250,49 +402,31 @@ function removeRegistryEntry(entries, provider, target) {
 /**
  * @param {{ controlPlane: Record<string, (...args: unknown[]) => Promise<unknown>|unknown>, cacheTtlMs?: number }} request
  */
-function createAuthResolver(request) {
-  const cacheTtlMs = typeof request.cacheTtlMs === "number" ? request.cacheTtlMs : 30_000;
+function createAuthResolver(config) {
+  const cacheTtlMs = typeof config.cacheTtlMs === "number" ? config.cacheTtlMs : 30_000;
   let cache = null;
-
-  async function ensureConfigRecord() {
-    const existing = await request.controlPlane.getConfig(COMMAND_ACCESS_CONFIG);
-    if (existing.status === "found") {
-      return existing.config;
-    }
-    await request.controlPlane.upsertConfig({
-      ...COMMAND_ACCESS_CONFIG,
-      config: {
-        operatorUserIds: [],
-        adminUserIds: [],
-        allowBangCommands: false,
-      },
-    });
-    return {
-      operatorUserIds: [],
-      adminUserIds: [],
-      allowBangCommands: false,
-    };
-  }
 
   /**
    * @param {unknown} rawConfig
    * @param {readonly string[]} fallbackOperatorIds
    * @param {readonly string[]} fallbackAdminIds
    */
-  function normalize(rawConfig, fallbackOperatorIds, fallbackAdminIds) {
+  function normalize(rawConfig) {
     const config = isPlainObject(rawConfig) ? rawConfig : {};
     const operatorUserIds = new Set(
       [
+        ...(Array.isArray(config.operatorTelegramUserIds)
+          ? config.operatorTelegramUserIds
+          : []),
         ...(Array.isArray(config.operatorUserIds) ? config.operatorUserIds : []),
-        ...fallbackOperatorIds,
       ]
         .map((value) => asTrimmed(String(value)))
         .filter((value) => value.length > 0),
     );
     const adminUserIds = new Set(
       [
+        ...(Array.isArray(config.adminTelegramUserIds) ? config.adminTelegramUserIds : []),
         ...(Array.isArray(config.adminUserIds) ? config.adminUserIds : []),
-        ...fallbackAdminIds,
       ]
         .map((value) => asTrimmed(String(value)))
         .filter((value) => value.length > 0),
@@ -307,34 +441,124 @@ function createAuthResolver(request) {
     };
   }
 
+  async function loadPolicyFromControlPlane() {
+    const existing = await config.controlPlane.getConfig(COMMAND_ACCESS_CONFIG);
+    if (existing.status !== "found") {
+      return {
+        status: "not_found",
+        normalized: {
+          operatorUserIds: new Set(),
+          adminUserIds: new Set(),
+          allowBangCommands: false,
+        },
+      };
+    }
+    return {
+      status: "found",
+      normalized: normalize(existing.config),
+    };
+  }
+
   return Object.freeze({
     /**
-     * @param {{ nowMs: number, userId: string, fallbackOperatorIds: readonly string[], fallbackAdminIds: readonly string[] }} request
+     * @param {{
+     *   nowMs: number,
+     *   userId: string,
+     *   chatType: string,
+     *   explicitOperatorIds: readonly string[],
+     *   explicitAdminIds: readonly string[],
+     *   hasExplicitOperatorAllowlist: boolean,
+     *   hasExplicitAdminAllowlist: boolean,
+     *   singleUserAdminBootstrapEnabled: boolean,
+     *   disableChatAdmin: boolean
+     * }} request
      */
     async resolve(request) {
-      if (cache !== null && request.nowMs - cache.cachedAtMs < cacheTtlMs) {
+      if (request.disableChatAdmin) {
         return {
-          isOperator: cache.operatorUserIds.has(request.userId),
-          isAdmin: cache.adminUserIds.has(request.userId),
-          allowBangCommands: cache.allowBangCommands,
+          isOperator: false,
+          isAdmin: false,
+          allowBangCommands: false,
+          privilegedChatAllowed: false,
         };
       }
 
-      const config = await ensureConfigRecord();
-      const normalized = normalize(
-        config,
-        request.fallbackOperatorIds,
-        request.fallbackAdminIds,
-      );
+      const hasExplicitAllowlists =
+        request.hasExplicitOperatorAllowlist || request.hasExplicitAdminAllowlist;
+      if (hasExplicitAllowlists) {
+        const adminSet = new Set(request.explicitAdminIds);
+        const operatorSet = new Set(request.explicitOperatorIds);
+        for (const adminId of adminSet) {
+          operatorSet.add(adminId);
+        }
+        const isAdmin = adminSet.has(request.userId);
+        return {
+          isOperator: isAdmin || operatorSet.has(request.userId),
+          isAdmin,
+          allowBangCommands: false,
+          privilegedChatAllowed: true,
+        };
+      }
+
+      if (!request.singleUserAdminBootstrapEnabled) {
+        return {
+          isOperator: false,
+          isAdmin: false,
+          allowBangCommands: false,
+          privilegedChatAllowed: false,
+        };
+      }
+
+      if (request.chatType !== "private") {
+        return {
+          isOperator: false,
+          isAdmin: false,
+          allowBangCommands: false,
+          privilegedChatAllowed: false,
+        };
+      }
+
+      if (cache !== null && request.nowMs - cache.cachedAtMs < cacheTtlMs) {
+        const isAdmin = cache.adminUserIds.has(request.userId);
+        return {
+          isOperator: isAdmin || cache.operatorUserIds.has(request.userId),
+          isAdmin,
+          allowBangCommands: cache.allowBangCommands,
+          privilegedChatAllowed: true,
+        };
+      }
+
+      const loadedPolicy = await loadPolicyFromControlPlane();
+      let normalized = loadedPolicy.normalized;
+
+      if (normalized.adminUserIds.size === 0) {
+        const nextAdminIds = [request.userId];
+        const nextOperatorIds = [...normalized.operatorUserIds];
+        await config.controlPlane.upsertConfig({
+          ...COMMAND_ACCESS_CONFIG,
+          config: {
+            adminTelegramUserIds: nextAdminIds,
+            operatorTelegramUserIds: nextOperatorIds,
+            allowBangCommands: normalized.allowBangCommands,
+          },
+        });
+        normalized = normalize({
+          adminTelegramUserIds: nextAdminIds,
+          operatorTelegramUserIds: nextOperatorIds,
+          allowBangCommands: normalized.allowBangCommands,
+        });
+      }
+
       cache = {
         ...normalized,
         cachedAtMs: request.nowMs,
       };
-
+      const isAdmin = normalized.adminUserIds.has(request.userId);
       return {
-        isOperator: normalized.operatorUserIds.has(request.userId),
-        isAdmin: normalized.adminUserIds.has(request.userId),
+        isOperator: isAdmin || normalized.operatorUserIds.has(request.userId),
+        isAdmin,
         allowBangCommands: normalized.allowBangCommands,
+        privilegedChatAllowed: true,
       };
     },
   });
@@ -342,11 +566,14 @@ function createAuthResolver(request) {
 
 /**
  * @param {"public"|"operator"|"admin"} requiredAccess
- * @param {{ isOperator: boolean, isAdmin: boolean }} auth
+ * @param {{ isOperator: boolean, isAdmin: boolean, privilegedChatAllowed?: boolean }} auth
  */
 function hasAccess(requiredAccess, auth) {
   if (requiredAccess === "public") {
     return true;
+  }
+  if (auth.privilegedChatAllowed !== true) {
+    return false;
   }
   if (requiredAccess === "operator") {
     return auth.isOperator || auth.isAdmin;
@@ -357,7 +584,7 @@ function hasAccess(requiredAccess, auth) {
 /**
  * @param {unknown} chatId
  */
-function createChatFlagResourceId(chatId) {
+  function createChatFlagResourceId(chatId) {
   return `telegram_chat_flags:${String(chatId)}`;
 }
 
@@ -370,8 +597,12 @@ function createChatFlagResourceId(chatId) {
  *   deriveThreadKey: (message: unknown) => string,
  *   setReactionState: (ctx: unknown, chatId: number|string, messageId: number, state: string) => Promise<void>,
  *   replyWithOptions: (ctx: unknown, text: string, options?: { markdown?: boolean }) => Promise<void>,
- *   fallbackOperatorUserIds?: readonly string[],
- *   fallbackAdminUserIds?: readonly string[],
+ *   explicitOperatorUserIds?: readonly string[],
+ *   explicitAdminUserIds?: readonly string[],
+ *   hasExplicitOperatorAllowlist?: boolean,
+ *   hasExplicitAdminAllowlist?: boolean,
+ *   singleUserAdminBootstrapEnabled?: boolean,
+ *   disableChatAdmin?: boolean,
  *   logger?: { warn?: (...args: unknown[]) => void, error?: (...args: unknown[]) => void }
  * }} config
  */
@@ -383,8 +614,12 @@ export function createTelegramCommandRouter({
   deriveThreadKey,
   setReactionState,
   replyWithOptions,
-  fallbackOperatorUserIds = [],
-  fallbackAdminUserIds = [],
+  explicitOperatorUserIds = [],
+  explicitAdminUserIds = [],
+  hasExplicitOperatorAllowlist = false,
+  hasExplicitAdminAllowlist = false,
+  singleUserAdminBootstrapEnabled = true,
+  disableChatAdmin = false,
   logger = console,
 }) {
   const authResolver = createAuthResolver({ controlPlane });
@@ -429,11 +664,91 @@ export function createTelegramCommandRouter({
   }
 
   /**
+   * @param {unknown} result
+   */
+  function normalizeInstallSkillResult(result) {
+    if (!isPlainObject(result)) {
+      return {
+        status: "unknown",
+        text: "Skill installer returned an unexpected response.",
+      };
+    }
+    const status = asTrimmed(result.status) || "unknown";
+    const extensionId = asTrimmed(result.extensionId);
+    const lifecycleState = asTrimmed(result.lifecycleState);
+    const reason = asTrimmed(result.reason);
+    const lines = [`status: ${status}`];
+    if (extensionId) {
+      lines.push(`extensionId: ${extensionId}`);
+    }
+    if (lifecycleState) {
+      lines.push(`lifecycleState: ${lifecycleState}`);
+    }
+    if (reason) {
+      lines.push(`reason: ${reason}`);
+    }
+    return {
+      status,
+      text: lines.join("\n"),
+    };
+  }
+
+  /**
    * @param {unknown} ctx
    * @param {{ usage: string, example: string, message: string }} details
    */
   async function replyUsageError(ctx, details) {
     await replyWithOptions(ctx, formatUsageError(details));
+  }
+
+  /**
+   * @param {unknown} ctx
+   * @param {{ sessionId: string, userId: string, threadKey: string }} identity
+   * @param {{
+   *   commandName: string,
+   *   instruction: string,
+   *   facts: Record<string, unknown>,
+   *   fallbackText: string,
+   *   executionType?: "command"|"system"|"automation"
+   * }} request
+   */
+  async function replyOrchestratedConfirmation(ctx, identity, request) {
+    const executionType = request.executionType ?? "command";
+    const orchestrationInput = [
+      "You are confirming a deterministic system action.",
+      "Keep the reply factual, concise, and avoid inventing details.",
+      "Use 1-3 sentences.",
+      `Instruction: ${request.instruction}`,
+      `Facts: ${JSON.stringify(request.facts)}`,
+    ].join("\n");
+
+    try {
+      const result = await controlPlane.orchestrate({
+        sessionId: identity.sessionId,
+        userId: identity.userId,
+        messageId: `msg_cmd_confirm_${request.commandName}_${now()}`,
+        text: orchestrationInput,
+        metadata: {
+          executionType,
+          commandName: request.commandName,
+          source: "telegram_command_confirmation",
+          suppressUserMessagePersist: true,
+          suppressMemoryWrite: true,
+          suppressTaskWrites: true,
+          suppressAutomationWrites: true,
+        },
+      });
+      const text =
+        typeof result?.text === "string" && result.text.trim().length > 0
+          ? result.text
+          : request.fallbackText;
+      await replyWithOptions(ctx, text);
+    } catch (error) {
+      logger.warn?.(
+        `[COMMAND_CONFIRMATION_FALLBACK] command=/${request.commandName} sessionId=${identity.sessionId} threadKey=${identity.threadKey} error=${error instanceof Error ? error.message : String(error)}`,
+      );
+      await replyWithOptions(ctx, request.fallbackText);
+    }
   }
 
   /**
@@ -611,7 +926,16 @@ export function createTelegramCommandRouter({
         ...(scope !== "global" ? { userId: identity.userId } : {}),
         ...(scope === "session" ? { sessionId: identity.sessionId } : {}),
       });
-      await replyWithOptions(ctx, `Personality updated (${result.profile.scope} scope).`);
+      await replyOrchestratedConfirmation(ctx, identity, {
+        commandName: "personality",
+        instruction:
+          "Confirm that the personality profile was updated and describe how response style should adapt.",
+        facts: {
+          scope: result.profile.scope,
+          action: "updated",
+        },
+        fallbackText: `Personality updated (${result.profile.scope} scope).`,
+      });
       return;
     }
 
@@ -630,12 +954,18 @@ export function createTelegramCommandRouter({
         ...(scope !== "global" ? { userId: identity.userId } : {}),
         ...(scope === "session" ? { sessionId: identity.sessionId } : {}),
       });
-      await replyWithOptions(
-        ctx,
-        result.deleted
+      await replyOrchestratedConfirmation(ctx, identity, {
+        commandName: "personality",
+        instruction:
+          "Confirm whether the personality profile was reset and what scope is affected.",
+        facts: {
+          scope,
+          action: result.deleted ? "reset" : "no_change",
+        },
+        fallbackText: result.deleted
           ? `Personality reset (${scope} scope).`
           : `No personality profile found for ${scope} scope.`,
-      );
+      });
       return;
     }
 
@@ -723,7 +1053,17 @@ export function createTelegramCommandRouter({
         schedule: preview.preview.schedule,
         promptTemplate: preview.preview.promptTemplate,
       });
-      await replyWithOptions(ctx, `Automation created. id=${created.job.id}`);
+      await replyOrchestratedConfirmation(ctx, identity, {
+        commandName: "automations",
+        instruction:
+          "Confirm that the automation job was created and mention when it runs.",
+        facts: {
+          action: "created",
+          jobId: created.job.id,
+          schedule: created.job.schedule,
+        },
+        fallbackText: `Automation created. id=${created.job.id}`,
+      });
       return;
     }
 
@@ -785,19 +1125,49 @@ export function createTelegramCommandRouter({
 
     if (subcommand === "enable") {
       const result = await controlPlane.enableAutomationJob({ id: jobId });
-      await replyWithOptions(ctx, result.status === "updated" ? `Enabled ${jobId}.` : `Job ${jobId} not found.`);
+      await replyOrchestratedConfirmation(ctx, identity, {
+        commandName: "automations",
+        instruction:
+          "Confirm whether the automation job was enabled.",
+        facts: {
+          action: "enable",
+          jobId,
+          status: result.status,
+        },
+        fallbackText: result.status === "updated" ? `Enabled ${jobId}.` : `Job ${jobId} not found.`,
+      });
       return;
     }
 
     if (subcommand === "disable") {
       const result = await controlPlane.disableAutomationJob({ id: jobId });
-      await replyWithOptions(ctx, result.status === "disabled" ? `Disabled ${jobId}.` : `Job ${jobId} not found.`);
+      await replyOrchestratedConfirmation(ctx, identity, {
+        commandName: "automations",
+        instruction:
+          "Confirm whether the automation job was disabled.",
+        facts: {
+          action: "disable",
+          jobId,
+          status: result.status,
+        },
+        fallbackText: result.status === "disabled" ? `Disabled ${jobId}.` : `Job ${jobId} not found.`,
+      });
       return;
     }
 
     if (subcommand === "delete") {
       const result = await controlPlane.deleteAutomationJob({ id: jobId });
-      await replyWithOptions(ctx, result.status === "deleted" ? `Deleted ${jobId}.` : `Job ${jobId} not found.`);
+      await replyOrchestratedConfirmation(ctx, identity, {
+        commandName: "automations",
+        instruction:
+          "Confirm whether the automation job was deleted.",
+        facts: {
+          action: "delete",
+          jobId,
+          status: result.status,
+        },
+        fallbackText: result.status === "deleted" ? `Deleted ${jobId}.` : `Job ${jobId} not found.`,
+      });
       return;
     }
 
@@ -873,7 +1243,7 @@ export function createTelegramCommandRouter({
    * @param {unknown} ctx
    * @param {string} argsRaw
    */
-  async function handleModels(ctx, argsRaw) {
+  async function handleModels(ctx, identity, argsRaw) {
     const trimmed = asTrimmed(argsRaw);
     const [subcommandRaw, ...rest] = trimmed ? trimmed.split(/\s+/) : ["list"];
     const subcommand = (subcommandRaw || "list").toLowerCase();
@@ -954,7 +1324,18 @@ export function createTelegramCommandRouter({
         defaults: registry.defaults,
       };
       await controlPlane.upsertModelRegistry({ registry: nextRegistry });
-      await replyWithOptions(ctx, `Registered model ${provider} ${modelId}${alias ? ` as ${alias}` : ""}.`);
+      await replyOrchestratedConfirmation(ctx, identity, {
+        commandName: "models",
+        instruction:
+          "Confirm that the model registry was updated with the newly registered model.",
+        facts: {
+          action: "register",
+          provider,
+          modelId,
+          ...(alias ? { alias } : {}),
+        },
+        fallbackText: `Registered model ${provider} ${modelId}${alias ? ` as ${alias}` : ""}.`,
+      });
       return;
     }
 
@@ -988,7 +1369,17 @@ export function createTelegramCommandRouter({
           defaults: nextDefaults,
         },
       });
-      await replyWithOptions(ctx, `Unregistered model ${provider} ${target}.`);
+      await replyOrchestratedConfirmation(ctx, identity, {
+        commandName: "models",
+        instruction:
+          "Confirm that the model was removed from the model registry.",
+        facts: {
+          action: "unregister",
+          provider,
+          target,
+        },
+        fallbackText: `Unregistered model ${provider} ${target}.`,
+      });
       return;
     }
 
@@ -1022,7 +1413,17 @@ export function createTelegramCommandRouter({
         providerId: provider,
         modelId,
       });
-      await replyWithOptions(ctx, `Default model set to ${provider} ${modelId}.`);
+      await replyOrchestratedConfirmation(ctx, identity, {
+        commandName: "models",
+        instruction:
+          "Confirm that the default model routing target was updated.",
+        facts: {
+          action: "set_default",
+          provider,
+          modelId,
+        },
+        fallbackText: `Default model set to ${provider} ${modelId}.`,
+      });
       return;
     }
 
@@ -1034,19 +1435,514 @@ export function createTelegramCommandRouter({
   }
 
   /**
-   * @param {unknown} ctx
+   * @param {unknown} record
+   * @param {number} index
    */
-  async function handleSkillsStub(ctx) {
-    await replyWithOptions(ctx, "Skills chat commands are not supported yet in this runner.");
+  function summarizeMemoryRecord(record, index) {
+    if (!isPlainObject(record)) {
+      return `- #${index + 1}: ${truncateWithEllipsis(String(record), 100)}`;
+    }
+    const memoryId = asTrimmed(record.memoryId) || `#${index + 1}`;
+    const summaryCandidate =
+      asTrimmed(record.summary) ||
+      asTrimmed(record.title) ||
+      asTrimmed(record.text) ||
+      asTrimmed(record.content);
+    const summary = summaryCandidate
+      ? truncateWithEllipsis(summaryCandidate.replace(/\s+/g, " "), 120)
+      : "(no summary)";
+    return `- ${memoryId}: ${summary}`;
+  }
+
+  /**
+   * @param {unknown} ctx
+   * @param {{ sessionId: string, userId: string, auth: { isOperator: boolean, isAdmin: boolean } }} identity
+   * @param {string} argsRaw
+   */
+  async function handleMemory(ctx, identity, argsRaw) {
+    const trimmed = asTrimmed(argsRaw);
+    if (!trimmed) {
+      throw createUsageError({
+        message: "Missing memory subcommand.",
+        usage: "/memory search [--all] [--limit <n>] [--cursor <cursor>] <query> | /memory show <memoryId>",
+        example: "/memory search daily recap",
+      });
+    }
+
+    const tokens = trimmed.split(/\s+/);
+    const subcommand = asTrimmed(tokens[0]).toLowerCase();
+    if (subcommand === "search") {
+      let index = 1;
+      let scope = "session";
+      if (tokens[index] === "--all") {
+        if (!(identity.auth.isOperator || identity.auth.isAdmin)) {
+          throw new Error("/memory search --all requires operator access.");
+        }
+        scope = "global";
+        index += 1;
+      }
+      const parsed = parseLimitCursor(tokens, index);
+      const query = asTrimmed(tokens.slice(parsed.nextIndex).join(" "));
+      if (!query) {
+        throw createUsageError({
+          message: "Missing query text.",
+          usage: "/memory search [--all] [--limit <n>] [--cursor <cursor>] <query>",
+          example: "/memory search --limit 5 onboarding preferences",
+        });
+      }
+      const limit = Math.min(parsed.limit, MAX_MEMORY_RECORDS_PER_PAGE);
+      const result = await controlPlane.searchMemory({
+        sessionId: identity.sessionId,
+        userId: identity.userId,
+        scope,
+        query,
+        limit,
+        ...(parsed.cursor ? { cursor: parsed.cursor } : {}),
+      });
+      const records = Array.isArray(result.records) ? result.records : [];
+      const lines = records.map((record, entryIndex) =>
+        summarizeMemoryRecord(record, entryIndex),
+      );
+      const header =
+        result.status === "degraded"
+          ? "Memory search degraded (provider unavailable)."
+          : `Memory search (${scope} scope): ${result.resultCount ?? records.length} result(s).`;
+      await replyWithOptions(
+        ctx,
+        [
+          header,
+          ...(lines.length > 0 ? lines : ["- (no matches)"]),
+          ...(typeof result.nextCursor === "string"
+            ? [`nextCursor: ${truncateWithEllipsis(result.nextCursor, 80)}`]
+            : []),
+        ].join("\n"),
+      );
+      return;
+    }
+
+    if (subcommand === "show") {
+      const memoryId = asTrimmed(tokens.slice(1).join(" "));
+      if (!memoryId) {
+        throw createUsageError({
+          message: "Missing memoryId.",
+          usage: "/memory show <memoryId>",
+          example: "/memory show mem-123",
+        });
+      }
+      const result = await controlPlane.getMemory({
+        sessionId: identity.sessionId,
+        userId: identity.userId,
+        scope: "session",
+        memoryId,
+      });
+      if (result.status === "not_found") {
+        await replyWithOptions(ctx, `Memory not found: ${memoryId}`);
+        return;
+      }
+      if (result.status === "degraded") {
+        await replyWithOptions(ctx, `Memory provider unavailable for ${memoryId}.`);
+        return;
+      }
+      await replyWithOptions(
+        ctx,
+        [`memoryId: ${memoryId}`, "record:", formatJsonForChat(result.record)].join(
+          "\n",
+        ),
+      );
+      return;
+    }
+
+    throw createUsageError({
+      message: "Unknown memory subcommand.",
+      usage: "/memory search <query> | /memory show <memoryId>",
+      example: "/memory search daily recap",
+    });
+  }
+
+  /**
+   * @param {string} sourceArg
+   */
+  async function resolveSkillManifestInput(sourceArg) {
+    const trimmed = asTrimmed(sourceArg);
+    if (!trimmed) {
+      throw new Error("Missing skill source.");
+    }
+    if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+      throw new Error(
+        "Remote URL install is disabled for this runner. Use file:<path> or repo:<path>.",
+      );
+    }
+    let filePath = trimmed;
+    if (trimmed.startsWith("file:")) {
+      filePath = asTrimmed(trimmed.slice("file:".length));
+    } else if (trimmed.startsWith("repo:")) {
+      const repoPath = asTrimmed(trimmed.slice("repo:".length));
+      filePath = path.join(repoPath, "SKILL.md");
+    }
+    const resolvedPath = path.resolve(filePath);
+    const stat = await fs.stat(resolvedPath);
+    const skillPath = stat.isDirectory() ? path.join(resolvedPath, "SKILL.md") : resolvedPath;
+    const skillManifest = await fs.readFile(skillPath, "utf8");
+    if (!skillManifest.trim()) {
+      throw new Error(`Skill manifest is empty: ${skillPath}`);
+    }
+    return {
+      sourceUri: skillPath,
+      skillManifest,
+    };
+  }
+
+  /**
+   * @param {unknown} ctx
+   * @param {{ auth: { isOperator: boolean, isAdmin: boolean } }} identity
+   * @param {string} argsRaw
+   */
+  async function handleSkills(ctx, identity, argsRaw) {
+    const trimmed = asTrimmed(argsRaw);
+    const tokens = trimmed ? trimmed.split(/\s+/) : ["list"];
+    const subcommand = asTrimmed(tokens[0]).toLowerCase() || "list";
+
+    if (subcommand === "list") {
+      const pageArg = Number.parseInt(tokens[1] ?? "", 10);
+      const page = Number.isInteger(pageArg) && pageArg > 0 ? pageArg : 1;
+      const pageSize = MAX_SKILL_LIST_PAGE_SIZE;
+      const states = Array.isArray(controlPlane.listExtensionStates?.())
+        ? controlPlane.listExtensionStates()
+        : [];
+      const skills = states
+        .filter((state) => asTrimmed(state.extensionType) === "skill")
+        .sort((left, right) =>
+          asTrimmed(left.extensionId).localeCompare(asTrimmed(right.extensionId)),
+        );
+      const blocked = await controlPlane.listBlockedSkills();
+      const blockedById = new Map(
+        (Array.isArray(blocked) ? blocked : []).map((item) => [
+          asTrimmed(item.extensionId),
+          Array.isArray(item.missingMetadata) ? item.missingMetadata.length : 0,
+        ]),
+      );
+      if (skills.length === 0) {
+        await replyWithOptions(ctx, "No skills are installed.");
+        return;
+      }
+      const offset = (page - 1) * pageSize;
+      const pageItems = skills.slice(offset, offset + pageSize);
+      const lines = pageItems.map((item) => {
+        const extensionId = asTrimmed(item.extensionId) || "unknown";
+        const blockedCount = blockedById.get(extensionId) ?? 0;
+        return `- ${extensionId} | ${item.lifecycleState} | trust=${item.trustLevel}${blockedCount > 0 ? ` | missingMetadata=${blockedCount}` : ""}`;
+      });
+      await replyWithOptions(
+        ctx,
+        [
+          `Skills page ${page} (${offset + 1}-${offset + pageItems.length} of ${skills.length}):`,
+          ...lines,
+          ...(skills.length > offset + pageItems.length
+            ? [`more: /skills list ${page + 1}`]
+            : []),
+        ].join("\n"),
+      );
+      return;
+    }
+
+    if (subcommand === "install") {
+      const sourceArg = asTrimmed(tokens.slice(1).join(" "));
+      if (!sourceArg) {
+        throw createUsageError({
+          message: "Missing skill source.",
+          usage: "/skills install <file:path|repo:path|path>",
+          example: "/skills install file:C:/skills/docs-helper/SKILL.md",
+        });
+      }
+      const installInput = await resolveSkillManifestInput(sourceArg);
+      const installed = await controlPlane.installSkill({
+        sourceUri: installInput.sourceUri,
+        skillManifest: installInput.skillManifest,
+        requestedTrustLevel: "reviewed",
+        enableAfterInstall: true,
+        metadata: {
+          source: "telegram_command",
+          actor: "operator",
+        },
+      });
+      const summary = normalizeInstallSkillResult(installed);
+      await replyWithOptions(ctx, `Skill install result:\n${summary.text}`);
+      return;
+    }
+
+    if (subcommand === "block" || subcommand === "unblock") {
+      const extensionId = asTrimmed(tokens.slice(1).join(" "));
+      if (!extensionId) {
+        throw createUsageError({
+          message: "Missing skillId.",
+          usage: `/skills ${subcommand} <skillId>`,
+          example: `/skills ${subcommand} skill.docs-helper`,
+        });
+      }
+      if (subcommand === "block") {
+        const blocked = await controlPlane.applyExtensionLifecycle({
+          extensionId,
+          extensionType: "skill",
+          operation: "retrust",
+          trustLevel: "blocked",
+          metadata: { source: "telegram_command" },
+        });
+        await replyWithOptions(
+          ctx,
+          blocked.status === "applied"
+            ? `Blocked ${extensionId}.`
+            : `Could not block ${extensionId}: ${blocked.reason || "operation rejected"}`,
+        );
+        return;
+      }
+      const retrusted = await controlPlane.applyExtensionLifecycle({
+        extensionId,
+        extensionType: "skill",
+        operation: "retrust",
+        trustLevel: "reviewed",
+        metadata: { source: "telegram_command" },
+      });
+      if (retrusted.status !== "applied") {
+        await replyWithOptions(
+          ctx,
+          `Could not unblock ${extensionId}: ${retrusted.reason || "operation rejected"}`,
+        );
+        return;
+      }
+      const enabled = await controlPlane.applyExtensionLifecycle({
+        extensionId,
+        extensionType: "skill",
+        operation: "enable",
+        metadata: { source: "telegram_command" },
+      });
+      await replyWithOptions(
+        ctx,
+        enabled.status === "applied"
+          ? `Unblocked ${extensionId}.`
+          : `Unblock partially applied for ${extensionId}: ${enabled.reason || "enable rejected"}`,
+      );
+      return;
+    }
+
+    throw createUsageError({
+      message: "Unknown skills subcommand.",
+      usage: "/skills list [page] | /skills install <source> | /skills block <skillId> | /skills unblock <skillId>",
+      example: "/skills list",
+    });
+  }
+
+  /**
+   * @param {unknown} ctx
+   * @param {{ sessionId: string, userId: string, auth: { isOperator: boolean, isAdmin: boolean } }} identity
+   * @param {string} argsRaw
+   */
+  async function handleAgents(ctx, identity, argsRaw) {
+    const trimmed = asTrimmed(argsRaw);
+    const [subcommandRaw, ...rest] = trimmed ? trimmed.split(/\s+/) : ["list"];
+    const subcommand = (subcommandRaw || "list").toLowerCase();
+    const restRaw = rest.join(" ").trim();
+
+    if (subcommand === "list") {
+      const listed = await controlPlane.listAgentProfiles();
+      const items = Array.isArray(listed.items) ? listed.items : [];
+      if (items.length === 0) {
+        await replyWithOptions(ctx, "No agent profiles registered.");
+        return;
+      }
+      const lines = items.map((item) => `- ${item.agentId} -> ${item.profileId}: ${item.description}`);
+      await replyWithOptions(ctx, `Agent profiles:\n${lines.join("\n")}`);
+      return;
+    }
+
+    if (subcommand === "show") {
+      const agentId = asTrimmed(restRaw);
+      if (!agentId) {
+        throw createUsageError({
+          message: "Missing agentId.",
+          usage: "/agents show <agentId>",
+          example: "/agents show @writer",
+        });
+      }
+      const result = await controlPlane.getAgentProfile({ agentId });
+      if (result.status !== "found") {
+        await replyWithOptions(ctx, `Agent not found: ${agentId}`);
+        return;
+      }
+      const agent = result.agent;
+      await replyWithOptions(
+        ctx,
+        [
+          `agentId: ${agent.agentId}`,
+          `profileId: ${agent.profileId}`,
+          `description: ${agent.description}`,
+          ...(Array.isArray(agent.tags) && agent.tags.length > 0 ? [`tags: ${agent.tags.join(", ")}`] : []),
+        ].join("\n"),
+      );
+      return;
+    }
+
+    if (subcommand === "register") {
+      if (!(identity.auth.isOperator || identity.auth.isAdmin)) {
+        throw new Error("Registering agent profiles requires operator access.");
+      }
+      const parsed = parseAgentRegistrationTriple(restRaw);
+      if (!parsed.ok) {
+        throw createUsageError({
+          message: parsed.error,
+          usage: "/agents register <agentId> | <profileId> | <description>",
+          example: "/agents register @writer | profile.writer | Handles docs and writing tasks.",
+        });
+      }
+      const result = await controlPlane.registerAgentProfile({
+        agentId: parsed.agentId,
+        profileId: parsed.profileId,
+        description: parsed.description,
+      });
+      await replyOrchestratedConfirmation(ctx, identity, {
+        commandName: "agents",
+        instruction:
+          "Confirm that the agent profile mapping was registered.",
+        facts: {
+          action: "register",
+          agentId: result.agent.agentId,
+          profileId: result.agent.profileId,
+        },
+        fallbackText: `Registered agent ${result.agent.agentId} -> ${result.agent.profileId}.`,
+      });
+      return;
+    }
+
+    if (subcommand === "unregister") {
+      if (!(identity.auth.isOperator || identity.auth.isAdmin)) {
+        throw new Error("Unregistering agent profiles requires operator access.");
+      }
+      const agentId = asTrimmed(restRaw);
+      if (!agentId) {
+        throw createUsageError({
+          message: "Missing agentId.",
+          usage: "/agents unregister <agentId>",
+          example: "/agents unregister @writer",
+        });
+      }
+      const result = await controlPlane.unregisterAgentProfile({ agentId });
+      if (result.status === "not_found") {
+        await replyWithOptions(ctx, `Agent not found: ${agentId}`);
+        return;
+      }
+      await replyOrchestratedConfirmation(ctx, identity, {
+        commandName: "agents",
+        instruction:
+          "Confirm that the agent profile mapping was removed.",
+        facts: {
+          action: "unregister",
+          agentId,
+        },
+        fallbackText: `Unregistered agent ${agentId}.`,
+      });
+      return;
+    }
+
+    if (subcommand === "pin") {
+      const tokens = restRaw.split(/\s+/).filter((token) => token.length > 0);
+      const agentId = tokens[0];
+      const scopeFlag = tokens.find((token) => token.startsWith("--")) || "--session";
+      const scope =
+        scopeFlag === "--global" ? "global" : scopeFlag === "--user" ? "user" : "session";
+      if (!agentId) {
+        throw createUsageError({
+          message: "Missing agentId.",
+          usage: "/agents pin <agentId> [--session|--user|--global]",
+          example: "/agents pin @writer --session",
+        });
+      }
+      if (scope === "global" && !(identity.auth.isOperator || identity.auth.isAdmin)) {
+        throw new Error("Global pin requires operator access.");
+      }
+      const found = await controlPlane.getAgentProfile({ agentId });
+      if (found.status !== "found") {
+        await replyWithOptions(ctx, `Agent not found: ${agentId}`);
+        return;
+      }
+      const pin = await controlPlane.pinProfileForScope({
+        scope,
+        profileId: found.agent.profileId,
+        ...(scope === "session" ? { sessionId: identity.sessionId } : {}),
+        ...(scope === "user" ? { userId: identity.userId } : {}),
+      });
+      await replyOrchestratedConfirmation(ctx, identity, {
+        commandName: "agents",
+        instruction:
+          "Confirm that the agent profile was pinned for the requested scope.",
+        facts: {
+          action: "pin",
+          agentId,
+          profileId: found.agent.profileId,
+          scope: pin.scope,
+        },
+        fallbackText: `Pinned ${agentId} (${found.agent.profileId}) for ${pin.scope} scope.`,
+      });
+      return;
+    }
+
+    if (subcommand === "unpin") {
+      const scopeFlag = asTrimmed(restRaw) || "--session";
+      const scope =
+        scopeFlag === "--global" ? "global" : scopeFlag === "--user" ? "user" : "session";
+      if (scope === "global" && !(identity.auth.isOperator || identity.auth.isAdmin)) {
+        throw new Error("Global unpin requires operator access.");
+      }
+      const result = await controlPlane.unpinProfileForScope({
+        scope,
+        ...(scope === "session" ? { sessionId: identity.sessionId } : {}),
+        ...(scope === "user" ? { userId: identity.userId } : {}),
+      });
+      await replyOrchestratedConfirmation(ctx, identity, {
+        commandName: "agents",
+        instruction:
+          "Confirm that the profile pin was removed for the requested scope.",
+        facts: {
+          action: "unpin",
+          scope: result.scope,
+        },
+        fallbackText: `Removed pin for ${result.scope} scope.`,
+      });
+      return;
+    }
+
+    if (subcommand === "pins") {
+      const effective = await controlPlane.getEffectivePinnedProfile({
+        sessionId: identity.sessionId,
+        userId: identity.userId,
+      });
+      if (effective.status !== "found") {
+        await replyWithOptions(ctx, "No pinned profile is currently active.");
+        return;
+      }
+      const listed = await controlPlane.listAgentProfiles();
+      const items = Array.isArray(listed.items) ? listed.items : [];
+      const matched = items.find((item) => item.profileId === effective.profileId) || null;
+      await replyWithOptions(
+        ctx,
+        [
+          `scope: ${effective.scope}`,
+          `profileId: ${effective.profileId}`,
+          `agentId: ${matched ? matched.agentId : "n/a"}`,
+          `pinResourceId: ${effective.pinResourceId || "n/a"}`,
+        ].join("\n"),
+      );
+      return;
+    }
+
+    throw createUsageError({
+      message: "Unknown agents subcommand.",
+      usage: "/agents [list|show|register|unregister|pin|unpin|pins] ...",
+      example: "/agents show @writer",
+    });
   }
 
   /**
    * @param {unknown} ctx
    */
-  async function handleMemoryStub(ctx) {
-    await replyWithOptions(ctx, "Memory chat commands are not supported yet in this runner.");
-  }
-
   const commandDefinitions = Object.freeze([
     {
       name: "help",
@@ -1122,6 +2018,16 @@ export function createTelegramCommandRouter({
       handler: (ctx, identity, argsRaw) => handleArtifacts(ctx, identity, argsRaw),
     },
     {
+      name: "agents",
+      aliases: [],
+      help: "List/register agent profiles and profile pins.",
+      usage: "/agents [list|show|register|unregister|pin|unpin|pins]",
+      example: "/agents pin @writer --session",
+      access: "public",
+      containsFreeText: (argsRaw) => asTrimmed(argsRaw).startsWith("register "),
+      handler: (ctx, identity, argsRaw) => handleAgents(ctx, identity, argsRaw),
+    },
+    {
       name: "models",
       aliases: [],
       help: "List or manage model registry.",
@@ -1129,27 +2035,27 @@ export function createTelegramCommandRouter({
       example: "/models register openai gpt-5-mini --alias fast",
       access: "operator",
       containsFreeText: () => false,
-      handler: (ctx, _identity, argsRaw) => handleModels(ctx, argsRaw),
+      handler: (ctx, identity, argsRaw) => handleModels(ctx, identity, argsRaw),
     },
     {
       name: "memory",
       aliases: [],
-      help: "Memory command surface (not yet implemented).",
+      help: "Search and inspect memory records.",
       usage: "/memory search <query> | /memory show <memoryId>",
       example: "/memory search daily recap",
       access: "operator",
-      containsFreeText: () => false,
-      handler: (ctx) => handleMemoryStub(ctx),
+      containsFreeText: (argsRaw) => asTrimmed(argsRaw).startsWith("search "),
+      handler: (ctx, identity, argsRaw) => handleMemory(ctx, identity, argsRaw),
     },
     {
       name: "skills",
       aliases: ["extensions"],
-      help: "Skills/extensions command surface (not yet implemented).",
+      help: "Manage skills/extensions lifecycle.",
       usage: "/skills list|install|block|unblock",
       example: "/skills list",
       access: "operator",
-      containsFreeText: () => false,
-      handler: (ctx) => handleSkillsStub(ctx),
+      containsFreeText: (argsRaw) => asTrimmed(argsRaw).startsWith("install "),
+      handler: (ctx, identity, argsRaw) => handleSkills(ctx, identity, argsRaw),
     },
   ]);
 
@@ -1180,8 +2086,13 @@ export function createTelegramCommandRouter({
       const auth = await authResolver.resolve({
         nowMs,
         userId,
-        fallbackOperatorIds: fallbackOperatorUserIds,
-        fallbackAdminIds: fallbackAdminUserIds,
+        chatType: asTrimmed(String(ctx.chat?.type ?? ctx.message?.chat?.type ?? "")).toLowerCase(),
+        explicitOperatorIds: explicitOperatorUserIds,
+        explicitAdminIds: explicitAdminUserIds,
+        hasExplicitOperatorAllowlist,
+        hasExplicitAdminAllowlist,
+        singleUserAdminBootstrapEnabled,
+        disableChatAdmin,
       });
 
       const parsed = parseSlashCommand(rawText, {

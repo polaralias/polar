@@ -189,3 +189,49 @@ test("automation runner blocks inbox body reads without explicit mail.read_body 
     db.close();
   }
 });
+
+test("automation delivery sink receives orchestrator output for channel delivery", async () => {
+  const db = new Database(":memory:");
+  try {
+    let nowMs = Date.UTC(2026, 2, 1, 12, 0, 0);
+    const jobStore = createSqliteAutomationJobStore({ db, now: () => nowMs });
+    const runEventLinker = createSqliteRunEventLinker({ db, now: () => nowMs });
+
+    await jobStore.createJob({
+      id: "auto-delivery",
+      ownerUserId: "user-1",
+      sessionId: "telegram:chat:1",
+      schedule: "every 1 hours",
+      promptTemplate: "Reminder: hydrate",
+    });
+
+    nowMs += 3_600_000;
+    const delivered = [];
+    const runner = createAutomationRunner({
+      controlPlane: {
+        async orchestrate() {
+          return { status: "completed", text: "Hydration reminder delivered." };
+        },
+      },
+      automationJobStore: jobStore,
+      runEventLinker,
+      now: () => nowMs,
+      async deliverySink({ orchestrateResult, runId, job }) {
+        delivered.push({
+          runId,
+          jobId: job.id,
+          text: orchestrateResult.text,
+        });
+        return { status: "sent", channel: "telegram", runId };
+      },
+    });
+
+    const result = await runner.tick();
+    assert.equal(result.runCount, 1);
+    assert.equal(delivered.length, 1);
+    assert.equal(delivered[0].jobId, "auto-delivery");
+    assert.equal(delivered[0].text, "Hydration reminder delivered.");
+  } finally {
+    db.close();
+  }
+});

@@ -70,3 +70,6 @@ Older deep-dives and prior drafts are archived under:
 
 ## Licence
 See repo files.
+## Key concepts
+- **Sub-agent profiles:** task-specific profiles (e.g. writer/researcher) the orchestrator can delegate to. See `docs/specs/AGENT_PROFILES.md`.
+- **Deterministic chat commands:** configuration via `/` commands without LLM intent guessing. See `docs/specs/CHAT_COMMANDS.md`.

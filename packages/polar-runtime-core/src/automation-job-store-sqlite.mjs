@@ -357,7 +357,19 @@ function toSafeInteger(value, fallback) {
 
 /**
  * @param {string} schedule
- * @returns {{ kind: "interval", intervalMs: number } | { kind: "daily", hour: number, minute: number } | null}
+ * @returns {{
+ *   kind: "interval",
+ *   intervalMs: number
+ * } | {
+ *   kind: "daily",
+ *   hour: number,
+ *   minute: number
+ * } | {
+ *   kind: "weekly",
+ *   dayOfWeek: number,
+ *   hour: number,
+ *   minute: number
+ * } | null}
  */
 export function parseAutomationSchedule(schedule) {
   if (!isNonEmptyString(schedule)) {
@@ -399,16 +411,83 @@ export function parseAutomationSchedule(schedule) {
     }
   }
 
+  match = normalized.match(
+    /^weekly\s+(mon|monday|tue|tues|tuesday|wed|wednesday|thu|thur|thurs|thursday|fri|friday|sat|saturday|sun|sunday)\s+(\d{1,2}):(\d{2})$/,
+  );
+  if (match) {
+    const dayOfWeekByToken = {
+      mon: 1,
+      monday: 1,
+      tue: 2,
+      tues: 2,
+      tuesday: 2,
+      wed: 3,
+      wednesday: 3,
+      thu: 4,
+      thur: 4,
+      thurs: 4,
+      thursday: 4,
+      fri: 5,
+      friday: 5,
+      sat: 6,
+      saturday: 6,
+      sun: 0,
+      sunday: 0,
+    };
+    const dayOfWeek = dayOfWeekByToken[match[1]];
+    const hour = Number.parseInt(match[2], 10);
+    const minute = Number.parseInt(match[3], 10);
+    if (
+      Number.isInteger(dayOfWeek) &&
+      hour >= 0 &&
+      hour <= 23 &&
+      minute >= 0 &&
+      minute <= 59
+    ) {
+      return { kind: "weekly", dayOfWeek, hour, minute };
+    }
+  }
+
   return null;
 }
 
 /**
- * @param {{ kind: "interval", intervalMs: number } | { kind: "daily", hour: number, minute: number }} parsed
+ * @param {{
+ *   kind: "interval",
+ *   intervalMs: number
+ * } | {
+ *   kind: "daily",
+ *   hour: number,
+ *   minute: number
+ * } | {
+ *   kind: "weekly",
+ *   dayOfWeek: number,
+ *   hour: number,
+ *   minute: number
+ * }} parsed
  * @param {number} baselineMs
  */
 function computeNextDueAtMs(parsed, baselineMs) {
   if (parsed.kind === "interval") {
     return baselineMs + parsed.intervalMs;
+  }
+  if (parsed.kind === "weekly") {
+    const baseline = new Date(baselineMs);
+    const currentDay = baseline.getUTCDay();
+    const deltaDays = (parsed.dayOfWeek - currentDay + 7) % 7;
+    const candidate = new Date(Date.UTC(
+      baseline.getUTCFullYear(),
+      baseline.getUTCMonth(),
+      baseline.getUTCDate() + deltaDays,
+      parsed.hour,
+      parsed.minute,
+      0,
+      0,
+    ));
+    if (candidate.getTime() <= baselineMs) {
+      candidate.setUTCDate(candidate.getUTCDate() + 7);
+    }
+    return candidate.getTime();
   }
 
   const baseline = new Date(baselineMs);

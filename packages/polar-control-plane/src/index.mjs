@@ -321,9 +321,72 @@ const modelRegistrySetDefaultRequestSchema = createStrictObjectSchema({
   },
 });
 
+const agentRegistryGetRequestSchema = createStrictObjectSchema({
+  schemaId: "controlPlane.agentRegistry.get.request",
+  fields: {},
+});
+
+const agentProfileGetRequestSchema = createStrictObjectSchema({
+  schemaId: "controlPlane.agentProfile.get.request",
+  fields: {
+    agentId: stringField({ minLength: 3 }),
+  },
+});
+
+const agentProfileRegisterRequestSchema = createStrictObjectSchema({
+  schemaId: "controlPlane.agentProfile.register.request",
+  fields: {
+    agentId: stringField({ minLength: 3 }),
+    profileId: stringField({ minLength: 1 }),
+    description: stringField({ minLength: 1, maxLength: 300 }),
+    defaultForwardSkills: jsonField({ required: false }),
+    allowedForwardSkills: jsonField({ required: false }),
+    defaultMcpServers: jsonField({ required: false }),
+    allowedMcpServers: jsonField({ required: false }),
+    tags: jsonField({ required: false }),
+  },
+});
+
+const agentProfileUnregisterRequestSchema = createStrictObjectSchema({
+  schemaId: "controlPlane.agentProfile.unregister.request",
+  fields: {
+    agentId: stringField({ minLength: 3 }),
+  },
+});
+
+const pinProfileForScopeRequestSchema = createStrictObjectSchema({
+  schemaId: "controlPlane.profilePin.pin.request",
+  fields: {
+    scope: enumField(["session", "user", "global"]),
+    profileId: stringField({ minLength: 1 }),
+    sessionId: stringField({ minLength: 1, required: false }),
+    userId: stringField({ minLength: 1, required: false }),
+  },
+});
+
+const unpinProfileForScopeRequestSchema = createStrictObjectSchema({
+  schemaId: "controlPlane.profilePin.unpin.request",
+  fields: {
+    scope: enumField(["session", "user", "global"]),
+    sessionId: stringField({ minLength: 1, required: false }),
+    userId: stringField({ minLength: 1, required: false }),
+  },
+});
+
+const effectivePinnedProfileRequestSchema = createStrictObjectSchema({
+  schemaId: "controlPlane.profilePin.effective.request",
+  fields: {
+    sessionId: stringField({ minLength: 1, required: false }),
+    userId: stringField({ minLength: 1, required: false }),
+  },
+});
+
 const MODEL_REGISTRY_RESOURCE_TYPE = "policy";
 const MODEL_REGISTRY_RESOURCE_ID = "model_registry";
+const AGENT_REGISTRY_RESOURCE_TYPE = "policy";
+const AGENT_REGISTRY_RESOURCE_ID = "agent-registry:default";
 const GLOBAL_PROFILE_PIN_POLICY_ID = "profile-pin:global";
+const AGENT_ID_PATTERN = /^@[a-z0-9_-]{2,32}$/;
 
 /**
  * @param {Record<string, unknown>} request
@@ -470,6 +533,173 @@ function normalizeModelRegistry(value) {
     entries: Object.freeze(normalizedEntries),
     defaults,
   };
+}
+
+/**
+ * @param {unknown} value
+ */
+function normalizeStringArray(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const seen = new Set();
+  const normalized = [];
+  for (const item of value) {
+    if (typeof item !== "string") {
+      continue;
+    }
+    const trimmed = item.trim();
+    if (!trimmed || seen.has(trimmed)) {
+      continue;
+    }
+    seen.add(trimmed);
+    normalized.push(trimmed);
+  }
+  return normalized;
+}
+
+/**
+ * @param {unknown} value
+ * @returns {{ version: 1, agents: readonly Record<string, unknown>[] }}
+ */
+function normalizeAgentRegistry(value) {
+  if (!isPlainObject(value)) {
+    return {
+      version: 1,
+      agents: Object.freeze([]),
+    };
+  }
+
+  const agents = [];
+  const seen = new Set();
+  for (const agent of Array.isArray(value.agents) ? value.agents : []) {
+    if (!isPlainObject(agent)) {
+      continue;
+    }
+    const agentId = typeof agent.agentId === "string" ? agent.agentId.trim() : "";
+    const profileId = typeof agent.profileId === "string" ? agent.profileId.trim() : "";
+    const description =
+      typeof agent.description === "string" ? agent.description.trim() : "";
+    if (!agentId || !profileId || !description || seen.has(agentId)) {
+      continue;
+    }
+    if (!AGENT_ID_PATTERN.test(agentId) || description.length > 300) {
+      continue;
+    }
+
+    const normalized = {
+      agentId,
+      profileId,
+      description,
+    };
+    const tags = normalizeStringArray(agent.tags);
+    const defaultForwardSkills = normalizeStringArray(agent.defaultForwardSkills);
+    const allowedForwardSkills = normalizeStringArray(agent.allowedForwardSkills);
+    const defaultMcpServers = normalizeStringArray(agent.defaultMcpServers);
+    const allowedMcpServers = normalizeStringArray(agent.allowedMcpServers);
+
+    if (tags.length > 0) {
+      normalized.tags = tags;
+    }
+    if (defaultForwardSkills.length > 0) {
+      normalized.defaultForwardSkills = defaultForwardSkills;
+    }
+    if (allowedForwardSkills.length > 0) {
+      normalized.allowedForwardSkills = allowedForwardSkills;
+    }
+    if (defaultMcpServers.length > 0) {
+      normalized.defaultMcpServers = defaultMcpServers;
+    }
+    if (allowedMcpServers.length > 0) {
+      normalized.allowedMcpServers = allowedMcpServers;
+    }
+    agents.push(normalized);
+    seen.add(agentId);
+  }
+  return {
+    version: 1,
+    agents: Object.freeze(agents),
+  };
+}
+
+/**
+ * @param {unknown} value
+ */
+function validateAgentRegistryConfig(value) {
+  if (!isPlainObject(value)) {
+    throw new ContractValidationError("Invalid agent registry config", {
+      schemaId: "controlPlane.agentRegistry.config",
+      errors: ["registry must be an object"],
+    });
+  }
+  if (value.version !== 1) {
+    throw new ContractValidationError("Invalid agent registry config", {
+      schemaId: "controlPlane.agentRegistry.config",
+      errors: ["registry.version must be 1"],
+    });
+  }
+  if (!Array.isArray(value.agents)) {
+    throw new ContractValidationError("Invalid agent registry config", {
+      schemaId: "controlPlane.agentRegistry.config",
+      errors: ["registry.agents must be an array"],
+    });
+  }
+  for (const agent of value.agents) {
+    if (!isPlainObject(agent)) {
+      throw new ContractValidationError("Invalid agent registry config", {
+        schemaId: "controlPlane.agentRegistry.config",
+        errors: ["registry.agents entries must be objects"],
+      });
+    }
+    const agentId = typeof agent.agentId === "string" ? agent.agentId.trim() : "";
+    const profileId = typeof agent.profileId === "string" ? agent.profileId.trim() : "";
+    const description =
+      typeof agent.description === "string" ? agent.description.trim() : "";
+    if (!agentId || !AGENT_ID_PATTERN.test(agentId)) {
+      throw new ContractValidationError("Invalid agent registry config", {
+        schemaId: "controlPlane.agentRegistry.config",
+        errors: ["agentId must match ^@[a-z0-9_-]{2,32}$"],
+      });
+    }
+    if (!profileId) {
+      throw new ContractValidationError("Invalid agent registry config", {
+        schemaId: "controlPlane.agentRegistry.config",
+        errors: ["profileId is required for every agent"],
+      });
+    }
+    if (!description || description.length > 300) {
+      throw new ContractValidationError("Invalid agent registry config", {
+        schemaId: "controlPlane.agentRegistry.config",
+        errors: ["description is required and must be <= 300 chars"],
+      });
+    }
+  }
+}
+
+/**
+ * @param {string} scope
+ * @param {{ sessionId?: string, userId?: string }} request
+ */
+function buildPinPolicyResourceId(scope, request) {
+  if (scope === "global") {
+    return GLOBAL_PROFILE_PIN_POLICY_ID;
+  }
+  if (scope === "session") {
+    if (typeof request.sessionId !== "string" || request.sessionId.length === 0) {
+      throw new ContractValidationError("Invalid profile pin request", {
+        schemaId: pinProfileForScopeRequestSchema.schemaId,
+        errors: ["session scope requires sessionId"],
+      });
+    }
+    return `profile-pin:session:${request.sessionId}`;
+  }
+  if (typeof request.userId !== "string" || request.userId.length === 0) {
+    throw new ContractValidationError("Invalid profile pin request", {
+      schemaId: pinProfileForScopeRequestSchema.schemaId,
+      errors: ["user scope requires userId"],
+    });
+  }
+  return `profile-pin:user:${request.userId}`;
 }
 
 /**
@@ -1081,6 +1311,323 @@ export function createControlPlaneService(config = {}) {
         status: "applied",
         profileId,
         modelPolicy: profileConfig.modelPolicy,
+      };
+    },
+
+    /**
+     * @param {unknown} [request]
+     * @returns {Promise<Record<string, unknown>>}
+     */
+    async getAgentRegistry(request = {}) {
+      validateRequest(
+        agentRegistryGetRequestSchema,
+        request,
+        "Invalid agent registry get request",
+      );
+      const record = await gateway.getConfig({
+        resourceType: AGENT_REGISTRY_RESOURCE_TYPE,
+        resourceId: AGENT_REGISTRY_RESOURCE_ID,
+      });
+      if (record.status === "found") {
+        validateAgentRegistryConfig(record.config);
+      }
+      const registry =
+        record.status === "found"
+          ? normalizeAgentRegistry(record.config)
+          : normalizeAgentRegistry({ version: 1, agents: [] });
+      return {
+        status: "ok",
+        registry,
+      };
+    },
+
+    /**
+     * @returns {Promise<Record<string, unknown>>}
+     */
+    async listAgentProfiles() {
+      const record = await gateway.getConfig({
+        resourceType: AGENT_REGISTRY_RESOURCE_TYPE,
+        resourceId: AGENT_REGISTRY_RESOURCE_ID,
+      });
+      if (record.status === "found") {
+        validateAgentRegistryConfig(record.config);
+      }
+      const registry =
+        record.status === "found"
+          ? normalizeAgentRegistry(record.config)
+          : normalizeAgentRegistry({ version: 1, agents: [] });
+      const items = registry.agents.map((agent) => ({
+        agentId: agent.agentId,
+        profileId: agent.profileId,
+        description: agent.description,
+        ...(Array.isArray(agent.tags) ? { tags: agent.tags } : {}),
+      }));
+      return {
+        status: "ok",
+        items,
+        totalCount: items.length,
+      };
+    },
+
+    /**
+     * @param {unknown} request
+     * @returns {Promise<Record<string, unknown>>}
+     */
+    async getAgentProfile(request) {
+      const parsed = validateRequest(
+        agentProfileGetRequestSchema,
+        request,
+        "Invalid agent profile get request",
+      );
+      if (!AGENT_ID_PATTERN.test(parsed.agentId)) {
+        throw new ContractValidationError("Invalid agent profile get request", {
+          schemaId: agentProfileGetRequestSchema.schemaId,
+          errors: ["agentId must match ^@[a-z0-9_-]{2,32}$"],
+        });
+      }
+      const record = await gateway.getConfig({
+        resourceType: AGENT_REGISTRY_RESOURCE_TYPE,
+        resourceId: AGENT_REGISTRY_RESOURCE_ID,
+      });
+      if (record.status === "found") {
+        validateAgentRegistryConfig(record.config);
+      }
+      const registry =
+        record.status === "found"
+          ? normalizeAgentRegistry(record.config)
+          : normalizeAgentRegistry({ version: 1, agents: [] });
+      const found = registry.agents.find((agent) => agent.agentId === parsed.agentId) || null;
+      if (!found) {
+        return {
+          status: "not_found",
+          agentId: parsed.agentId,
+        };
+      }
+      return {
+        status: "found",
+        agent: found,
+      };
+    },
+
+    /**
+     * @param {unknown} request
+     * @returns {Promise<Record<string, unknown>>}
+     */
+    async registerAgentProfile(request) {
+      const parsed = validateRequest(
+        agentProfileRegisterRequestSchema,
+        request,
+        "Invalid agent profile register request",
+      );
+      if (!AGENT_ID_PATTERN.test(parsed.agentId)) {
+        throw new ContractValidationError("Invalid agent profile register request", {
+          schemaId: agentProfileRegisterRequestSchema.schemaId,
+          errors: ["agentId must match ^@[a-z0-9_-]{2,32}$"],
+        });
+      }
+      const profile = await gateway.getConfig({
+        resourceType: "profile",
+        resourceId: parsed.profileId,
+      });
+      if (profile.status !== "found") {
+        throw new ContractValidationError("Invalid agent profile register request", {
+          schemaId: agentProfileRegisterRequestSchema.schemaId,
+          errors: [`profileId "${parsed.profileId}" is not configured`],
+        });
+      }
+
+      const currentRecord = await gateway.getConfig({
+        resourceType: AGENT_REGISTRY_RESOURCE_TYPE,
+        resourceId: AGENT_REGISTRY_RESOURCE_ID,
+      });
+      if (currentRecord.status === "found") {
+        validateAgentRegistryConfig(currentRecord.config);
+      }
+      const current =
+        currentRecord.status === "found"
+          ? normalizeAgentRegistry(currentRecord.config)
+          : normalizeAgentRegistry({ version: 1, agents: [] });
+      const filtered = current.agents.filter(
+        (agent) => agent.agentId !== parsed.agentId,
+      );
+      const nextRegistry = normalizeAgentRegistry({
+        version: 1,
+        agents: [
+          ...filtered,
+          {
+            agentId: parsed.agentId,
+            profileId: parsed.profileId,
+            description: parsed.description,
+            ...(parsed.defaultForwardSkills !== undefined
+              ? { defaultForwardSkills: parsed.defaultForwardSkills }
+              : {}),
+            ...(parsed.allowedForwardSkills !== undefined
+              ? { allowedForwardSkills: parsed.allowedForwardSkills }
+              : {}),
+            ...(parsed.defaultMcpServers !== undefined
+              ? { defaultMcpServers: parsed.defaultMcpServers }
+              : {}),
+            ...(parsed.allowedMcpServers !== undefined
+              ? { allowedMcpServers: parsed.allowedMcpServers }
+              : {}),
+            ...(parsed.tags !== undefined ? { tags: parsed.tags } : {}),
+          },
+        ],
+      });
+
+      await gateway.upsertConfig({
+        resourceType: AGENT_REGISTRY_RESOURCE_TYPE,
+        resourceId: AGENT_REGISTRY_RESOURCE_ID,
+        config: nextRegistry,
+      });
+      return {
+        status: "applied",
+        agent:
+          nextRegistry.agents.find((agent) => agent.agentId === parsed.agentId) ||
+          null,
+      };
+    },
+
+    /**
+     * @param {unknown} request
+     * @returns {Promise<Record<string, unknown>>}
+     */
+    async unregisterAgentProfile(request) {
+      const parsed = validateRequest(
+        agentProfileUnregisterRequestSchema,
+        request,
+        "Invalid agent profile unregister request",
+      );
+      if (!AGENT_ID_PATTERN.test(parsed.agentId)) {
+        throw new ContractValidationError("Invalid agent profile unregister request", {
+          schemaId: agentProfileUnregisterRequestSchema.schemaId,
+          errors: ["agentId must match ^@[a-z0-9_-]{2,32}$"],
+        });
+      }
+
+      const currentRecord = await gateway.getConfig({
+        resourceType: AGENT_REGISTRY_RESOURCE_TYPE,
+        resourceId: AGENT_REGISTRY_RESOURCE_ID,
+      });
+      if (currentRecord.status === "found") {
+        validateAgentRegistryConfig(currentRecord.config);
+      }
+      const current =
+        currentRecord.status === "found"
+          ? normalizeAgentRegistry(currentRecord.config)
+          : normalizeAgentRegistry({ version: 1, agents: [] });
+      const nextAgents = current.agents.filter(
+        (agent) => agent.agentId !== parsed.agentId,
+      );
+      if (nextAgents.length === current.agents.length) {
+        return {
+          status: "not_found",
+          agentId: parsed.agentId,
+        };
+      }
+      const nextRegistry = normalizeAgentRegistry({
+        version: 1,
+        agents: nextAgents,
+      });
+      await gateway.upsertConfig({
+        resourceType: AGENT_REGISTRY_RESOURCE_TYPE,
+        resourceId: AGENT_REGISTRY_RESOURCE_ID,
+        config: nextRegistry,
+      });
+      return {
+        status: "deleted",
+        agentId: parsed.agentId,
+      };
+    },
+
+    /**
+     * @param {unknown} request
+     * @returns {Promise<Record<string, unknown>>}
+     */
+    async pinProfileForScope(request) {
+      const parsed = validateRequest(
+        pinProfileForScopeRequestSchema,
+        request,
+        "Invalid profile pin request",
+      );
+      const profile = await gateway.getConfig({
+        resourceType: "profile",
+        resourceId: parsed.profileId,
+      });
+      if (profile.status !== "found") {
+        throw new ContractValidationError("Invalid profile pin request", {
+          schemaId: pinProfileForScopeRequestSchema.schemaId,
+          errors: [`profileId "${parsed.profileId}" is not configured`],
+        });
+      }
+      const resourceId = buildPinPolicyResourceId(parsed.scope, parsed);
+      await gateway.upsertConfig({
+        resourceType: "policy",
+        resourceId,
+        config: {
+          profileId: parsed.profileId,
+        },
+      });
+      return {
+        status: "applied",
+        scope: parsed.scope,
+        profileId: parsed.profileId,
+        pinResourceId: resourceId,
+      };
+    },
+
+    /**
+     * @param {unknown} request
+     * @returns {Promise<Record<string, unknown>>}
+     */
+    async unpinProfileForScope(request) {
+      const parsed = validateRequest(
+        unpinProfileForScopeRequestSchema,
+        request,
+        "Invalid profile unpin request",
+      );
+      const resourceId = buildPinPolicyResourceId(parsed.scope, parsed);
+      await gateway.upsertConfig({
+        resourceType: "policy",
+        resourceId,
+        config: {
+          profileId: "__UNPINNED__",
+          unpinned: true,
+        },
+      });
+      return {
+        status: "applied",
+        scope: parsed.scope,
+        pinResourceId: resourceId,
+        unpinned: true,
+      };
+    },
+
+    /**
+     * @param {unknown} request
+     * @returns {Promise<Record<string, unknown>>}
+     */
+    async getEffectivePinnedProfile(request) {
+      const parsed = validateRequest(
+        effectivePinnedProfileRequestSchema,
+        request,
+        "Invalid effective pinned profile request",
+      );
+      const resolved = await profileResolutionGateway.resolve({
+        ...(parsed.sessionId !== undefined ? { sessionId: parsed.sessionId } : {}),
+        ...(parsed.userId !== undefined ? { userId: parsed.userId } : {}),
+        allowDefaultFallback: false,
+      });
+      if (resolved.status !== "resolved") {
+        return {
+          status: "not_found",
+        };
+      }
+      return {
+        status: "found",
+        scope: resolved.resolvedScope,
+        profileId: resolved.profileId,
+        pinResourceId: resolved.pinResourceId,
       };
     },
 

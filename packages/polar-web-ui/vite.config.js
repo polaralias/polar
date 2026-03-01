@@ -31,6 +31,8 @@ const ALLOWED_ACTIONS = new Set([
     'searchMemory', 'getMemory', 'upsertMemory', 'compactMemory',
     'getPersonalityProfile', 'getEffectivePersonality', 'upsertPersonalityProfile', 'resetPersonalityProfile', 'listPersonalityProfiles',
     'getModelRegistry', 'upsertModelRegistry', 'setModelRegistryDefault',
+    'getAgentRegistry', 'listAgentProfiles', 'getAgentProfile', 'registerAgentProfile', 'unregisterAgentProfile',
+    'pinProfileForScope', 'unpinProfileForScope', 'getEffectivePinnedProfile',
     'orchestrate', 'updateMessageChannelId', 'executeWorkflow', 'rejectWorkflow', 'handleRepairSelection'
 ]);
 
@@ -38,8 +40,8 @@ const ALLOWED_ACTIONS = new Set([
  * Validate markdown file paths for read/write operations.
  * Allow:
  * - AGENTS.md (root, read/write)
- * - docs/**/*.md (read/write)
- * - artifacts/**/*.md (read-only)
+ * - docs/(any subpath)/*.md (read/write)
+ * - artifacts/(any subpath)/*.md (read-only)
  * Reject absolute paths, traversal, and non-markdown files.
  * @param {string} filename
  * @param {"read"|"write"} mode

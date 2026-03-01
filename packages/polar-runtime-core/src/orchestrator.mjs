@@ -234,6 +234,117 @@ function parseJsonWithSchema(rawText, schema) {
 }
 
 /**
+ * Convert unknown metadata to a strict JSON-compatible value.
+ * Undefined/function/symbol/bigint values are dropped.
+ * @param {unknown} value
+ * @returns {unknown}
+ */
+function toJsonSafeValue(value) {
+    if (value === null) {
+        return null;
+    }
+    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+        return value;
+    }
+    if (Array.isArray(value)) {
+        const items = [];
+        for (const item of value) {
+            const normalized = toJsonSafeValue(item);
+            if (normalized !== undefined) {
+                items.push(normalized);
+            }
+        }
+        return items;
+    }
+    if (typeof value === "object" && value !== null) {
+        const normalizedObject = {};
+        for (const [key, entryValue] of Object.entries(value)) {
+            const normalized = toJsonSafeValue(entryValue);
+            if (normalized !== undefined) {
+                normalizedObject[key] = normalized;
+            }
+        }
+        return normalizedObject;
+    }
+    return undefined;
+}
+
+const AGENT_REGISTRY_RESOURCE_TYPE = "policy";
+const AGENT_REGISTRY_RESOURCE_ID = "agent-registry:default";
+const AGENT_ID_PATTERN = /^@[a-z0-9_-]{2,32}$/;
+
+/**
+ * @param {unknown} value
+ * @returns {string[]}
+ */
+function normalizeStringArray(value) {
+    if (!Array.isArray(value)) {
+        return [];
+    }
+    const seen = new Set();
+    const normalized = [];
+    for (const item of value) {
+        if (typeof item !== "string") {
+            continue;
+        }
+        const trimmed = item.trim();
+        if (!trimmed || seen.has(trimmed)) {
+            continue;
+        }
+        seen.add(trimmed);
+        normalized.push(trimmed);
+    }
+    return normalized;
+}
+
+/**
+ * @param {unknown} value
+ * @returns {{ version: 1, agents: readonly Record<string, unknown>[] }}
+ */
+function normalizeAgentRegistry(value) {
+    if (typeof value !== "object" || value === null || Object.getPrototypeOf(value) !== Object.prototype) {
+        return { version: 1, agents: Object.freeze([]) };
+    }
+    const seen = new Set();
+    const agents = [];
+    for (const item of Array.isArray(value.agents) ? value.agents : []) {
+        if (typeof item !== "object" || item === null || Object.getPrototypeOf(item) !== Object.prototype) {
+            continue;
+        }
+        const agentId = typeof item.agentId === "string" ? item.agentId.trim() : "";
+        const profileId = typeof item.profileId === "string" ? item.profileId.trim() : "";
+        const description = typeof item.description === "string" ? item.description.trim() : "";
+        if (!agentId || !profileId || !description || description.length > 300 || seen.has(agentId)) {
+            continue;
+        }
+        if (!AGENT_ID_PATTERN.test(agentId)) {
+            continue;
+        }
+        const normalized = {
+            agentId,
+            profileId,
+            description,
+        };
+        const tags = normalizeStringArray(item.tags);
+        const defaultForwardSkills = normalizeStringArray(item.defaultForwardSkills);
+        const allowedForwardSkills = normalizeStringArray(item.allowedForwardSkills);
+        const defaultMcpServers = normalizeStringArray(item.defaultMcpServers);
+        const allowedMcpServers = normalizeStringArray(item.allowedMcpServers);
+        if (tags.length > 0) normalized.tags = tags;
+        if (defaultForwardSkills.length > 0) normalized.defaultForwardSkills = defaultForwardSkills;
+        if (allowedForwardSkills.length > 0) normalized.allowedForwardSkills = allowedForwardSkills;
+        if (defaultMcpServers.length > 0) normalized.defaultMcpServers = defaultMcpServers;
+        if (allowedMcpServers.length > 0) normalized.allowedMcpServers = allowedMcpServers;
+        agents.push(normalized);
+        seen.add(agentId);
+    }
+    return {
+        version: 1,
+        agents: Object.freeze(agents),
+    };
+}
+
+/**
  * @param {string} systemPrompt
  * @param {Record<string, unknown>|null|undefined} personalityProfile
  */
@@ -442,6 +553,33 @@ export function createOrchestrator({
         return [];
     }
 
+    async function readConfigRecord(resourceType, resourceId) {
+        if (gateway && typeof gateway.readConfigRecord === "function") {
+            const record = gateway.readConfigRecord(resourceType, resourceId);
+            return record || null;
+        }
+        if (gateway && typeof gateway.getConfig === "function") {
+            const result = await gateway.getConfig({ resourceType, resourceId });
+            if (result?.status === "found") {
+                return {
+                    resourceType,
+                    resourceId,
+                    version: result.version ?? 1,
+                    config: result.config,
+                };
+            }
+        }
+        return null;
+    }
+
+    async function loadAgentRegistry() {
+        const record = await readConfigRecord(
+            AGENT_REGISTRY_RESOURCE_TYPE,
+            AGENT_REGISTRY_RESOURCE_ID,
+        );
+        return normalizeAgentRegistry(record?.config);
+    }
+
     const methods = {
         async orchestrate(envelope) {
             const { sessionId, userId, text, messageId, metadata = {} } = envelope;
@@ -454,17 +592,36 @@ export function createOrchestrator({
                 typeof metadata.threadKey === "string" && metadata.threadKey.length > 0
                     ? metadata.threadKey
                     : undefined;
-            const inboundMetadata =
-                typeof metadata === "object" && metadata !== null
-                    ? Object.freeze({ ...metadata })
-                    : undefined;
+            const inboundMetadata = (() => {
+                if (typeof metadata !== "object" || metadata === null) {
+                    return undefined;
+                }
+                const safe = toJsonSafeValue(metadata);
+                if (safe === undefined || safe === null || typeof safe !== "object") {
+                    return undefined;
+                }
+                return Object.freeze(safe);
+            })();
             const isPreviewMode = metadata?.previewMode === true;
+            const suppressUserMessagePersist =
+                metadata?.suppressUserMessagePersist === true || isPreviewMode;
+            const suppressMemoryWrite =
+                metadata?.suppressMemoryWrite === true || isPreviewMode;
+            const suppressTaskWrites =
+                metadata?.suppressTaskWrites === true || isPreviewMode;
+            const suppressAutomationWrites =
+                metadata?.suppressAutomationWrites === true || isPreviewMode;
+            const suppressResponsePersist =
+                suppressUserMessagePersist || suppressMemoryWrite || suppressTaskWrites;
 
             let sessionState = SESSION_THREADS.get(polarSessionId) || { threads: [], activeThreadId: null };
             let routingRecommendation = null;
             let currentTurnAnchor = null;
             let currentAnchorMessageId = null;
-            const profile = await profileResolutionGateway.resolve({ sessionId: polarSessionId });
+            const profile = await profileResolutionGateway.resolve({
+                sessionId: polarSessionId,
+                userId: String(userId),
+            });
             const policy = profile.profileConfig?.modelPolicy || {};
             const providerId = policy.providerId || "openai";
             const model = policy.modelId || "gpt-4.1-mini";
@@ -486,7 +643,9 @@ export function createOrchestrator({
                 SESSION_THREADS.set(polarSessionId, sessionState);
 
                 // Check if repair is needed (ambiguous short follow-up with multiple open offers)
-                const repairDecision = computeRepairDecision(sessionState, classification, text);
+                const repairDecision = suppressTaskWrites
+                    ? null
+                    : computeRepairDecision(sessionState, classification, text);
                 if (repairDecision) {
                     // Attempt LLM-assisted phrasing (optional — code picks candidates, LLM only phrases)
                     let repairedQuestion = repairDecision.question;
@@ -544,16 +703,18 @@ export function createOrchestrator({
                             .filter((threadId) => typeof threadId === "string"),
                     });
                     const assistantMessageId = `msg_a_${crypto.randomUUID()}`;
-                    await chatManagementGateway.appendMessage({
-                        sessionId: polarSessionId,
-                        userId: "assistant",
-                        messageId: assistantMessageId,
-                        role: "assistant",
-                        text: repairDecision.question,
-                        timestampMs: now(),
-                        ...(inboundThreadId !== undefined ? { threadId: inboundThreadId } : {}),
-                        ...(inboundMetadata !== undefined ? { metadata: inboundMetadata } : {}),
-                    });
+                    if (!suppressResponsePersist) {
+                        await chatManagementGateway.appendMessage({
+                            sessionId: polarSessionId,
+                            userId: "assistant",
+                            messageId: assistantMessageId,
+                            role: "assistant",
+                            text: repairDecision.question,
+                            timestampMs: now(),
+                            ...(inboundThreadId !== undefined ? { threadId: inboundThreadId } : {}),
+                            ...(inboundMetadata !== undefined ? { metadata: inboundMetadata } : {}),
+                        });
+                    }
                     return {
                         status: 'repair_question',
                         type: 'repair_question',
@@ -588,36 +749,18 @@ export function createOrchestrator({
             let systemPrompt = profile.profileConfig?.systemPrompt || "You are a helpful Polar AI assistant. Be concise and friendly.";
             systemPrompt = appendPersonalityBlock(systemPrompt, effectivePersonality);
 
-            let multiAgentConfig;
-            try {
-                const configResult = await gateway.getConfig({ resourceType: 'multi_agent', resourceId: 'default' });
-                if (configResult.status === 'found' && configResult.record?.config) {
-                    multiAgentConfig = configResult.record.config;
-                }
-            } catch { }
-
-            if (!multiAgentConfig) {
-                multiAgentConfig = {
-                    allowlistedModels: [
-                        "gpt-4.1-mini", "gpt-4.1-nano", "claude-sonnet-4-6", "claude-haiku-4-5",
-                        "gemini-3.1-pro-preview", "gemini-3-flash-preview", "deepseek-reasoner", "deepseek-chat"
-                    ],
-                    availableProfiles: [
-                        {
-                            agentId: "@writer_agent",
-                            description: "Specialized for writing tasks, document creation, and styling.",
-                            pinnedModel: "claude-sonnet-4-6",
-                            pinnedProvider: "anthropic"
-                        },
-                        {
-                            agentId: "@research_agent",
-                            description: "Specialized for deep reviews, long-running research, and synthesis.",
-                            pinnedModel: null,
-                            pinnedProvider: null
-                        }
-                    ]
-                };
-            }
+            const agentRegistry = await loadAgentRegistry();
+            const multiAgentConfig = {
+                allowlistedModels: [
+                    "gpt-4.1-mini", "gpt-4.1-nano", "claude-sonnet-4-6", "claude-haiku-4-5",
+                    "gemini-3.1-pro-preview", "gemini-3-flash-preview", "deepseek-reasoner", "deepseek-chat"
+                ],
+                availableProfiles: agentRegistry.agents.map((agent) => ({
+                    agentId: agent.agentId,
+                    description: agent.description,
+                    ...(Array.isArray(agent.tags) ? { tags: agent.tags } : {}),
+                })),
+            };
 
             systemPrompt += `\n\n[MULTI-AGENT ORCHESTRATION ENGINE]
 You are the Primary Orchestrator. You handle simple queries natively.
@@ -678,7 +821,7 @@ Current Session Threads:
 ${JSON.stringify(sessionState, null, 2)}
 ${routingRecommendation || ""}`;
 
-            if (!isPreviewMode) {
+            if (!suppressUserMessagePersist) {
                 await chatManagementGateway.appendMessage({
                     sessionId: polarSessionId,
                     userId: userId.toString(),
@@ -692,7 +835,7 @@ ${routingRecommendation || ""}`;
             }
 
             const automationProposal =
-                !isPreviewMode
+                !suppressAutomationWrites
                     ? (detectInboxAutomationProposal(text) ??
                         detectAutomationProposal(text))
                     : null;
@@ -719,16 +862,18 @@ ${routingRecommendation || ""}`;
                     templateType: automationProposal.templateType ?? "generic",
                 });
 
-                await chatManagementGateway.appendMessage({
-                    sessionId: polarSessionId,
-                    userId: "assistant",
-                    messageId: assistantMessageId,
-                    role: "assistant",
-                    text: proposalText,
-                    timestampMs: now(),
-                    ...(inboundThreadId !== undefined ? { threadId: inboundThreadId } : {}),
-                    ...(inboundMetadata !== undefined ? { metadata: inboundMetadata } : {}),
-                });
+                if (!suppressResponsePersist) {
+                    await chatManagementGateway.appendMessage({
+                        sessionId: polarSessionId,
+                        userId: "assistant",
+                        messageId: assistantMessageId,
+                        role: "assistant",
+                        text: proposalText,
+                        timestampMs: now(),
+                        ...(inboundThreadId !== undefined ? { threadId: inboundThreadId } : {}),
+                        ...(inboundMetadata !== undefined ? { metadata: inboundMetadata } : {}),
+                    });
+                }
 
                 return {
                     status: "automation_proposed",
@@ -766,8 +911,8 @@ ${routingRecommendation || ""}`;
 
             if (result && result.text) {
                 const responseText = result.text;
-                const actionMatch = isPreviewMode ? null : responseText.match(/<polar_action>([\s\S]*?)<\/polar_action>/);
-                const stateMatch = isPreviewMode ? null : responseText.match(/<thread_state>([\s\S]*?)<\/thread_state>/);
+                const actionMatch = suppressTaskWrites ? null : responseText.match(/<polar_action>([\s\S]*?)<\/polar_action>/);
+                const stateMatch = suppressTaskWrites ? null : responseText.match(/<thread_state>([\s\S]*?)<\/thread_state>/);
                 const assistantMessageId = `msg_a_${crypto.randomUUID()}`;
 
                 const cleanText = responseText
@@ -775,7 +920,7 @@ ${routingRecommendation || ""}`;
                     .replace(/<thread_state>[\s\S]*?<\/thread_state>/, '')
                     .trim();
 
-                if (cleanText && !isPreviewMode) {
+                if (cleanText && !suppressResponsePersist) {
                     await chatManagementGateway.appendMessage({
                         sessionId: polarSessionId,
                         userId: "assistant",
@@ -789,7 +934,7 @@ ${routingRecommendation || ""}`;
                 }
 
                 // Detect offers in assistant response and set open offer on active thread
-                if (cleanText && !isPreviewMode) {
+                if (cleanText && !suppressTaskWrites && !suppressResponsePersist) {
                     const offerDetection = detectOfferInText(cleanText);
                     if (offerDetection.isOffer) {
                         let st = SESSION_THREADS.get(polarSessionId) || { threads: [], activeThreadId: null };
@@ -996,7 +1141,11 @@ ${routingRecommendation || ""}`;
             }
 
             try {
-                const profile = await profileResolutionGateway.resolve({ sessionId: polarSessionId });
+                const profile = await profileResolutionGateway.resolve({
+                    sessionId: polarSessionId,
+                    userId: String(userId),
+                });
+                const agentRegistry = await loadAgentRegistry();
                 let effectivePersonality = null;
                 if (
                     personalityStore &&
@@ -1066,15 +1215,98 @@ ${routingRecommendation || ""}`;
                     const { capabilityId, extensionId, args: parsedArgs = {}, extensionType = "mcp" } = step;
 
                     if (capabilityId === "delegate_to_agent") {
-                        const { allowedSkills, rejectedSkills, isBlocked } = validateForwardSkills({ forwardSkills: parsedArgs.forward_skills || [], sessionProfile: profile, multiAgentConfig });
-                        const { providerId, modelId, rejectedReason } = validateModelOverride({ modelOverride: parsedArgs.model_override, multiAgentConfig, basePolicy: profile.profileConfig?.modelPolicy || {} });
+                        const agentId = typeof parsedArgs.agentId === "string" ? parsedArgs.agentId : "";
+                        if (!AGENT_ID_PATTERN.test(agentId)) {
+                            toolResults.push({ tool: capabilityId, status: "error", output: "Delegation blocked: invalid agentId." });
+                            continue;
+                        }
 
-                        if (isBlocked) {
+                        const agentProfile = agentRegistry.agents.find((agent) => agent.agentId === agentId) || null;
+                        let delegatedProfileConfig = profile.profileConfig || {};
+                        let delegatedProfileId = null;
+                        let registryAllowedForwardSkills = [];
+                        let defaultForwardSkills = [];
+                        if (agentProfile) {
+                            delegatedProfileId = agentProfile.profileId;
+                            registryAllowedForwardSkills = normalizeStringArray(agentProfile.allowedForwardSkills);
+                            defaultForwardSkills = normalizeStringArray(agentProfile.defaultForwardSkills);
+                            const delegatedProfileRecord = await readConfigRecord("profile", agentProfile.profileId);
+                            if (!delegatedProfileRecord || !delegatedProfileRecord.config || typeof delegatedProfileRecord.config !== "object") {
+                                toolResults.push({ tool: capabilityId, status: "error", output: `Delegation blocked: profile not found (${agentProfile.profileId}).` });
+                                continue;
+                            }
+                            delegatedProfileConfig = delegatedProfileRecord.config;
+                        }
+
+                        const delegatedAllowedSkills = normalizeStringArray(delegatedProfileConfig.allowedSkills);
+                        const parentAllowedSkills = normalizeStringArray(baseAllowedSkills);
+                        const requestedForwardSkills = normalizeStringArray(
+                            parsedArgs.forward_skills && Array.isArray(parsedArgs.forward_skills)
+                                ? parsedArgs.forward_skills
+                                : defaultForwardSkills,
+                        );
+
+                        const allowedSkills = requestedForwardSkills.filter((skill) => {
+                            if (!parentAllowedSkills.includes(skill)) return false;
+                            if (delegatedAllowedSkills.length > 0 && !delegatedAllowedSkills.includes(skill)) return false;
+                            if (registryAllowedForwardSkills.length > 0 && !registryAllowedForwardSkills.includes(skill)) return false;
+                            return true;
+                        });
+                        const rejectedSkills = requestedForwardSkills.filter((skill) => !allowedSkills.includes(skill));
+
+                        if (requestedForwardSkills.length > 0 && allowedSkills.length === 0) {
+                            const legacyForward = validateForwardSkills({
+                                forwardSkills: requestedForwardSkills,
+                                sessionProfile: profile,
+                                multiAgentConfig,
+                            });
+                            if (legacyForward.isBlocked) {
+                                toolResults.push({ tool: capabilityId, status: "error", output: "Delegation blocked by security policy." });
+                                continue;
+                            }
+                            allowedSkills.splice(0, allowedSkills.length, ...legacyForward.allowedSkills);
+                            rejectedSkills.splice(0, rejectedSkills.length, ...legacyForward.rejectedSkills);
+                        }
+
+                        if (allowedSkills.length === 0 && requestedForwardSkills.length > 0) {
                             toolResults.push({ tool: capabilityId, status: "error", output: "Delegation blocked by security policy." });
                             continue;
                         }
 
-                        activeDelegation = { ...parsedArgs, forward_skills: allowedSkills, model_override: modelId, pinnedProvider: providerId };
+                        const delegatedModelPolicy =
+                            delegatedProfileConfig.modelPolicy &&
+                                typeof delegatedProfileConfig.modelPolicy === "object"
+                                ? delegatedProfileConfig.modelPolicy
+                                : {};
+                        let providerId = delegatedModelPolicy.providerId || profile.profileConfig?.modelPolicy?.providerId || "openai";
+                        let modelId = delegatedModelPolicy.modelId || profile.profileConfig?.modelPolicy?.modelId || "gpt-4.1-mini";
+                        const requestedModelOverride =
+                            typeof parsedArgs.model_override === "string" ? parsedArgs.model_override : "";
+                        let modelRejectedReason;
+                        if (agentProfile) {
+                            modelRejectedReason =
+                                requestedModelOverride && requestedModelOverride !== modelId
+                                    ? `Model override clamped to delegated profile model (${modelId}).`
+                                    : undefined;
+                        } else {
+                            const legacyModel = validateModelOverride({
+                                modelOverride: requestedModelOverride,
+                                multiAgentConfig,
+                                basePolicy: profile.profileConfig?.modelPolicy || {},
+                            });
+                            providerId = legacyModel.providerId;
+                            modelId = legacyModel.modelId;
+                            modelRejectedReason = legacyModel.rejectedReason;
+                        }
+
+                        activeDelegation = {
+                            ...parsedArgs,
+                            agentId,
+                            ...(delegatedProfileId ? { profileId: delegatedProfileId } : {}),
+                            forward_skills: allowedSkills,
+                            model_override: modelId,
+                            pinnedProvider: providerId,
+                        };
                         // Recompute capability scope after delegation change
                         capabilityScope = computeCapabilityScope({
                             sessionProfile: profile,
@@ -1083,8 +1315,27 @@ ${routingRecommendation || ""}`;
                             installedExtensions: extensionGateway.listStates(),
                             authorityStates: listAuthorityStates()
                         });
-                        const output = `Successfully delegated to ${parsedArgs.agentId}.` + (rejectedSkills.length ? ` Clamped: ${rejectedSkills.join(", ")}` : "");
+                        const output =
+                            `Successfully delegated to ${agentId}.` +
+                            (rejectedSkills.length ? ` Clamped skills: ${rejectedSkills.join(", ")}.` : "") +
+                            (modelRejectedReason ? ` ${modelRejectedReason}` : "");
                         toolResults.push({ tool: capabilityId, status: "delegated", output });
+
+                        await emitLineageEvent({
+                            eventType: "delegation.activated",
+                            sessionId: polarSessionId,
+                            userId,
+                            workflowId,
+                            runId,
+                            threadId: targetThreadId,
+                            agentId,
+                            ...(delegatedProfileId ? { profileId: delegatedProfileId } : {}),
+                            allowedSkills,
+                            rejectedSkills,
+                            providerId,
+                            modelId,
+                            timestampMs: now(),
+                        });
 
                         await chatManagementGateway.appendMessage({
                             sessionId: polarSessionId, userId: "system", role: "system",

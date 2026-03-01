@@ -1204,3 +1204,422 @@ Commands run and outcomes:
 ### Next
 - **Next prompt:** `Prompt 19` (if provided).
 - **Suggested next phase:** implement full `/memory` and `/skills` Telegram command handlers against existing control-plane APIs with operator-safe pagination/redaction behavior.
+
+## 2026-03-01 (UTC) - Prompt 18 Follow-up: Telegram metadata JSON validation + reaction fail-safe
+
+**Branch:** `main`  
+**Commit:** `not committed`
+
+### Summary
+- Fixed a runtime crash where orchestrator appendMessage failed strict contract validation when inbound metadata contained undefined fields (not JSON-safe), especially `metadata.threadId`.
+- Added JSON-safe metadata sanitization in orchestrator before persisting metadata through chat-management gateway.
+- Hardened bot-runner orchestration metadata construction to omit undefined `threadId`.
+- Added per-chat reaction capability fallback: if Telegram returns `REACTION_INVALID`, reactions are disabled for that chat to prevent repeated warning spam.
+
+### Files changed
+- `packages/polar-runtime-core/src/orchestrator.mjs`
+- `packages/polar-bot-runner/src/index.mjs`
+
+### Validation
+- `node --check packages/polar-runtime-core/src/orchestrator.mjs` - ✅
+- `node --check packages/polar-bot-runner/src/index.mjs` - ✅
+- `node --test tests/telegram-command-router.test.mjs` - ✅
+- `node --test tests/runtime-core-orchestrator-preview-mode.test.mjs` - ✅
+- `npm run dev` startup capture - ✅ (UI/BOT booted; no immediate contract-validation crash)
+
+### Next steps
+Add a targeted regression test for “metadata with undefined fields is sanitized before append” so this never regresses.
+## 2026-03-01 (UTC) - Prompt: Sub-agent profiles (agent registry), pinning, and chat config
+
+**Branch:** `main`  
+**Commit:** `not committed`  
+**Prompt reference:** `Sub-agent profiles (agent registry), pinning, and chat config`  
+**Specs referenced:**
+- `docs/specs/AGENT_PROFILES.md`
+- `docs/specs/AGENT_REGISTRY_AND_PINNING_APIS.md`
+- `docs/specs/CHAT_COMMANDS.md`
+- `docs/specs/CONTROL_PLANE_API.md`
+- `docs/specs/BOUNDARIES.md`
+
+### Summary
+- Implemented persisted agent registry management in control-plane as policy record `policy/agent-registry:default` with strict schema validation (`version=1`, valid `agentId`, required `profileId`).
+- Added typed control-plane APIs for registry CRUD and profile pinning resolution:
+  - `getAgentRegistry`, `listAgentProfiles`, `getAgentProfile`
+  - `registerAgentProfile`, `unregisterAgentProfile`
+  - `pinProfileForScope`, `unpinProfileForScope`, `getEffectivePinnedProfile`
+- Extended profile resolution to support `user` pin scope and precedence:
+  - `session -> user -> workspace -> global -> default`.
+- Updated orchestrator to load registry each turn and include safe agent descriptors (`agentId`, `description`, `tags`) in model context.
+- Enforced safe delegation for `delegate_to_agent`:
+  - resolves `agentId -> profileId` through registry
+  - runs delegated orchestration under delegated profile model policy
+  - clamps forwarded skills to intersection of parent profile, delegated profile, and registry `allowedForwardSkills` (if provided)
+  - emits delegation lineage event.
+- Extended deterministic Telegram command router with `/agents` command surface:
+  - `/agents`, `/agents show <agentId>`
+  - `/agents register <agentId> | <profileId> | <description>` (operator/admin)
+  - `/agents unregister <agentId>` (operator/admin)
+  - `/agents pin <agentId> [--session|--user|--global]`
+  - `/agents unpin [--session|--user|--global]`
+  - `/agents pins`
+- `/agents` mutation/global actions are explicitly gated; command routing remains deterministic and non-history-polluting.
+
+### Data/config changes
+- **Agent registry policy id:** `resourceType=policy`, `resourceId=agent-registry:default`.
+- **Pin policy ids used by control-plane/profile-resolution:**
+  - `profile-pin:session:<sessionId>`
+  - `profile-pin:user:<userId>`
+  - `profile-pin:workspace:<workspaceId>`
+  - `profile-pin:global`
+- **Unpin marker format:** persisted as config with `profileId: "__UNPINNED__"` and `unpinned: true`.
+
+### Security / allowlist changes
+- Updated Web UI action allowlist in `packages/polar-web-ui/vite.config.js` to expose only explicit agent APIs:
+  - `getAgentRegistry`, `listAgentProfiles`, `getAgentProfile`
+  - `registerAgentProfile`, `unregisterAgentProfile`
+  - `pinProfileForScope`, `unpinProfileForScope`, `getEffectivePinnedProfile`
+- No generic policy-edit endpoint exposure added.
+
+### Files changed
+- `packages/polar-domain/src/profile-resolution-contracts.mjs`
+- `packages/polar-runtime-core/src/profile-resolution-gateway.mjs`
+- `packages/polar-runtime-core/src/orchestrator.mjs`
+- `packages/polar-control-plane/src/index.mjs`
+- `packages/polar-bot-runner/src/commands.mjs`
+- `packages/polar-web-ui/vite.config.js`
+- `docs/specs/CONTROL_PLANE_API.md`
+- `docs/specs/CHAT_COMMANDS.md`
+- `tests/control-plane-service.test.mjs`
+- `tests/runtime-core-profile-resolution-gateway.test.mjs`
+- `tests/runtime-core-orchestrator-agent-registry.test.mjs` (new)
+- `tests/telegram-command-router.test.mjs`
+
+### Tests and validation
+- `node --check packages/polar-control-plane/src/index.mjs` - ✅
+- `node --check packages/polar-runtime-core/src/orchestrator.mjs` - ✅
+- `node --check packages/polar-runtime-core/src/profile-resolution-gateway.mjs` - ✅
+- `node --check packages/polar-bot-runner/src/commands.mjs` - ✅
+- `node --test tests/telegram-command-router.test.mjs` - ✅
+- `node --test tests/control-plane-service.test.mjs` - ✅
+- `node --test tests/runtime-core-profile-resolution-gateway.test.mjs` - ✅
+- `node --test tests/runtime-core-orchestrator-agent-registry.test.mjs` - ✅
+- `node --test tests/runtime-core-orchestrator-workflow-validation.test.mjs` - ✅
+- `node --test tests/runtime-core-orchestrator-delegation-scope.test.mjs` - ✅
+- `npm test` - ✅ (407 passed, 0 failed)
+- `npm run check:boundaries` - ✅ (`[POLAR-WORKSPACE-BOUNDARY] No workspace boundary violations found.`)
+
+### Blockers
+- None.
+
+### Next
+- **Next prompt:** follow-up prompt after agent registry/pinning (if provided).
+- **Suggested next phase:** add targeted integration tests for `/agents register|pin|unpin` through full Telegram runner ingress and verify command audit payloads end-to-end.
+
+## 2026-03-01 (UTC) - Prompt 19: Close investigation gaps (memory/skills commands, ingress tests, reaction lifecycle tests, weekly schedules)
+
+**Branch:** `main`  
+**Commit:** `not committed`  
+**Prompt reference:** `Implement all outstanding functionality from INVESTIGATION_LOG.md`  
+**Specs referenced:**
+- `docs/specs/CHAT_COMMANDS.md`
+- `docs/specs/TELEGRAM_THREADING_AND_EMOJI.md`
+- `docs/specs/CONTROL_PLANE_API.md`
+- `docs/specs/BOUNDARIES.md`
+
+### Summary
+- Implemented full Telegram `/memory` and `/skills` command handlers (replacing stubs) against existing control-plane APIs with deterministic parsing, operator gating, pagination limits, and redacted chat-safe rendering.
+- Added runner-ingress integration coverage for slash commands through a new text-ingress helper and end-to-end `/agents register|pin|unpin` ingress tests with command-audit payload assertions.
+- Added deterministic reaction lifecycle unit tests (including callback transition `waiting_user -> done -> clear`) by extracting reaction state logic into a dedicated module.
+- Added a targeted orchestrator regression test verifying undefined metadata fields are sanitized before append.
+- Extended automation schedule parsing to support documented weekly syntax (`weekly <Mon|...> HH:MM`) and updated tests.
+- Strengthened boundary enforcement with semantic surface-thinness checks for forbidden provider SDK imports and direct provider-operation calls from surfaces.
+- Updated Web UI config personality tab to refresh global prompt and stored profile list after save/reset operations (no manual reload required).
+
+### Scope and decisions
+- **In scope:** all open gaps identified in `INVESTIGATION_LOG.md` from implementation-log follow-ups and TODO-style stubs.
+- **Out of scope:** introducing new control-plane APIs beyond existing method set; broad redesign of Telegram runner composition.
+- **Key decisions:**
+  - `/skills install` uses local manifest sources (`file:`/`repo:`/path) and intentionally rejects remote URL fetch in this runner for safety.
+  - Reaction lifecycle behavior was extracted into a testable module to enable deterministic timer assertions without Telegraf runtime coupling.
+  - Surface thinness checks were implemented as static boundary rules (`surface_thinness_constraint`) to catch direct provider imports/calls early in CI.
+
+### Files changed
+- `packages/polar-bot-runner/src/commands.mjs`
+  - Added full `/memory` and `/skills` handlers; removed stub responses; added redaction helpers and paging safeguards.
+- `packages/polar-bot-runner/src/reaction-state.mjs` (new)
+  - Extracted reaction state machine and callback transition helpers.
+- `packages/polar-bot-runner/src/text-ingress.mjs` (new)
+  - Added testable command-first text ingress wrapper.
+- `packages/polar-bot-runner/src/index.mjs`
+  - Wired extracted reaction controller and text ingress helper.
+- `packages/polar-runtime-core/src/automation-job-store-sqlite.mjs`
+  - Added weekly schedule parser + next-due computation support.
+- `packages/polar-web-ui/src/views/config.js`
+  - Added personality profile refresh after save/reset operations.
+- `scripts/check-workspace-boundaries.mjs`
+  - Added semantic thin-surface rules for forbidden provider imports/calls.
+- `tests/telegram-command-router.test.mjs`
+  - Added memory/skills command coverage.
+- `tests/telegram-reaction-state.test.mjs` (new)
+  - Added deterministic reaction state transition tests.
+- `tests/telegram-runner-ingress-integration.test.mjs` (new)
+  - Added ingress-level `/agents` command flow + audit payload assertions.
+- `tests/runtime-core-orchestrator-preview-mode.test.mjs`
+  - Added metadata sanitization regression test.
+- `tests/runtime-core-automation-job-store-sqlite.test.mjs`
+  - Added weekly schedule parsing coverage.
+- `tests/check-workspace-boundaries.test.mjs`
+  - Added thin-surface semantic violation test.
+- `tests/channels-thin-client-enforcement.test.mjs`
+  - Updated checks for extracted ingress/reaction modules.
+
+### Data model / migrations (if applicable)
+- **Tables created/changed:** none.
+- **Migration notes:** none.
+- **Risk:** medium (Telegram command surface expansion + boundary rule expansion), mitigated by targeted and full-suite tests.
+
+### Security and safety checks
+- Memory command output is redacted/truncated for sensitive keys and oversized payloads.
+- Skills install command rejects remote URL sources in runner context; only local manifest sources are accepted.
+- Operator-only command gating remains deterministic and audited via feedback events.
+- Surface boundary checker now flags direct provider-SDK imports and direct provider-operation calls from surfaces.
+
+### Tests and validation
+Commands run and outcomes:
+- `node --check packages/polar-bot-runner/src/commands.mjs` - ✅
+- `node --check packages/polar-bot-runner/src/index.mjs` - ✅
+- `node --check packages/polar-bot-runner/src/reaction-state.mjs` - ✅
+- `node --check packages/polar-bot-runner/src/text-ingress.mjs` - ✅
+- `node --check packages/polar-runtime-core/src/automation-job-store-sqlite.mjs` - ✅
+- `node --check scripts/check-workspace-boundaries.mjs` - ✅
+- `node --test tests/telegram-command-router.test.mjs` - ✅
+- `node --test tests/telegram-reaction-state.test.mjs` - ✅
+- `node --test tests/telegram-runner-ingress-integration.test.mjs` - ✅
+- `node --test tests/runtime-core-orchestrator-preview-mode.test.mjs` - ✅
+- `node --test tests/runtime-core-automation-job-store-sqlite.test.mjs` - ✅
+- `node --test tests/check-workspace-boundaries.test.mjs` - ✅
+- `npm test` - ✅ (418 passed, 0 failed)
+- `npm run check:boundaries` - ✅ (`[POLAR-WORKSPACE-BOUNDARY] No workspace boundary violations found.`)
+
+### Blockers
+- None.
+
+### Next
+- **Next prompt:** follow-up prompt (if provided).
+- **Suggested next phase:** add `/skills install` support for approved remote source workflows (proposal/review flow) with explicit provenance policy and operator approval tickets.
+
+## 2026-03-01 (UTC) - Prompt 20: CHECK + IMPLEMENT: Admin gating with single-user bootstrap (private chat only)
+
+**Branch:** `main`  
+**Commit:** `not committed`  
+**Prompt reference:** `CHECK + IMPLEMENT: Admin gating with single-user bootstrap (private chat only)`  
+**Specs referenced:**
+- `docs/specs/ADMIN_BOOTSTRAP.md`
+- `docs/specs/CHAT_COMMANDS.md`
+- `docs/SECURITY.md`
+
+### Summary
+- Implemented fail-closed command gating precedence in Telegram command router: `POLAR_DISABLE_CHAT_ADMIN=1` -> explicit allowlists -> private-chat bootstrap -> deny.
+- Added single-user bootstrap persistence to control-plane policy record `resourceType=policy`, `resourceId=telegram_command_access` using `adminTelegramUserIds`/`operatorTelegramUserIds`.
+- Enforced private-chat-only bootstrap behavior so operator/admin commands remain denied in non-private chats when no explicit allowlist is configured.
+- Added env wiring in bot runner bootstrap:
+  - `POLAR_SINGLE_USER_ADMIN_BOOTSTRAP` (default enabled when unset)
+  - `POLAR_ADMIN_TELEGRAM_IDS`
+  - `POLAR_OPERATOR_TELEGRAM_IDS`
+  - `POLAR_DISABLE_CHAT_ADMIN`
+- Preserved command audit trail (`command_executed`) with success/failure/denied outcomes and args metadata only (length/hash), without raw free-text logging.
+- Added regression coverage confirming artifact export does not include persisted command-access admin/operator IDs.
+
+### Scope and decisions
+- **In scope:** command-access gate behavior and precedence, bootstrap policy persistence, env wiring, tests, and command spec update for current keys/flags.
+- **Out of scope:** non-Telegram surfaces and broader artifact format redesign.
+- **Key decisions:**
+  - Treat explicit allowlists as present when env vars exist (even if empty), yielding fail-closed deny behavior.
+  - Keep compatibility with legacy policy fields (`adminUserIds`/`operatorUserIds`) on read, while persisting bootstrap state to `adminTelegramUserIds`/`operatorTelegramUserIds`.
+  - Keep `allowBangCommands` policy support intact, but do not source privileged access decisions from policy when explicit env allowlists are present.
+
+### Files changed
+- `packages/polar-bot-runner/src/commands.mjs`
+  - Replaced command auth resolution logic with fail-closed precedence from `ADMIN_BOOTSTRAP.md`.
+  - Added bootstrap-first-admin persistence for private chats only.
+  - Added explicit `privilegedChatAllowed` gating for operator/admin commands.
+- `packages/polar-bot-runner/src/index.mjs`
+  - Added env parsing/wiring for bootstrap and allowlist precedence flags.
+- `tests/telegram-command-router.test.mjs`
+  - Extended harness for policy not-found/bootstrap persistence scenarios.
+  - Added required tests: private bootstrap first-user-only, group deny without allowlists, allowlists override bootstrap, fail-closed behavior with missing policy + no allowlists.
+  - Updated existing tests to use explicit chat types for deterministic behavior.
+- `tests/telegram-runner-ingress-integration.test.mjs`
+  - Added explicit private chat typing in ingress context fixtures.
+- `tests/runtime-core-artifact-exporter.test.mjs` (new)
+  - Added regression test ensuring artifact exports never include `telegram_command_access` admin/operator IDs.
+- `docs/specs/CHAT_COMMANDS.md`
+  - Updated command access policy key names and documented bootstrap/allowlist/disable env controls.
+
+### Data model / migrations (if applicable)
+- **Tables created/changed:** none.
+- **Policy record shape:** `policy/telegram_command_access` now persists bootstrap IDs under:
+  - `adminTelegramUserIds: string[]`
+  - `operatorTelegramUserIds: string[]`
+- **Migration notes:** read-path remains backward-compatible with legacy fields; no DB migration required.
+
+### Security and safety checks
+- Operator/admin access is deterministic and fail-closed by default.
+- Group/supergroup/channel contexts cannot bootstrap admin privileges.
+- Command auditing remains on for success/failure/denied outcomes and avoids raw free-text argument logging.
+- Artifact export path validated to not leak bootstrap/admin policy identifiers.
+
+### Tests and validation
+Commands run and outcomes:
+- `node --test tests/telegram-command-router.test.mjs` - ✅
+- `node --test tests/telegram-runner-ingress-integration.test.mjs` - ✅
+- `node --test tests/runtime-core-artifact-exporter.test.mjs` - ✅
+- `npm test` - ✅ (423 passed, 0 failed)
+- `npm run check:boundaries` - ✅ (`[POLAR-WORKSPACE-BOUNDARY] No workspace boundary violations found.`)
+
+### Blockers
+- None.
+
+### Next
+- **Next prompt:** apply the same fail-closed access model and policy key normalization to any future non-Telegram command surfaces so auth semantics stay consistent cross-channel.
+
+## 2026-03-01 (UTC) - Prompt 21: CHECK + IMPLEMENT: Golden rule, all user-facing messages go through orchestrator
+
+**Branch:** `main`  
+**Commit:** `not committed`  
+**Prompt reference:** `CHECK + IMPLEMENT: Golden rule, all user-facing messages go through orchestrator`  
+**Specs referenced:**
+- `docs/specs/ORCHESTRATOR_OUTPUT_RULE.md`
+- `docs/specs/AUTOMATION_RUNNER.md`
+- `docs/specs/CHAT_COMMANDS.md`
+- `docs/specs/PERSONALISATION.md`
+
+### Summary
+- Added side-effect-free orchestration behavior in orchestrator path using metadata suppression flags:
+  - `suppressUserMessagePersist`
+  - `suppressMemoryWrite`
+  - `suppressTaskWrites`
+  - `suppressAutomationWrites`
+- Updated command router so state-changing command confirmations are orchestrated (side-effect-free) after deterministic mutation:
+  - `/personality set|reset`
+  - `/automations create|enable|disable|delete`
+  - `/models register|unregister|set-default`
+  - `/agents register|unregister|pin|unpin`
+- Kept deterministic factual outputs unchanged for `/help`, `/status`, and `/whoami`.
+- Added explicit command confirmation helper in Telegram command router that:
+  - calls `controlPlane.orchestrate(...)` with execution metadata (`executionType: "command"`)
+  - enforces side-effect-free suppression flags
+  - falls back to deterministic text if orchestration fails.
+- Confirmed automation delivery path still uses orchestrator output text and added test coverage to lock that behavior.
+
+### Scope and decisions
+- **In scope:** orchestrator-side suppression semantics, command confirmation orchestration, automation delivery coverage, and command spec acceptance criteria alignment.
+- **Out of scope:** broader Telegram callback rewrite and non-command non-chat deterministic UX paths.
+- **Key decisions:**
+  - Implemented suppression behavior in orchestrator using metadata flags without expanding runtime gateway execution-type enums (`tool|handoff|automation|heartbeat`) to avoid broad contract churn.
+  - Side-effect-free mode suppresses persistence/proposal/state-mutation paths inside `orchestrate`, not just user-message append.
+  - Command confirmation orchestration failures are fail-soft: deterministic fallback reply is sent and logged.
+
+### Files changed
+- `packages/polar-bot-runner/src/commands.mjs`
+  - Added `replyOrchestratedConfirmation(...)` helper.
+  - Routed state-changing command confirmations through orchestrator in side-effect-free mode.
+  - Kept `/help`, `/status`, `/whoami` deterministic.
+- `packages/polar-runtime-core/src/orchestrator.mjs`
+  - Added suppression flag handling and side-effect guards in orchestrate flow.
+  - Prevented side-effect-free runs from persisting user/assistant messages and task/automation proposal state paths.
+- `tests/telegram-command-router.test.mjs`
+  - Added assertions that state-changing confirmations call orchestrator with suppression flags.
+  - Added deterministic non-orchestrated assertions for `/status` and `/whoami`.
+  - Updated affected expectations for orchestrated confirmations.
+- `tests/runtime-core-orchestrator-preview-mode.test.mjs`
+  - Added regression test verifying side-effect-free suppression flags prevent persistence.
+- `tests/runtime-core-automation-runner.test.mjs`
+  - Added delivery test asserting delivery sink receives orchestrator-produced output text.
+- `tests/telegram-runner-ingress-integration.test.mjs`
+  - Added orchestrate stub/coverage for command confirmation path and suppression-flag assertions.
+- `docs/specs/CHAT_COMMANDS.md`
+  - Updated acceptance criteria to reflect side-effect-free orchestrated confirmations for state-changing commands.
+
+### Data model / migrations (if applicable)
+- **Tables created/changed:** none.
+- **Migration notes:** none.
+
+### Security and safety checks
+- Command confirmations now go through orchestrator with side-effect suppression to avoid unintended memory/task/automation writes.
+- Deterministic gating and audit logging semantics remain unchanged.
+- Automation run path remains orchestrator-first and run ledger recording remains intact.
+
+### Tests and validation
+Commands run and outcomes:
+- `node --test tests/telegram-command-router.test.mjs` - ✅
+- `node --test tests/runtime-core-orchestrator-preview-mode.test.mjs` - ✅
+- `node --test tests/runtime-core-automation-runner.test.mjs` - ✅
+- `node --test tests/telegram-runner-ingress-integration.test.mjs` - ✅
+- `npm test` - ✅ (427 passed, 0 failed)
+- `npm run check:boundaries` - ✅ (`[POLAR-WORKSPACE-BOUNDARY] No workspace boundary violations found.`)
+
+### Blockers
+- None.
+
+### Next
+- **Next prompt:** extend orchestrated confirmation pattern to remaining deterministic user-facing callback outcomes (`auto_app`, `auto_rej`, `repair_sel`) while preserving minimal callback acks and fallback safety.
+
+## 2026-03-01 (UTC) - Prompt 22: CHECK + IMPLEMENT: .gitignore hygiene for local DBs, artefacts, and secrets
+
+**Branch:** `main`  
+**Commit:** `not committed`  
+**Prompt reference:** `CHECK + IMPLEMENT: .gitignore hygiene for local DBs, artefacts, and secrets`  
+**Specs referenced:**
+- `docs/specs/DATA_MODEL.md`
+- `docs/specs/TESTING_STRATEGY.md`
+
+### Summary
+- Updated repo-root `.gitignore` to prevent accidental commits of generated artifacts, local DB files, WAL/SHM sidecars, sqlite files, env secrets, build outputs, dependency folders, coverage output, and logs.
+- Added `artifacts/README.md` and configured ignore exceptions so only repository metadata files in `artifacts/` remain trackable.
+- Removed previously tracked generated artifact and local DB files from git index only (`--cached`), preserving files in the working tree.
+
+### Scope and decisions
+- **In scope:** repo-level ignore hygiene and index cleanup for generated artifacts/local secrets.
+- **Out of scope:** history rewriting; this prompt performed index untracking only.
+- **Key decisions:**
+  - Ignore all `artifacts/*` by default but keep `artifacts/README.md` and optional `artifacts/.gitkeep` trackable.
+  - Ignore `polar-system.db*`, `*.db-wal`, `*.db-shm`, `.db-wal`, `.db-shm`, `*.sqlite`, and `.sqlite`.
+  - Keep existing env template exceptions (`!.env.example`, `!.env.sample`, `!.env.template`) while ignoring `.env` and `.env.*`.
+
+### Files changed
+- `.gitignore`
+  - Added artifact, DB/sqlite, and generic log ignore rules; retained existing dependency/build/coverage/env patterns.
+- `artifacts/README.md`
+  - Added tracked directory purpose note stating artifacts are generated projections/exports.
+
+### Exactly what was untracked (index-only)
+- Ran: `git rm -r --cached --ignore-unmatch artifacts/`
+  - Untracked:
+    - `artifacts/HEARTBEAT.md`
+    - `artifacts/MEMORY.md`
+    - `artifacts/PERSONALITY.md`
+    - `artifacts/REACTIONS.md`
+- Re-added tracked metadata file:
+  - `git add artifacts/README.md`
+- Ran: `git rm --cached --ignore-unmatch polar-system.db* *.db-wal .db-shm .sqlite .env`
+  - Untracked:
+    - `polar-system.db`
+- **Why:** these files are generated runtime projections and local machine data/secrets that should not be versioned.
+
+### Verification
+- `git check-ignore -v` confirms:
+  - Ignored: `artifacts/HEARTBEAT.md`, `polar-system.db`, `polar-system.db-wal`, `polar-system.db-shm`, `test.sqlite`, `.env`, `.env.local`, `node_modules/example.js`, `dist/app.js`, `coverage/lcov.info`, `run.log`.
+  - Not ignored (expected): `artifacts/README.md`.
+- `git status --short` shows only intended index removals/additions plus pre-existing unrelated workspace changes.
+
+### Tests and validation
+Commands run and outcomes:
+- `npm test` - ✅ (427 passed, 0 failed)
+- `npm run check:boundaries` - ✅ (`[POLAR-WORKSPACE-BOUNDARY] No workspace boundary violations found.`)
+
+### Blockers
+- None.
+
+### Next
+- **Next prompt:** commit this hygiene change as an isolated commit (or stage selective hunks) once the broader in-progress workspace changes are ready to be grouped safely.

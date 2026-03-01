@@ -100,22 +100,30 @@ test("telegram runner resolves internal anchors and reactions via session histor
 
 test("telegram emoji lifecycle uses explicit state transitions and timer-based clear", () => {
   const runnerSource = readFile(telegramRunnerPath);
+  const reactionSource = readFile(
+    path.join(repoRoot, "packages", "polar-bot-runner", "src", "reaction-state.mjs"),
+  );
 
-  assert.match(runnerSource, /const REACTION_EMOJI_BY_STATE = Object\.freeze\(/);
+  assert.match(runnerSource, /createTelegramReactionController/);
   assert.match(runnerSource, /await setReactionState\(ctx, ctx\.chat\.id, telegramMessageId, 'received'\)/);
   assert.match(runnerSource, /await setReactionState\(ctx, ctx\.chat\.id, telegramMessageId, 'thinking'\)/);
   assert.match(runnerSource, /await setReactionState\(ctx, ctx\.chat\.id, telegramMessageId, 'waiting_user'\)/);
   assert.match(runnerSource, /await setReactionState\(ctx, ctx\.chat\.id, telegramMessageId, 'done'\)/);
-  assert.match(runnerSource, /setTimeout\(\(\) => \{\s*clearReaction\(ctx, chatId, inboundMessageId\)/);
+  assert.match(reactionSource, /const REACTION_EMOJI_BY_STATE = Object\.freeze\(/);
+  assert.match(reactionSource, /scheduleTimeout\(\(\) => \{\s*clearReaction\(ctx, chatId, inboundMessageId\)/);
   assert.match(runnerSource, /transitionWaitingReactionToDone\(ctx, callbackData\)/);
 });
 
 test("telegram command routing is deterministic and handled before orchestration", () => {
   const runnerSource = readFile(telegramRunnerPath);
+  const ingressSource = readFile(
+    path.join(repoRoot, "packages", "polar-bot-runner", "src", "text-ingress.mjs"),
+  );
 
   assert.match(runnerSource, /createTelegramCommandRouter/);
-  assert.match(runnerSource, /const result = await commandRouter\.handle\(ctx\)/);
-  assert.match(runnerSource, /if \(result\.handled\) \{\s*return;/);
+  assert.match(runnerSource, /handleTextMessageIngress/);
+  assert.match(ingressSource, /const result = await commandRouter\.handle\(ctx\)/);
+  assert.match(ingressSource, /if \(result\?\.handled\) \{\s*return \{ handled: true, route: "command" \};/);
 });
 
 test("web chat renders repair_question A/B controls and routes selection to handleRepairSelection", () => {

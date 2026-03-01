@@ -11,7 +11,7 @@ import {
   parseAutomationSchedule,
 } from "../packages/polar-runtime-core/src/index.mjs";
 
-test("parseAutomationSchedule parses supported interval and daily patterns", () => {
+test("parseAutomationSchedule parses supported interval, daily, and weekly patterns", () => {
   assert.deepEqual(parseAutomationSchedule("every 15 minutes"), {
     kind: "interval",
     intervalMs: 900000,
@@ -24,6 +24,12 @@ test("parseAutomationSchedule parses supported interval and daily patterns", () 
     kind: "daily",
     hour: 9,
     minute: 30,
+  });
+  assert.deepEqual(parseAutomationSchedule("weekly Mon 07:00"), {
+    kind: "weekly",
+    dayOfWeek: 1,
+    hour: 7,
+    minute: 0,
   });
   assert.equal(parseAutomationSchedule("weekly monday"), null);
 });

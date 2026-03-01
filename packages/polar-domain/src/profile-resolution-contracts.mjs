@@ -14,6 +14,7 @@ export const PROFILE_RESOLUTION_STATUSES = Object.freeze([
 
 export const PROFILE_RESOLUTION_SCOPES = Object.freeze([
   "session",
+  "user",
   "workspace",
   "global",
   "default",
@@ -37,6 +38,7 @@ export function createProfileResolutionContract(options = {}) {
       schemaId: "profile.resolve.input",
       fields: {
         sessionId: stringField({ minLength: 1, required: false }),
+        userId: stringField({ minLength: 1, required: false }),
         workspaceId: stringField({ minLength: 1, required: false }),
         defaultProfileId: stringField({ minLength: 1, required: false }),
         includeProfileConfig: booleanField({ required: false }),

@@ -190,6 +190,44 @@ test("profile resolution falls back to workspace and then global pin when higher
   });
 });
 
+test("profile resolution supports user pin precedence between session and global", async () => {
+  const { controlPlaneGateway, profileResolutionGateway } = setupProfileResolutionGateway();
+
+  await controlPlaneGateway.upsertConfig({
+    resourceType: "profile",
+    resourceId: "profile.global",
+    config: { modelLane: "worker" },
+  });
+  await controlPlaneGateway.upsertConfig({
+    resourceType: "profile",
+    resourceId: "profile.user",
+    config: { modelLane: "brain" },
+  });
+  await controlPlaneGateway.upsertConfig({
+    resourceType: "policy",
+    resourceId: "profile-pin:global",
+    config: { profileId: "profile.global" },
+  });
+  await controlPlaneGateway.upsertConfig({
+    resourceType: "policy",
+    resourceId: "profile-pin:user:user-7",
+    config: { profileId: "profile.user" },
+  });
+
+  const resolved = await profileResolutionGateway.resolve({
+    sessionId: "session-no-pin",
+    userId: "user-7",
+  });
+  assert.deepEqual(resolved, {
+    status: "resolved",
+    resolvedScope: "user",
+    profileId: "profile.user",
+    profileVersion: 1,
+    pinResourceId: "profile-pin:user:user-7",
+    profileConfig: { modelLane: "brain" },
+  });
+});
+
 test("profile resolution falls back to default profile when no scoped pin exists", async () => {
   const { controlPlaneGateway, profileResolutionGateway } =
     setupProfileResolutionGateway();

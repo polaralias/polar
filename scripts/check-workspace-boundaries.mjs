@@ -38,6 +38,17 @@ const FORBIDDEN_SURFACE_SPECIFIER_PATTERNS = [
   /^@pi-mono\//,
   /^pi-mono(?:$|\/)/,
 ];
+const FORBIDDEN_SURFACE_IMPORT_PATTERNS = [
+  /^openai(?:$|\/)/,
+  /^@anthropic-ai\/sdk(?:$|\/)/,
+  /^anthropic(?:$|\/)/,
+  /^ollama(?:$|\/)/,
+];
+const FORBIDDEN_SURFACE_RUNTIME_CALL_PATTERNS = [
+  /\bcontrolPlane\.generateOutput\s*\(/,
+  /\bcontrolPlane\.streamOutput\s*\(/,
+  /\bcontrolPlane\.embedText\s*\(/,
+];
 
 function normalizePath(value) {
   return value.replaceAll(path.sep, "/");
@@ -122,6 +133,12 @@ function isIllegalSiblingTraversal(specifier) {
 
 function isForbiddenSurfaceSpecifier(specifier) {
   return FORBIDDEN_SURFACE_SPECIFIER_PATTERNS.some((pattern) =>
+    pattern.test(specifier),
+  );
+}
+
+function isForbiddenSurfaceImport(specifier) {
+  return FORBIDDEN_SURFACE_IMPORT_PATTERNS.some((pattern) =>
     pattern.test(specifier),
   );
 }
@@ -236,6 +253,29 @@ export function collectWorkspaceBoundaryViolations(
           line,
           rule: "surface_dependency_constraint",
           specifier,
+        });
+      }
+      if (isSurfacePackage && isForbiddenSurfaceImport(specifier)) {
+        violations.push({
+          file: relativePath,
+          line,
+          rule: "surface_thinness_constraint",
+          specifier,
+        });
+      }
+    }
+
+    if (isSurfacePackage) {
+      for (const pattern of FORBIDDEN_SURFACE_RUNTIME_CALL_PATTERNS) {
+        const match = pattern.exec(sourceText);
+        if (!match) {
+          continue;
+        }
+        violations.push({
+          file: relativePath,
+          line: lineNumberFromIndex(sourceText, match.index ?? 0),
+          rule: "surface_thinness_constraint",
+          specifier: match[0],
         });
       }
     }

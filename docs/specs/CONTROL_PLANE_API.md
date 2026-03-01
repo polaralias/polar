@@ -55,10 +55,6 @@ Surfaces must obtain it via:
 - `listSchedulerEventQueue(request)`
 - `runSchedulerQueueAction(request)`
 
-### Run ledger
-- `listAutomationRunLedger(request)`
-- `listHeartbeatRunLedger(request)`
-
 ### Provider operations (operator-only)
 - `generateOutput(request)`
 - `streamOutput(request)`
@@ -86,37 +82,39 @@ Surfaces must obtain it via:
 - `upsertMemory(request)`
 - `compactMemory(request)`
 
-### Feedback events
-- `recordFeedbackEvent(request)`
-- `listFeedbackEvents(request)`
+### Agent registry and pinning
+- `getAgentRegistry(request?)`
+- `listAgentProfiles()`
+- `getAgentProfile(request)`
+- `registerAgentProfile(request)`
+- `unregisterAgentProfile(request)`
+- `pinProfileForScope(request)`
+- `unpinProfileForScope(request)`
+- `getEffectivePinnedProfile(request)`
 
 ### Orchestration and UX callbacks (Telegram critical)
 - `orchestrate(envelope)`
 - `updateMessageChannelId(sessionId, internalId, channelId)`
 - `executeWorkflow(workflowId | { workflowId })`
 - `rejectWorkflow(workflowId | { workflowId })`
-- `consumeAutomationProposal(proposalId | { proposalId })`
-- `rejectAutomationProposal(proposalId | { proposalId })`
 - `handleRepairSelection({ sessionId, selection, correlationId })`
 
-## Automations
+## Planned additions (must be added to allowlists when implemented)
+These are referenced in `docs/specs/DATA_MODEL.md` and `docs/AUTOMATIONS.md`:
+
+Feedback events:
+- `recordFeedbackEvent(request)`
+- `listFeedbackEvents(request)`
+
+Automations:
 - `createAutomationJob(request)`
 - `listAutomationJobs(request)`
 - `updateAutomationJob(request)`
 - `disableAutomationJob(request)` (or `deleteAutomationJob(request)`)
 
-## Proactive inbox scaffolding
-- `proactiveInboxCheckHeaders(request)`
-- `proactiveInboxReadBody(request)`
-- `proactiveInboxDryRun(request)`
-
-## Personalisation
-
-- `getPersonalityProfile`
-- `getEffectivePersonality`
-- `upsertPersonalityProfile`
-- `resetPersonalityProfile`
-- `listPersonalityProfiles`
+Run ledger:
+- `listAutomationRunLedger(request)`
+- `listHeartbeatRunLedger(request)`
 
 ## Allowlist enforcement points
 ### Web UI

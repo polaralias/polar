@@ -20,6 +20,7 @@ const resolveProfileRequestSchema = createStrictObjectSchema({
     }),
     traceId: stringField({ minLength: 1, required: false }),
     sessionId: stringField({ minLength: 1, required: false }),
+    userId: stringField({ minLength: 1, required: false }),
     workspaceId: stringField({ minLength: 1, required: false }),
     defaultProfileId: stringField({ minLength: 1, required: false }),
     includeProfileConfig: booleanField({ required: false }),
@@ -62,6 +63,14 @@ function createWorkspaceProfilePinPolicyId(workspaceId) {
  */
 function createSessionProfilePinPolicyId(sessionId) {
   return `profile-pin:session:${sessionId}`;
+}
+
+/**
+ * @param {string} userId
+ * @returns {string}
+ */
+function createUserProfilePinPolicyId(userId) {
+  return `profile-pin:user:${userId}`;
 }
 
 /**
@@ -118,6 +127,14 @@ function validateConfigRecord(record, resourceType, resourceId) {
  * @returns {string}
  */
 function parsePinnedProfileId(config, pinResourceId) {
+  if (
+    typeof config === "object" &&
+    config !== null &&
+    Object.getPrototypeOf(config) === Object.prototype &&
+    config.unpinned === true
+  ) {
+    return null;
+  }
   const validation = profilePinConfigSchema.validate(config);
   if (!validation.ok) {
     throw new RuntimeExecutionError("Invalid profile pin policy config", {
@@ -128,6 +145,9 @@ function parsePinnedProfileId(config, pinResourceId) {
   }
 
   const parsed = /** @type {Record<string, unknown>} */ (validation.value);
+  if (parsed.profileId === "__UNPINNED__") {
+    return null;
+  }
   return /** @type {string} */ (parsed.profileId);
 }
 
@@ -200,6 +220,9 @@ export function createProfileResolutionGateway({
             if (parsed.sessionId !== undefined) {
               input.sessionId = parsed.sessionId;
             }
+            if (parsed.userId !== undefined) {
+              input.userId = parsed.userId;
+            }
             if (parsed.workspaceId !== undefined) {
               input.workspaceId = parsed.workspaceId;
             }
@@ -226,6 +249,12 @@ export function createProfileResolutionGateway({
               pinResourceId: createSessionProfilePinPolicyId(input.sessionId),
             });
           }
+          if (typeof input.userId === "string") {
+            orderedPins.push({
+              scope: "user",
+              pinResourceId: createUserProfilePinPolicyId(input.userId),
+            });
+          }
           if (typeof input.workspaceId === "string") {
             orderedPins.push({
               scope: "workspace",
@@ -247,6 +276,9 @@ export function createProfileResolutionGateway({
               pinRecord.config,
               pin.pinResourceId,
             );
+            if (pinnedProfileId === null) {
+              continue;
+            }
             const pinnedProfileRecord = readRecord("profile", pinnedProfileId);
             if (!pinnedProfileRecord) {
               return {

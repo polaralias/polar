@@ -16,6 +16,11 @@ tmp/
 *.tsbuildinfo
 .polar-data/
 
+# Generated artifacts
+artifacts/*
+!artifacts/README.md
+!artifacts/.gitkeep
+
 # Environment and secrets
 .env
 .env.*
@@ -23,8 +28,21 @@ tmp/
 !.env.sample
 !.env.template
 
+# Local databases
+polar-system.db
+polar-system.db*
+*.db-wal
+*.db-shm
+.db-wal
+.db-shm
+*.sqlite
+.sqlite
+
 # OS and editor files
 .DS_Store
 Thumbs.db
 .idea/
 .vscode/
+
+# Logs
+*.log

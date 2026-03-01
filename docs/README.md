@@ -29,5 +29,9 @@ If you’re implementing or refactoring code, read the relevant spec first:
 - `specs/BOUNDARIES.md`
 - `specs/PROACTIVE_INBOX.md`
 - `specs/TESTING_STRATEGY.md`
+- `specs/TELEGRAM_THREADING_AND_EMOJI.md`
 - `specs/PERSONALISATION.md`
 - `specs/PERSONALITY_STORAGE.md`
+- `specs/CHAT_COMMANDS.md`
+- `specs/AGENT_PROFILES.md`
+- `specs/AGENT_REGISTRY_AND_PINNING_APIS.md`

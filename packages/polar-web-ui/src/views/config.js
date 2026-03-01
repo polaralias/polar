@@ -420,11 +420,33 @@ export async function renderConfig(container) {
     const personalityGlobalPrompt = container.querySelector('#personality-global-prompt');
     const personalityUserId = container.querySelector('#personality-user-id');
     const personalityUserPrompt = container.querySelector('#personality-user-prompt');
+    const personalityList = container.querySelector('#personality-list');
 
     const setPersonalityMsg = (text, tone = 'info') => {
       personalityMsg.textContent = text;
       personalityMsg.style.color =
         tone === 'success' ? 'var(--success)' : tone === 'danger' ? 'var(--danger)' : 'var(--info)';
+    };
+
+    const renderPersonalityProfiles = (items) => {
+      personalityList.innerHTML = (Array.isArray(items) ? items : []).map((item) => `
+        <div style="padding: 10px; border-radius: 8px; background: rgba(0,0,0,0.2); border: 1px solid var(--card-border);">
+          <div style="font-size: 12px; color: #fff; font-weight: 600;">${item.scope}</div>
+          <div style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">${item.userId || 'n/a'} ${item.sessionId ? `| ${item.sessionId}` : ''}</div>
+        </div>
+      `).join('');
+    };
+
+    const refreshPersonalityState = async () => {
+      const [globalResult, listResult] = await Promise.all([
+        fetchApi('getPersonalityProfile', { scope: 'global' }).catch(() => ({ status: 'not_found' })),
+        fetchApi('listPersonalityProfiles', { limit: 50 }).catch(() => ({ items: [] })),
+      ]);
+      personalityGlobalPrompt.value =
+        globalResult.status === 'found' && typeof globalResult.profile?.prompt === 'string'
+          ? globalResult.profile.prompt
+          : '';
+      renderPersonalityProfiles(Array.isArray(listResult.items) ? listResult.items : []);
     };
 
     container.querySelector('#personality-global-save').addEventListener('click', async () => {
@@ -433,6 +455,7 @@ export async function renderConfig(container) {
           scope: 'global',
           prompt: personalityGlobalPrompt.value,
         });
+        await refreshPersonalityState();
         setPersonalityMsg('Global personality saved.', 'success');
       } catch (error) {
         setPersonalityMsg(`Failed to save global personality: ${error.message}`, 'danger');
@@ -442,7 +465,7 @@ export async function renderConfig(container) {
     container.querySelector('#personality-global-reset').addEventListener('click', async () => {
       try {
         await fetchApi('resetPersonalityProfile', { scope: 'global' });
-        personalityGlobalPrompt.value = '';
+        await refreshPersonalityState();
         setPersonalityMsg('Global personality reset.', 'success');
       } catch (error) {
         setPersonalityMsg(`Failed to reset global personality: ${error.message}`, 'danger');
@@ -485,6 +508,7 @@ export async function renderConfig(container) {
           userId,
           prompt: personalityUserPrompt.value,
         });
+        await refreshPersonalityState();
         setPersonalityMsg(`User personality saved for ${userId}.`, 'success');
       } catch (error) {
         setPersonalityMsg(`Failed to save user personality: ${error.message}`, 'danger');
@@ -503,6 +527,7 @@ export async function renderConfig(container) {
           userId,
         });
         personalityUserPrompt.value = '';
+        await refreshPersonalityState();
         setPersonalityMsg(`User personality reset for ${userId}.`, 'success');
       } catch (error) {
         setPersonalityMsg(`Failed to reset user personality: ${error.message}`, 'danger');

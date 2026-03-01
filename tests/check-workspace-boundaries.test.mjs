@@ -114,6 +114,24 @@ test("reports surface dependency constraints in code and package manifests", () 
   );
 });
 
+test("reports semantic thin-surface violations for direct provider imports and calls", () => {
+  withWorkspace(
+    {
+      "packages/polar-bot-runner/src/index.mjs":
+        'import OpenAI from "openai";\nexport async function run(controlPlane) { return controlPlane.generateOutput({}); }\n',
+    },
+    (workspaceRoot) => {
+      const violations = collectWorkspaceBoundaryViolations(workspaceRoot);
+      assert.equal(violations.length, 2);
+      assert.ok(
+        violations.every(
+          (violation) => violation.rule === "surface_thinness_constraint",
+        ),
+      );
+    },
+  );
+});
+
 test("CLI exits non-zero on violation and zero when clean", () => {
   withWorkspace(
     {
