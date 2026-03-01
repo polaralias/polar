@@ -1,83 +1,67 @@
 # AGENTS.md
 
-Last updated: 2026-02-28
+Last updated: 2026-03-01
 
-## Purpose
-This file defines how implementation agents should work in this repository.
+This file defines how implementation agents (human or coding agent) should work in this repository.
 
-Primary goal: Build the AI assistant on top of the Polar framework **without prompt-driven logic** and without misleading “100% complete” claims.
+## Canonical docs (read first)
+Truth set:
+- `docs/ARCHITECTURE.md`
+- `docs/SECURITY.md`
+- `docs/DEVELOPMENT.md`
+- `docs/SKILLS.md`
+- `docs/AUTOMATIONS.md`
+- `docs/MEMORY_AND_FEEDBACK.md`
 
-## Canonical References
-Read these first before implementing:
-1. `docs/project-overview.md`
-2. `docs/architecture/deterministic-orchestration-architecture.md`
-3. `docs/architecture/chat-routing-and-multi-agent.md`
+Implementation-grade specs (read the relevant ones before coding):
+- `docs/specs/BOOTSTRAP.md`
+- `docs/specs/CONTROL_PLANE_API.md`
+- `docs/specs/DATA_MODEL.md`
+- `docs/specs/TELEGRAM_SURFACE.md`
+- `docs/specs/WEB_UI_SURFACE.md`
+- `docs/specs/AUTOMATION_RUNNER.md`
+- `docs/specs/BOUNDARIES.md`
+- `docs/specs/TESTING_STRATEGY.md`
 
-## Non-Negotiable Runtime Invariants
-1. Every tool call has before and after middleware.
-2. Every agent handoff has before and after middleware.
-3. Every automation step and heartbeat run has before and after middleware.
-4. Every callable operation uses explicit typed input and output contracts.
-5. Unknown or invalid input/output is rejected, never silently accepted.
-6. No extension path bypasses policy, contract validation, or audit logging.
-7. **Model can propose. Code must decide** for routing, state, permissions, workflow execution, and approvals.
+Change and decision history:
+- `docs/IMPLEMENTATION_LOG.md`
 
-## pi-mono Integration Rules (Semi-Modular Required)
-`pi-mono` is a temporary foundation. Keep it isolated so it can be removed later.
+Older docs live in `docs/_archive/2026-03-01/` and are reference-only.
 
-1. Only adapter modules may import `pi-mono`.
-2. Runtime core/domain modules must depend on Polar interfaces, not `pi-mono` types.
-3. Session, message, and contract schemas must be Polar-owned.
-4. New capabilities must be wired through contract registry + middleware, not direct adapter calls.
+## Non-negotiable invariants
+1. **All provider calls and tool calls go through gateways and middleware.**
+   - No direct LLM calls from surfaces (Telegram/Web UI/CLI).
+2. **Capabilities are enforced in code.**
+   - The model can propose, but cannot expand privileges on its own.
+3. **Automations are first-class and safe.**
+   - A scheduled run must execute through the same middleware pipeline as interactive chat.
+4. **No cross-package `src/` imports from surfaces.**
+   - Apps import via workspace package exports (boundary rules must pass).
+5. **Audit and traceability are always on.**
+   - Every meaningful action should leave an event trail.
 
-Recommended package boundaries:
-1. `packages/polar-domain`
-2. `packages/polar-runtime-core`
-3. `packages/polar-adapter-pi`
-4. `packages/polar-adapter-channels`
-5. `packages/polar-adapter-extensions`
-6. `packages/polar-control-plane`
+## Working approach
+- Prefer small, testable steps. Avoid repo-wide rewrites unless the spine is clearly stabilised.
+- Before adding features, stabilise composition:
+  - a single “boot Polar” entrypoint (`@polar/platform`)
+  - thin surfaces that do ingress/egress only
+- Always update `docs/IMPLEMENTATION_LOG.md` when you make a structural change or a decision that affects future work.
 
-## Working Rules
-1. Read the docs carefully and align changes to them.
-2. Ask questions up front only if ambiguity would cause real damage.
-3. Work until you can’t progress or you must stop.
-4. Add tests with each feature (unit + integration; add e2e where behaviour changes).
-5. Update docs when behaviour or architecture decisions change.
-6. Never run “fixes” purely by adding more system prompt rules unless there is deterministic enforcement in code.
+### If you are executing prompt-by-prompt with cleared context
+Do this every run:
+1) Read `AGENTS.md`
+2) Read the relevant spec(s) under `docs/specs/`
+3) Read the latest entry in `docs/IMPLEMENTATION_LOG.md` and use it as your handoff
+4) After completing the prompt:
+   - append a new log entry including:
+     - prompt id/title
+     - commit hash (or “not committed”)
+     - tests run
+     - any blockers
+     - next prompt id/title
 
-## Logging Rules (Mandatory)
-1. Log everything you do in `docs/implementation/implementation-log.md`.
-2. Entries must be append-only.
-3. Use concrete status:
-   - `Done` only for shipped work that meets Definition of Done
-   - otherwise `In Progress` or `Blocked`
-4. Every `Done` entry must include:
-   - files changed
-   - tests run (exact command or test names)
-   - evidence notes (what was verified manually)
-   - follow-ups
-
-## Completion Claims Policy (No more “gaslit 100%”)
-1. Do not claim “complete”, “finalised”, “nothing left”, or “100%” unless you can cite:
-   - the scope definition being completed
-   - the tests that passed
-   - the acceptance criteria satisfied
-2. If you are unsure, say what is verified and what is not.
-3. “Progress: NN%” is optional; if used, it must be evidence-based and scoped (module-level), not “whole platform”.
-
-## Definition Of Done For Any Task
-A task is done only when:
-1. Code is merged or committed in the branch scope requested.
-2. Contracts and middleware requirements are satisfied.
-3. Tests for the touched behaviour pass or failures are explicitly documented.
-4. Documentation is updated if behaviour changed.
-5. `docs/implementation/implementation-log.md` has a clear done entry (with evidence).
-
-## Development Harness Rules (Dev-Only)
-1. Chrome DevTools MCP may be used only for development and CI harness automation.
-2. Chrome DevTools MCP is not an end-user runtime tool, extension, or profile capability at this stage.
-3. Local implementation flow is: write or update automated tests first.
-4. If a change adds or modifies web/control-plane behaviour, run DevTools-based checks after implementation and record the outcome.
-5. Harness runs must execute against non-production environments with least-privilege credentials and scoped test data.
-6. Promotion from dev-only harness use to runtime capability requires explicit architecture and policy documentation updates before implementation.
+## Definition of done for a change
+- Tests pass (`npm test`)
+- Boundary checks pass (`npm run check:boundaries`)
+- Docs updated where behaviour changed
+- Implementation log updated for structural/behavioural decisions

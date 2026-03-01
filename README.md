@@ -1,77 +1,72 @@
 # Polar ❄️
 
-Polar is an advanced, deterministic, multi-agent AI framework designed for high-availability production environments. It strictly enforces contract-driven operations, structured observability, and non-bypassable security gateways.
+Polar is a contract-first runtime for building an extendable assistant (starting with a Telegram bot) where **code decides** and the model can only propose.
 
----
+The goal is OpenClaw-style extensibility (skills, workflows, multi-agent patterns) with much stronger safety guarantees: middleware on every call, explicit capabilities, approvals, audit trails, and persistent state.
 
-## 🚀 Quick Start (Unified Platform)
+## What’s in this repo
+- **Runtime spine:** `packages/polar-runtime-core/`
+- **Control plane:** `packages/polar-control-plane/` (contracts, registries, gateway wiring)
+- **Surfaces:** `packages/polar-bot-runner/` (Telegram), plus a lightweight Web UI for ops and debugging
+- **Docs:** `docs/` (truth set), `docs/specs/` (implementation-grade), `docs/_archive/` (reference-only history)
 
-Polar now features a unified startup process that boots both the **Operator Dashboard (Web UI)** and the **Chat Bot Runner** concurrently.
+## Docs and specs
+- Start with `docs/README.md`.
+- If you are implementing anything, read the relevant spec under `docs/specs/` first.
+- All meaningful changes should be recorded in `docs/IMPLEMENTATION_LOG.md`.
 
-### 1. Installation
+## Quick start
+### Install
 ```bash
 npm install
 ```
 
-### 2. Configure Environment
-Create a `.env` file in the root directory:
+### Configure
+Create `.env` in the repo root.
+
+Minimum for Telegram:
 ```env
-OPENAI_API_KEY=your_key_here
-TELEGRAM_BOT_TOKEN=your_bot_token_here
+TELEGRAM_BOT_TOKEN=...
+OPENAI_API_KEY=...
 ```
 
-### 3. Start Everything
+### Run
+Run Web UI + Telegram bot together:
 ```bash
 npm run dev
 ```
 
-*   **Operator Dashboard**: [http://localhost:5173](http://localhost:5173) (Manage budgets, providers, and view telemetry)
-*   **Chat Bot**: Open your Telegram bot and start chatting.
+Or individually:
+```bash
+npm run dev:ui
+npm run dev:bot
+```
 
----
-
-## 🧠 Advanced Agent Capabilities (Phase 8+)
-
-Polar core is equipped with advanced cognitive middle-ware that enhances LLM reliability:
-
-### 1. Long-Term Durable Memory
-*   **Automated Fact Extraction**: Polar automatically analyzes user turns to extract evergreen facts (preferences, project details, context) and persists them to a local SQLite store.
-*   **Semantic Recall**: Before every generation turn, Polar proactively searches for relevant past facts and injects them into the provider context, providing agents with "infinite" memory across sessions.
-
-### 2. Dynamic Tool Synthesis
-*   **Tool Pruning**: For complex requests with large toolsets, Polar performs an internal "reasoning turn" to prune and rank required capabilities, significantly increasing accuracy and reducing context bloat.
-
-### 3. Unified Governance & Budgets
-*   **Hard-Blocking Policies**: Define global or workspace-level USD budgets. Once a budget is exceeded, the orchestrator will block further LLM requests until reset.
-*   **Live Consumption Telemetry**: Monitor your real-time spend and token usage through premium dashboards in the Operator UI.
-
----
-
-## 🏗 Architecture & Persistence
-
-Polar uses a **Unified Control Plane** architecture:
-
-*   **Shared Backend**: All state (Scheduler, Budgets, Memory) is persisted in a single, shared `polar-system.db` at the project root.
-*   **Persistent SQLite Store**: No more in-memory data loss. Your configurations and agent memories survive restarts.
-*   **Middleware-First**: All security, budget, and memory logic is implemented as non-bypassable middleware in the execution pipeline.
-
----
-
-## 🛠 Management & Dashboard
-
-The **Operator Dashboard** (`packages/polar-web-ui`) is your mission control:
-
-*   **Providers**: Manage multi-provider routing (OpenAI, Anthropic, Gemini, Ollama).
-*   **Agent Profiles**: Define specialized roles and model pinning.
-*   **Governance**: Set hard USD limits and enforcement intervals.
-*   **Telemetry**: Real-time visualization of agent activity and handoffs.
-
----
-
-## 🧪 Testing
-
-Maintain 100% confidence with the unified test suite:
+### Tests
 ```bash
 npm test
+npm run check:boundaries
 ```
-The suite covers everything from contract validation to Phase 8 memory extraction logic.
+
+## Docs structure (current truth set)
+Start here:
+- `docs/README.md` (docs index)
+- `docs/ARCHITECTURE.md` (how Polar is wired)
+- `docs/SECURITY.md` (non-negotiables: contracts, middleware, approvals, audit)
+- `docs/SKILLS.md` (skill model and installation)
+- `docs/AUTOMATIONS.md` (scheduled/proactive behaviour model)
+- `docs/MEMORY_AND_FEEDBACK.md` (memory vs feedback events, projections, exports)
+- `docs/DEVELOPMENT.md` (local dev and conventions)
+- `docs/IMPLEMENTATION_LOG.md` (decision and change log)
+
+Older deep-dives and prior drafts are archived under:
+- `docs/_archive/2026-03-01/`
+
+## Current product focus
+- Single spine, multiple thin surfaces (Telegram first)
+- Skills that install cleanly and execute safely through the gateway
+- Automations and proactive updates implemented as scheduled jobs that run through the same middleware pipeline
+- Memory and feedback captured as queryable events (with markdown exports as optional projections)
+
+## Licence
+See repo files.
