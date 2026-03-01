@@ -1,22 +1,12 @@
 import { defineConfig } from 'vite';
-import { createControlPlaneService } from '../polar-control-plane/src/index.mjs';
-import {
-    createSqliteSchedulerStateStore,
-    createSqliteBudgetStateStore,
-    createSqliteMemoryProvider
-} from '../polar-runtime-core/src/index.mjs';
-import Database from 'better-sqlite3';
+import { createPolarPlatform, defaultDbPath } from '@polar/platform';
 import { resolve, relative, normalize } from 'path';
 import fs from 'fs/promises';
 
-const dbPath = resolve(process.cwd(), '../../polar-system.db');
-const db = new Database(dbPath);
-
-const controlPlane = createControlPlaneService({
-    schedulerStateStore: createSqliteSchedulerStateStore({ db }),
-    budgetStateStore: createSqliteBudgetStateStore({ db }),
-    memoryProvider: createSqliteMemoryProvider({ db })
+const platform = createPolarPlatform({
+    dbPath: defaultDbPath()
 });
+const controlPlane = platform.controlPlane;
 
 // BUG-002 fix: API authorization via a simple bearer token from env
 const API_SECRET = process.env.POLAR_UI_API_SECRET || null;

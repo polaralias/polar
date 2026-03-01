@@ -8,9 +8,9 @@
         "start": "node --experimental-modules --no-warnings src/index.mjs"
     },
     "dependencies": {
+        "@polar/platform": "*",
         "@mariozechner/pi-agent-core": "^0.54.2",
         "@mariozechner/pi-ai": "^0.54.2",
-        "better-sqlite3": "^12.6.2",
         "dotenv": "^16.6.1",
         "mcp-client": "^1.13.1",
         "pdf-parse": "^2.4.5",

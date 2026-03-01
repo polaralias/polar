@@ -1,7 +1,7 @@
 import { Telegraf } from 'telegraf';
 import { message } from 'telegraf/filters';
 import dotenv from 'dotenv';
-import { createControlPlaneService } from '../../polar-control-plane/src/index.mjs';
+import { createPolarPlatform, defaultDbPath } from '@polar/platform';
 import fs from 'fs';
 import path from 'path';
 import { createRequire } from 'module';
@@ -9,17 +9,7 @@ const require = createRequire(import.meta.url);
 const pdfParse = require('pdf-parse');
 import crypto from 'crypto';
 
-import {
-    createSqliteSchedulerStateStore,
-    createSqliteBudgetStateStore,
-    createSqliteMemoryProvider
-} from '../../polar-runtime-core/src/index.mjs';
-import Database from 'better-sqlite3';
-
 dotenv.config();
-
-const dbPath = path.resolve(process.cwd(), '../../polar-system.db');
-const db = new Database(dbPath);
 
 // Redundant workflow state removed - now handled by Orchestrator
 
@@ -32,11 +22,10 @@ if (!BOT_TOKEN) {
 const bot = new Telegraf(BOT_TOKEN);
 
 // 2. Initialize Polar Framework (Headless Orchestrator)
-const controlPlane = createControlPlaneService({
-    schedulerStateStore: createSqliteSchedulerStateStore({ db }),
-    budgetStateStore: createSqliteBudgetStateStore({ db }),
-    memoryProvider: createSqliteMemoryProvider({ db })
+const platform = createPolarPlatform({
+    dbPath: defaultDbPath()
 });
+const controlPlane = platform.controlPlane;
 
 // Helper for safe reactions (prevents crashes on 400s)
 async function safeReact(ctx, emoji, messageId) {
@@ -561,8 +550,14 @@ bot.on('callback_query', async (ctx) => {
 });
 
 // Graceful stops
-process.once('SIGINT', () => bot.stop('SIGINT'));
-process.once('SIGTERM', () => bot.stop('SIGTERM'));
+process.once('SIGINT', () => {
+    bot.stop('SIGINT');
+    platform.shutdown();
+});
+process.once('SIGTERM', () => {
+    bot.stop('SIGTERM');
+    platform.shutdown();
+});
 
 // Start listening
 bot.launch().then(() => {
