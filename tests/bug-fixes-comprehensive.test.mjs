@@ -105,13 +105,15 @@ test("BUG-018: SSE parser buffers incomplete lines across network chunks", async
 // ========================================================================
 test("BUG-015: embed() works with responses endpointMode", async () => {
     let capturedUrl = null;
+    let capturedBody = null;
     const adapter = createNativeHttpAdapter({
         providerId: "openai",
         endpointMode: "responses",
         baseUrl: "https://api.openai.com/v1/responses",
         apiKey: "test-key",
-        fetcher: async (url) => {
+        fetcher: async (url, init) => {
             capturedUrl = url;
+            capturedBody = JSON.parse(init.body);
             return {
                 ok: true,
                 json: async () => ({
@@ -128,6 +130,8 @@ test("BUG-015: embed() works with responses endpointMode", async () => {
     });
 
     assert.equal(capturedUrl, "https://api.openai.com/v1/embeddings");
+    assert.equal(capturedBody.model, "text-embedding-3-small");
+    assert.equal(capturedBody.input, "test text");
     assert.deepEqual(result.vector, [0.1, 0.2, 0.3]);
 });
 
@@ -191,7 +195,7 @@ test("Telegram normalizer prefers messageThreadId over replyToMessageId for topi
         timestampMs: 1000
     });
 
-    assert.equal(envelope.threadId, "telegram:topic:123:50");
+    assert.equal(envelope.threadId, "telegram:topic:50:123");
 });
 
 // ========================================================================
@@ -445,3 +449,38 @@ test("BUG-019: Memory extraction correctly reads .text from provider response", 
     await new Promise(resolve => setTimeout(resolve, 50));
     assert.equal(upsertedFact, 'User prefers dark mode');
 });
+
+test("BUG-020: Tool synthesis correctly reads .text from provider response", async () => {
+    const middleware = createToolSynthesisMiddleware({
+        providerGateway: {
+            async generate() {
+                // Provider returns { text: "..." } not { content: "..." }
+                return {
+                    text: '{"selectedToolIds":["1","2"]}'
+                };
+            }
+        }
+    });
+
+    const context = {
+        actionId: 'provider.generate',
+        input: {
+            role: 'user',
+            text: 'Talk to agent 2',
+            traceId: 't',
+            messages: [{ role: 'user', content: 'Talk to agent 2' }],
+            tools: [
+                { id: '1', description: 'desc1' },
+                { id: '2', description: 'desc2' },
+                { id: '3', description: 'desc3' },
+                { id: '4', description: 'desc4' }
+            ]
+        }
+    };
+
+    await middleware.before(context);
+
+    assert.equal(context.input.tools.length, 2);
+    assert.deepEqual(context.input.tools.map(t => t.id), ['1', '2']);
+});
+

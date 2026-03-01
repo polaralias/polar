@@ -47,6 +47,38 @@ Last updated: 2026-02-28
 (Entries appended below.)
 
 
+### 2026-02-28 — BUG-015 — Embed supports responses endpointMode — Done
+**Owner:** Antigravity
+**Scope:** Fix `native-http-adapter` to correctly handle `embed()` requests when `endpointMode` is set to `responses`.
+**Summary:**
+- Fixed `packages/polar-adapter-native/src/index.mjs` to correctly populate the request body (`model` and `input`) for `embed()` when `endpointMode === "responses"`.
+- Updated `tests/bug-fixes-comprehensive.test.mjs` to verify both the redirected URL and the request body contents for the `embed()` call.
+- Verified that the fix ensures OpenAI Responses API can be used while still correctly routing embedding requests to the standard `/v1/embeddings` endpoint with the required payload.
+
+**Architecture refs:**
+- `docs/architecture/llm-providers.md`
+
+**Files changed:**
+- `packages/polar-adapter-native/src/index.mjs`
+- `tests/bug-fixes-comprehensive.test.mjs`
+
+**Tests run (exact):**
+- `node tests/bug-fixes-comprehensive.test.mjs --test-name-pattern="BUG-015"`
+
+**Manual verification (evidence):**
+- Updated test case for BUG-015 now captures the `fetch` body and asserts that `model` and `input` are present and correct.
+- Confirmed test fails without the fix and passes with it.
+
+**Notes / decisions:**
+- The Responses API itself does not have an embeddings endpoint, so redirecting to `/v1/embeddings` is the correct strategy when using the OpenAI-compatible Responses API mode.
+- Ensured that adding `responses` to the body population condition doesn't interfere with other generative modes.
+
+**Follow-ups:**
+- None identified for this specific bug.
+
+---
+
+
 ### 2026-02-28 — F6-001 — Documentation Finalization — Done
 
 **Owner:** Codex
@@ -1355,3 +1387,271 @@ Last updated: 2026-02-28
 
 **Follow-ups:**
 - None.
+
+### 2026-02-28 — CHAT-STATE-004 — Stateless replies proper fix (stable session identity, session persistence, registry-driven capability scope) — Done
+
+**Owner:** Codex
+**Scope:** Implement remaining stateless-reply remediations from the finalization plan by fixing Telegram session/thread normalization, removing `threadId` session partitioning in bot-runner paths, making chat history auto-persistent for new sessions, and aligning orchestrator capability scope with SkillRegistry authority states.
+
+**Summary:**
+- Telegram ingress normalization now enforces chat-stable session identity (`telegram:chat:<chatId>`) and carries reply/topic context in `threadId` metadata only.
+- Bot-runner session resolution now always uses normalized `envelope.sessionId`; thread context is passed in metadata and never promoted to session key.
+- Chat-management gateway now auto-creates sessions on first `appendMessage`, removing normal-path `Session is not registered` failures and restoring deterministic history continuity.
+- Orchestrator capability-scope computation now includes SkillRegistry authority states (canonical) plus extension gateway snapshots (supplemental), matching control-plane direct execution basis.
+
+**Architecture refs:**
+- `docs/architecture/deterministic-orchestration-architecture.md`
+- `docs/architecture/chat-routing-and-multi-agent.md`
+- `docs/implementation/implementation-finalization-plan.md`
+
+**Files changed:**
+- `packages/polar-adapter-channels/src/index.mjs`
+- `packages/polar-bot-runner/src/index.mjs`
+- `packages/polar-runtime-core/src/chat-management-gateway.mjs`
+- `packages/polar-runtime-core/src/orchestrator.mjs`
+- `packages/polar-control-plane/src/index.mjs`
+- `tests/adapter-channels-normalization.test.mjs`
+- `tests/runtime-core-chat-ingress-gateway.test.mjs`
+- `tests/runtime-core-chat-management-gateway.test.mjs`
+- `tests/control-plane-service.test.mjs`
+- `tests/runtime-core-orchestrator-workflow-validation.test.mjs`
+- `tests/bug-fixes-comprehensive.test.mjs`
+- `docs/architecture/deterministic-orchestration-architecture.md`
+- `docs/architecture/chat-routing-and-multi-agent.md`
+- `docs/implementation/implementation-log.md`
+
+**Tests run (exact):**
+- `node --test tests/runtime-core-orchestrator-workflow-validation.test.mjs`
+- `node --test tests/adapter-channels-normalization.test.mjs tests/runtime-core-chat-ingress-gateway.test.mjs tests/runtime-core-chat-management-gateway.test.mjs tests/runtime-core-orchestrator-workflow-validation.test.mjs tests/control-plane-service.test.mjs tests/bug-fixes-comprehensive.test.mjs tests/channels-thin-client-enforcement.test.mjs tests/runtime-core-capability-scope-enforcement.test.mjs`
+
+**Manual verification (evidence, not vibes):**
+- Executed a control-plane manual flow (normalized Telegram message + inline reply simulation) and verified:
+  - `sessionId` remains `telegram:chat:manual-chat` for both turns.
+  - reply turn carries `threadId = telegram:reply:manual-chat:1`.
+  - `getSessionHistory` returns `totalHistory: 2` (non-empty continuity).
+- Verified bot-runner session resolution paths no longer contain `threadId || sessionId` fallback selection and now resolve stable session identity via ingress normalization.
+
+**Notes / decisions:**
+- Chosen persistence strategy: `appendMessage` auto-registers unknown sessions (channel inferred from sessionId prefix) to preserve middleware/contract path without adding prompt-based compensations.
+- Kept SkillRegistry optional in orchestrator constructor for backwards-compatible tests; when present it is authoritative for capability projection.
+
+**Follow-ups:**
+- Run live Telegram dev harness check with real callback/update events to validate inline-reply UX end-to-end against a non-production bot token.
+
+### 2026-03-01 — BUG-001 — Responses API stream parsing (response.output_text.delta) — Done
+
+**Owner:** Antigravity
+**Scope:** Fix stream parsing for the Responses API to correctly handle `response.output_text.delta` events and improve robustness for both string and object-based delta shapes.
+
+**Summary:**
+- Updated `extractDelta` in `packages/polar-adapter-native/src/index.mjs` to specifically handle `response.output_text.delta` when `endpointMode` is `responses`.
+- Added robustness to handle `delta` as either a direct string or an object containing `text` or `value` keys.
+- Fixed a fallthrough bug where `endpointMode === "openai"` would return no chunks during streaming.
+- Verified fix with regression test `tests/bug-fixes-comprehensive.test.mjs`.
+
+**Files changed:**
+- `packages/polar-adapter-native/src/index.mjs`
+
+**Tests run (exact):**
+- `node tests/bug-fixes-comprehensive.test.mjs` (pass)
+- `node tests/adapter-native-http.test.mjs` (pass)
+
+**Manual verification (evidence):**
+- Verified that `response.output_text.delta` events with string deltas are correctly parsed and pushed to chunks.
+- Verified that `endpointMode === "openai"` now correctly routes to Chat Completions delta parsing.
+
+**Follow-ups:**
+- None.
+
+### 2026-03-01 — BUG-009 — Tool synthesis does not mutate frozen input — Done
+
+**Owner:** Antigravity
+**Scope:** Fix `ToolSynthesisMiddleware` to ensure it does not mutate frozen `context.input` when pruning tools.
+
+**Summary:**
+- Updated `ToolSynthesisMiddleware` to replace `context.input` immutably using the spread operator instead of mutating its properties.
+- Added safety checks for `Array.isArray(context.input.messages)`.
+- Optimized user message lookup using `messages.findLast` where available.
+- Verified fix with regression tests in `tests/bug-fixes-comprehensive.test.mjs`.
+
+**Files changed:**
+- `packages/polar-runtime-core/src/tool-synthesis-middleware.mjs`
+
+**Tests run (exact):**
+- `node --test tests/bug-fixes-comprehensive.test.mjs` (pass)
+
+**Manual verification (evidence):**
+- Verified that `BUG-009` test case in `bug-fixes-comprehensive.test.mjs` passes when `context.input` and `tools` are frozen.
+- Verified that `originalInput` remains unchanged while `context.input` receives the pruned toolset.
+
+**Follow-ups:**
+- None.
+
+---
+
+### 2026-03-01 — BUG-008 — Memory recall doesn't mutate original messages — Done
+**Owner:** Antigravity
+**Scope:** Ensure MemoryRecallMiddleware does not mutate frozen or shared message arrays during the recall process.
+**Summary:**
+- Verified that packages/polar-runtime-core/src/memory-recall-middleware.mjs clones the messages array and individual message objects before modification.
+- Verified that context.input is replaced immutably using the spread operator.
+- Verified fix with tests/bug-fixes-comprehensive.test.mjs using frozen inputs.
+
+**Architecture refs:**
+- docs/architecture/deterministic-orchestration-architecture.md
+
+**Files changed:**
+- packages/polar-runtime-core/src/memory-recall-middleware.mjs (verified existing fix)
+
+**Tests run (exact):**
+- node tests/bug-fixes-comprehensive.test.mjs --test-name-pattern=\ BUG-008\
+
+**Manual verification (evidence):**
+- Inspected source code at lines 45-60 ensuring messages.map(m => ({ ...m })) and context.input = { ...context.input, messages: clonedMessages } are used.
+- Confirmed test passes with 100% reliability.
+
+**Follow-ups:**
+- None.
+
+---
+
+### 2026-03-01 — BUG-018 — SSE line buffering across chunk boundaries — Done
+**Owner:** Antigravity
+**Scope:** Fix SSE parser in nativeHttpAdapter to correctly buffer partial lines across network chunks.
+**Summary:**
+- Verified that packages/polar-adapter-native/src/index.mjs uses a lineBuffer to store incomplete lines.
+- Verified that the streamer correctly pops the last partial line and appends new chunks to it.
+- Verified fix with regression test BUG-018 in tests/bug-fixes-comprehensive.test.mjs.
+
+**Architecture refs:**
+- docs/architecture/llm-providers.md
+
+**Files changed:**
+- packages/polar-adapter-native/src/index.mjs (verified existing fix)
+
+**Tests run (exact):**
+- node tests/bug-fixes-comprehensive.test.mjs --test-name-pattern=\BUG-018\
+
+**Manual verification (evidence):**
+- Verified the loop logic in processSSELines correctly handles chunks without newlines and preserves state in lineBuffer.
+
+**Follow-ups:**
+- None.
+
+---
+
+### 2026-03-01 — BUG-024 — Budget middleware after hook doesn't crash on recording failure — Done
+**Owner:** Antigravity
+**Scope:** Ensure that failures in recording usage (e.g., database down) do not crash the middleware pipeline for an otherwise successful request.
+**Summary:**
+- Verified that packages/polar-runtime-core/src/budget-middleware.mjs wraps the recordUsage call in a try/catch block.
+- Verified that failures are logged via console.warn for observability.
+- Verified fix with regression test BUG-024 in tests/bug-fixes-comprehensive.test.mjs.
+
+**Architecture refs:**
+- docs/architecture/deterministic-orchestration-architecture.md
+
+**Files changed:**
+- packages/polar-runtime-core/src/budget-middleware.mjs (verified existing fix)
+
+**Tests run (exact):**
+- node tests/bug-fixes-comprehensive.test.mjs --test-name-pattern=\BUG-024\
+
+**Manual verification (evidence):**
+- Confirmed that the test simulating a database failure in recordUsage passes and the error is logged correctly.
+
+**Follow-ups:**
+- None.
+
+---
+
+### 2026-03-01 — BUG-004/005/006 — Middleware logs errors instead of silent swallow — Done
+**Owner:** Antigravity
+**Scope:** Standardize error handling in core middlewares to ensure background failures (e.g., memory extraction or recall) are logged to console.warn.
+**Summary:**
+- Verified that MemoryExtractionMiddleware, MemoryRecallMiddleware, and ToolSynthesisMiddleware all have try/catch blocks that log to console.warn.
+- Verified that background tasks (like extraction) have appropriate .catch() handlers to prevent unhandled promise rejections.
+- Verified fix with regression tests BUG-004, BUG-005, and BUG-006 in tests/bug-fixes-comprehensive.test.mjs.
+
+**Architecture refs:**
+- docs/architecture/deterministic-orchestration-architecture.md`n
+**Files changed:**
+- packages/polar-runtime-core/src/memory-extraction-middleware.mjs`n- packages/polar-runtime-core/src/memory-recall-middleware.mjs`n- packages/polar-runtime-core/src/tool-synthesis-middleware.mjs
+
+**Tests run (exact):**
+- node tests/bug-fixes-comprehensive.test.mjs --test-name-pattern=\BUG-00[456]\
+
+**Manual verification (evidence):**
+- Verified that failures in provider generation or search gateways during middleware execution results in a [prefix] Failed to ... warning in the console.
+
+**Follow-ups:**
+- None.
+
+---
+
+### 2026-03-01 — Code Health — Remove console.log from bot runner — Done
+
+**Owner:** Antigravity
+**Scope:** Implement reaction state cleanup reaper in bot runner without unnecessary console logging.
+
+**Summary:**
+- Updated `COMPLETED_REACTIONS` (renamed to `completedReactionsMap`) in `packages/polar-bot-runner/src/index.mjs` to store timestamps for each reaction.
+- Updated `markReactionCompleted` to save the current timestamp using `Date.now()`.
+- Updated `clearCompletedReactions` and `markReactionCompleted` to use a nested `Map` structure (`sessionId -> messageId -> timestamp`) instead of a `Set`.
+- Implemented a 10-minute periodic reaper `setInterval` to clear stale reactions older than 10 minutes.
+- Removed the proposed `console.log` from the reaper to improve log health and maintainability.
+
+**Files changed:**
+- `packages/polar-bot-runner/src/index.mjs`
+
+**Tests run (exact):**
+- `node --test tests/bug-fixes-comprehensive.test.mjs` (pass, ensuring no regressions in core/adapters)
+
+**Manual verification (evidence):**
+- Verified that `completedReactionsMap` correctly stores `messageId -> timestamp` pairs.
+- Verified that `clearCompletedReactions` correctly iterates over `Map.keys()`.
+- Verified that the reaper logic correctly identifies and deletes stale entries based on the 600,000ms threshold.
+- Confirmed that no `console.log` with `[UX]` or `Clearing` remains in the implementation.
+
+**Follow-ups:**
+- None.
+
+
+### 2026-03-01 — BUG-038 — Provider generate contract + Responses assistant-history typing — Done
+**Owner:** Codex
+**Scope:** Fix runtime provider request contract violations in memory/tool middleware and fix Responses API assistant message content typing that caused 400 failures during orchestration.
+
+**Summary:**
+- Fixed `polar-adapter-native` Responses input mapping so assistant history messages are encoded as `output_text` (instead of `input_text`) while user/developer remain `input_text`.
+- Fixed `memory-extraction` middleware provider call shape to comply with `provider.gateway.generate.request` by sending explicit `providerId`, `model`, and `prompt` and removing unsupported `profileId`.
+- Fixed `tool-synthesis` middleware provider call shape similarly (`providerId`, `model`, `prompt`, no `profileId`) to prevent the same contract-rejection class.
+- Added regression tests for assistant-history `output_text` mapping and middleware contract-compliant generate request composition.
+
+**Architecture refs:**
+- `docs/architecture/deterministic-orchestration-architecture.md`
+- `docs/architecture/llm-providers.md`
+
+**Files changed:**
+- `packages/polar-adapter-native/src/index.mjs`
+- `packages/polar-runtime-core/src/memory-extraction-middleware.mjs`
+- `packages/polar-runtime-core/src/tool-synthesis-middleware.mjs`
+- `tests/adapter-native-http.test.mjs`
+- `tests/runtime-core-phase-8-advanced-features.test.mjs`
+- `docs/implementation/implementation-log.md`
+
+**Tests run (exact):**
+- `node --test tests/adapter-native-http.test.mjs`
+- `node --test tests/runtime-core-phase-8-advanced-features.test.mjs`
+- `node --test tests/bug-fixes-comprehensive.test.mjs --test-name-pattern "BUG-00[469]|BUG-019|BUG-020"`
+
+**Manual verification (evidence, not vibes):**
+- Confirmed adapter request body for Responses mode now serializes assistant history with `content[].type = "output_text"` and user/system paths remain valid.
+- Confirmed memory extraction middleware now issues contract-valid generate requests containing required `providerId`, `model`, and `prompt`, eliminating prior `Invalid provider.gateway.generate.request` warnings.
+- Confirmed tool synthesis middleware now follows the same contract-valid request shape to avoid hidden background contract failures.
+
+**Notes / decisions:**
+- Defaulted middleware planner/extractor provider/model to `openai` + `gpt-4.1-mini` for deterministic contract compliance while preserving override hooks via middleware config.
+- Kept `responseFormat: { type: 'json_object' }` in both middlewares to preserve strict parser expectations.
+
+**Follow-ups:**
+- Consider adding provider/model selection for middleware background tasks from resolved session profile policy instead of static defaults.

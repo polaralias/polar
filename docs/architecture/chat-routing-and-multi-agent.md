@@ -1,6 +1,6 @@
 # Chat Routing And Multi-Agent Design
 
-Last updated: 2026-02-27
+Last updated: 2026-02-28
 
 > See also: **Deterministic Orchestration Architecture** (`docs/architecture/deterministic-orchestration-architecture.md`) for the authoritative “model proposes, code decides” boundary and the end-state behaviour rules.
 
@@ -17,6 +17,12 @@ All endpoints map to one canonical message shape:
 Endpoint adapters are transport-specific only. They do not own business logic.
 
 **Important:** reply/thread IDs from transports are treated as *anchoring metadata* and must not partition conversation history. Session identity remains stable per chat.
+
+Telegram-specific normalization:
+1. `sessionId` is always `telegram:chat:<chatId>`.
+2. Inline replies set `threadId` to `telegram:reply:<chatId>:<replyToMessageId>`.
+3. Topic messages set `threadId` to `telegram:topic:<topicId>:<chatId>`.
+4. `replyToMessageId` is metadata only and is never used as a session key.
 
 ## Routing Model
 
@@ -82,9 +88,10 @@ Resolution order is `session override -> workspace default -> global default`.
 
 1. Sub-agents run with explicit capability scope and inherited policy constraints.
 2. Sub-agents are least-privilege by default; any requested `forward_skills` are treated as untrusted input and clamped by server policy.
-3. One agent should own one primary domain of responsibility.
-4. Temporary sub-agents are allowed for bounded parallel work and are explicitly traced.
-5. Cross-domain privilege expansion requires explicit policy approval.
+3. Capability authority truth comes from SkillRegistry authority states; adapter extension snapshots are supplemental.
+4. One agent should own one primary domain of responsibility.
+5. Temporary sub-agents are allowed for bounded parallel work and are explicitly traced.
+6. Cross-domain privilege expansion requires explicit policy approval.
 
 ## Handoff Contract
 

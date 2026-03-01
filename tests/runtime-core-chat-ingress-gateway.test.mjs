@@ -149,7 +149,7 @@ test("chat ingress gateway normalizes web, telegram, slack, and discord payloads
   });
 
   assert.equal(webResult.messageText, telegramResult.messageText);
-  assert.equal(webResult.sessionId, telegramResult.sessionId);
+  assert.equal(telegramResult.sessionId, "telegram:chat:chat-1");
   assert.equal(webResult.userId, telegramResult.userId);
   assert.equal(webResult.timestampMs, telegramResult.timestampMs);
   assert.equal(webResult.locale, telegramResult.locale);
@@ -260,7 +260,7 @@ test("chat ingress gateway preserves multi-turn session and thread continuity wi
   });
   assert.equal(telegramTurn1.sessionId, telegramTurn2.sessionId);
   assert.equal(telegramTurn1.threadId, telegramTurn2.threadId);
-  assert.equal(telegramTurn1.threadId, "telegram:topic:chat-1:topic-9");
+  assert.equal(telegramTurn1.threadId, "telegram:topic:topic-9:chat-1");
 
   const slackTurn1 = await gateway.normalize({
     adapter: "slack",

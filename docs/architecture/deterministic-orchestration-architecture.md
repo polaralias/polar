@@ -1,5 +1,5 @@
 # Deterministic Orchestration Architecture
-Last updated: 2026-02-27
+Last updated: 2026-02-28
 
 ## Purpose
 This document describes the intended end state for Polar’s chat orchestration: **models propose, code decides**. The assistant should feel human in chat (correct context, minimal inline replies, clean reactions), while ensuring security, workflow correctness, and tool permissions are enforced deterministically in code.
@@ -91,6 +91,17 @@ All channels map to one canonical input shape:
 - `channel` + `channelMetadata`
 
 **Important:** session identity must not be partitioned by reply/thread IDs. Reply metadata is used for anchoring, not for splitting conversation history.
+
+Telegram normalization rules:
+- `sessionId` is always `telegram:chat:<chatId>`
+- Reply context is carried via `threadId = telegram:reply:<chatId>:<replyToMessageId>`
+- Topic context is carried via `threadId = telegram:topic:<topicId>:<chatId>`
+- `replyToMessageId` remains metadata for anchoring and must never become a storage partition key
+
+### Session persistence guarantees
+- First message append for a new `sessionId` auto-creates chat session state.
+- History reads (`getSessionHistory`) must return previously appended turns for that same stable `sessionId`.
+- Normal operation must not rely on out-of-band session pre-registration.
 
 ---
 
@@ -214,6 +225,7 @@ Example:
 Every tool execution passes through:
 - `policy.evaluateExecution(input, currentState)`
 - `capabilityScope` is required and must never be `{}` by default.
+- `capabilityScope` authority projection is registry-driven: SkillRegistry authority states are canonical, extension state snapshots are supplemental metadata.
 
 ---
 
@@ -282,4 +294,3 @@ Add/maintain tests that verify deterministic behaviour:
 - Chat routing and multi-agent design (existing doc): `docs/architecture/chat-routing-and-multi-agent.md`
 - Tooling contract and middleware: `docs/architecture/tooling-contract-middleware.md`
 - Web UI and chat management: `docs/product/web-ui-and-chat-management.md`
-

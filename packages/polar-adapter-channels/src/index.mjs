@@ -273,7 +273,8 @@ export function createTelegramIngressAdapter(options = {}) {
       }
 
       const envelope = {
-        sessionId: parsed.sessionId ?? `telegram:chat:${chatId}`,
+        // Session identity is always chat-scoped for Telegram.
+        sessionId: `telegram:chat:${chatId}`,
         userId: parsed.userId ?? `telegram:user:${fromId}`,
         channel: "telegram",
         messageId: derivedMessageId,
@@ -288,7 +289,7 @@ export function createTelegramIngressAdapter(options = {}) {
       const threadId =
         parsed.threadId ??
         (parsed.messageThreadId
-          ? `telegram:topic:${chatId}:${parsed.messageThreadId}`
+          ? `telegram:topic:${parsed.messageThreadId}:${chatId}`
           : parsed.replyToMessageId
             ? `telegram:reply:${chatId}:${parsed.replyToMessageId}`
             : undefined);

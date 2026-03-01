@@ -92,6 +92,7 @@ export function createOrchestrator({
     providerGateway,
     extensionGateway,
     approvalStore,
+    skillRegistry,
     gateway, // ControlPlaneGateway for config
     now = Date.now,
     lineageStore,
@@ -240,6 +241,22 @@ export function createOrchestrator({
             });
             return !match;
         });
+    }
+
+    /**
+     * Skill registry authority states are the canonical source for capability projection.
+     * Extension-gateway state snapshots remain supplemental adapter metadata.
+     * @returns {readonly Record<string, unknown>[]}
+     */
+    function listAuthorityStates() {
+        if (
+            skillRegistry &&
+            typeof skillRegistry === "object" &&
+            typeof skillRegistry.listAuthorityStates === "function"
+        ) {
+            return skillRegistry.listAuthorityStates();
+        }
+        return [];
     }
 
     const methods = {
@@ -723,7 +740,8 @@ ${routingRecommendation || ""}`;
                     sessionProfile: profile,
                     multiAgentConfig,
                     activeDelegation,
-                    installedExtensions: extensionGateway.listStates()
+                    installedExtensions: extensionGateway.listStates(),
+                    authorityStates: listAuthorityStates()
                 });
 
                 const validation = validateSteps(workflowSteps, { capabilityScope });
@@ -766,7 +784,8 @@ ${routingRecommendation || ""}`;
                             sessionProfile: profile,
                             multiAgentConfig,
                             activeDelegation,
-                            installedExtensions: extensionGateway.listStates()
+                            installedExtensions: extensionGateway.listStates(),
+                            authorityStates: listAuthorityStates()
                         });
                         const output = `Successfully delegated to ${parsedArgs.agentId}.` + (rejectedSkills.length ? ` Clamped: ${rejectedSkills.join(", ")}` : "");
                         toolResults.push({ tool: capabilityId, status: "delegated", output });
@@ -785,7 +804,8 @@ ${routingRecommendation || ""}`;
                             sessionProfile: profile,
                             multiAgentConfig,
                             activeDelegation,
-                            installedExtensions: extensionGateway.listStates()
+                            installedExtensions: extensionGateway.listStates(),
+                            authorityStates: listAuthorityStates()
                         });
                         toolResults.push({ tool: capabilityId, status: "completed", output: "Task completed." });
                         await chatManagementGateway.appendMessage({ sessionId: polarSessionId, userId: "system", role: "system", text: `[DELEGATION CLEARED]`, timestampMs: now() });

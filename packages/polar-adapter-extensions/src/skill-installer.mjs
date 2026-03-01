@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { RuntimeExecutionError } from "../../polar-domain/src/index.mjs";
 
 /**
  * @param {string} value
@@ -38,12 +39,12 @@ function isPlainObject(value) {
 function parseFrontmatter(skillMarkdown) {
   const normalized = skillMarkdown.replace(/\r\n/g, "\n");
   if (!normalized.startsWith("---\n")) {
-    throw new Error("SKILL.md must start with YAML frontmatter");
+    throw new RuntimeExecutionError("SKILL.md must start with YAML frontmatter");
   }
 
   const endMarker = normalized.indexOf("\n---\n", 4);
   if (endMarker < 0) {
-    throw new Error("SKILL.md frontmatter is missing closing delimiter");
+    throw new RuntimeExecutionError("SKILL.md frontmatter is missing closing delimiter");
   }
 
   const frontmatterText = normalized.slice(4, endMarker);
@@ -63,7 +64,7 @@ function parseFrontmatter(skillMarkdown) {
 
     const keyMatch = /^([A-Za-z0-9_-]+):\s*(.*)$/.exec(line);
     if (!keyMatch) {
-      throw new Error(`Invalid frontmatter line: "${line}"`);
+      throw new RuntimeExecutionError(`Invalid frontmatter line: "${line}"`);
     }
 
     const key = keyMatch[1];
@@ -159,7 +160,7 @@ function normalizeStringList(values) {
  */
 export function parseSkillManifest(skillMarkdown) {
   if (typeof skillMarkdown !== "string" || skillMarkdown.length === 0) {
-    throw new Error("SKILL.md content must be a non-empty string");
+    throw new RuntimeExecutionError("SKILL.md content must be a non-empty string");
   }
 
   const { frontmatter, body } = parseFrontmatter(skillMarkdown);
@@ -167,15 +168,15 @@ export function parseSkillManifest(skillMarkdown) {
   const name = frontmatter.name;
   const description = frontmatter.description;
   if (typeof name !== "string" || name.length === 0) {
-    throw new Error("SKILL.md frontmatter requires non-empty \"name\"");
+    throw new RuntimeExecutionError("SKILL.md frontmatter requires non-empty \"name\"");
   }
   if (typeof description !== "string" || description.length === 0) {
-    throw new Error("SKILL.md frontmatter requires non-empty \"description\"");
+    throw new RuntimeExecutionError("SKILL.md frontmatter requires non-empty \"description\"");
   }
 
   const slug = normalizeSkillSlug(name);
   if (slug.length === 0) {
-    throw new Error("SKILL.md name must include at least one alphanumeric character");
+    throw new RuntimeExecutionError("SKILL.md name must include at least one alphanumeric character");
   }
 
   const extensionId = `skill.${slug}`;
@@ -204,7 +205,7 @@ export function parseSkillManifest(skillMarkdown) {
         line,
       );
       if (!matched) {
-        throw new Error(`Invalid capability declaration: "${line}"`);
+        throw new RuntimeExecutionError(`Invalid capability declaration: "${line}"`);
       }
 
       const capabilityId = matched[1] ?? matched[2];
@@ -302,16 +303,16 @@ function hasPrefixMatch(sourceUri, prefixes) {
  */
 export function verifySkillProvenance(request) {
   if (!isPlainObject(request)) {
-    throw new Error("Skill provenance request must be a plain object");
+    throw new RuntimeExecutionError("Skill provenance request must be a plain object");
   }
 
   const sourceUri = request.sourceUri;
   const manifestContent = request.manifestContent;
   if (typeof sourceUri !== "string" || sourceUri.length === 0) {
-    throw new Error("sourceUri must be a non-empty string");
+    throw new RuntimeExecutionError("sourceUri must be a non-empty string");
   }
   if (typeof manifestContent !== "string" || manifestContent.length === 0) {
-    throw new Error("manifestContent must be a non-empty string");
+    throw new RuntimeExecutionError("manifestContent must be a non-empty string");
   }
 
   const trustedSourcePrefixes = Array.isArray(request.trustedSourcePrefixes)
@@ -322,7 +323,7 @@ export function verifySkillProvenance(request) {
     : [];
 
   if (hasPrefixMatch(sourceUri, blockedSourcePrefixes)) {
-    throw new Error("Skill source is blocked by provenance policy");
+    throw new RuntimeExecutionError("Skill source is blocked by provenance policy");
   }
 
   const sourceType = parseSourceType(sourceUri);
@@ -330,18 +331,18 @@ export function verifySkillProvenance(request) {
     sourceType === "remote" &&
     (typeof request.pinnedRevision !== "string" || request.pinnedRevision.length === 0)
   ) {
-    throw new Error("Remote skill sources require pinnedRevision");
+    throw new RuntimeExecutionError("Remote skill sources require pinnedRevision");
   }
 
   const computedHash = sha256(manifestContent);
   const expectedHash = request.expectedHash;
   if (expectedHash !== undefined) {
     if (typeof expectedHash !== "string" || expectedHash.length === 0) {
-      throw new Error("expectedHash must be a non-empty string when provided");
+      throw new RuntimeExecutionError("expectedHash must be a non-empty string when provided");
     }
 
     if (computedHash !== expectedHash.toLowerCase()) {
-      throw new Error("Skill manifest hash does not match expectedHash");
+      throw new RuntimeExecutionError("Skill manifest hash does not match expectedHash");
     }
   }
 
@@ -375,12 +376,12 @@ export function verifySkillProvenance(request) {
  */
 export function createSkillCapabilityAdapter(config) {
   if (!isPlainObject(config)) {
-    throw new Error("createSkillCapabilityAdapter config must be a plain object");
+    throw new RuntimeExecutionError("createSkillCapabilityAdapter config must be a plain object");
   }
 
   const skillManifest = config.skillManifest;
   if (!isPlainObject(skillManifest)) {
-    throw new Error("skillManifest must be a plain object");
+    throw new RuntimeExecutionError("skillManifest must be a plain object");
   }
 
   const extensionId = skillManifest.extensionId;
@@ -390,10 +391,10 @@ export function createSkillCapabilityAdapter(config) {
     : [];
 
   if (typeof extensionId !== "string" || extensionId.length === 0) {
-    throw new Error("skillManifest.extensionId must be a non-empty string");
+    throw new RuntimeExecutionError("skillManifest.extensionId must be a non-empty string");
   }
   if (typeof manifestHash !== "string" || manifestHash.length === 0) {
-    throw new Error("skillManifest.manifestHash must be a non-empty string");
+    throw new RuntimeExecutionError("skillManifest.manifestHash must be a non-empty string");
   }
 
   const knownCapabilityIds = new Set(
@@ -415,16 +416,16 @@ export function createSkillCapabilityAdapter(config) {
      */
     async executeCapability(request) {
       if (!isPlainObject(request)) {
-        throw new Error("Skill capability request must be a plain object");
+        throw new RuntimeExecutionError("Skill capability request must be a plain object");
       }
 
       const capabilityId = request.capabilityId;
       if (typeof capabilityId !== "string" || capabilityId.length === 0) {
-        throw new Error("Skill capability request must include capabilityId");
+        throw new RuntimeExecutionError("Skill capability request must include capabilityId");
       }
 
       if (!knownCapabilityIds.has(capabilityId)) {
-        throw new Error(`Unknown skill capability: ${capabilityId}`);
+        throw new RuntimeExecutionError(`Unknown skill capability: ${capabilityId}`);
       }
 
       const handler = capabilityHandlers[capabilityId];

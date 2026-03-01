@@ -9,6 +9,7 @@ import {
 test("MemoryExtractionMiddleware triggers extraction on user message append", async () => {
     let upsertCalled = false;
     let generateCalled = false;
+    let capturedGenerateRequest = null;
 
     const memoryGateway = {
         async upsert(req) {
@@ -22,6 +23,7 @@ test("MemoryExtractionMiddleware triggers extraction on user message append", as
     const providerGateway = {
         async generate(req) {
             generateCalled = true;
+            capturedGenerateRequest = req;
             // BUG-019 fix: provider gateway returns { text: "..." }, not { content: "..." }
             return { text: JSON.stringify({ facts: ['Extracted Fact'] }) };
         }
@@ -49,6 +51,10 @@ test("MemoryExtractionMiddleware triggers extraction on user message append", as
 
     assert.ok(generateCalled, "ProviderGateway.generate should have been called for extraction");
     assert.ok(upsertCalled, "MemoryGateway.upsert should have been called with extracted facts");
+    assert.equal(capturedGenerateRequest.providerId, 'openai');
+    assert.equal(capturedGenerateRequest.model, 'gpt-4.1-mini');
+    assert.equal(typeof capturedGenerateRequest.prompt, 'string');
+    assert.ok(capturedGenerateRequest.prompt.includes('I love London'));
 });
 
 test("MemoryRecallMiddleware injects facts into the prompt", async () => {
@@ -89,8 +95,10 @@ test("MemoryRecallMiddleware injects facts into the prompt", async () => {
 });
 
 test("ToolSynthesisMiddleware prunes toolset for complex requests", async () => {
+    let capturedGenerateRequest = null;
     const providerGateway = {
         async generate(req) {
+            capturedGenerateRequest = req;
             // BUG-020 fix: provider gateway returns { text: "..." }, not { content: "..." }
             return { text: JSON.stringify({ selectedToolIds: ['tool-1'] }) };
         }
@@ -121,4 +129,8 @@ test("ToolSynthesisMiddleware prunes toolset for complex requests", async () => 
     // BUG-009 fix: context.input is replaced immutably, not mutated
     assert.equal(context.input.tools.length, 1, "Toolset should be pruned to 1 tool");
     assert.equal(context.input.tools[0].id, 'tool-1', "Pruned toolset should contain the selected tool");
+    assert.equal(capturedGenerateRequest.providerId, 'openai');
+    assert.equal(capturedGenerateRequest.model, 'gpt-4.1-mini');
+    assert.equal(typeof capturedGenerateRequest.prompt, 'string');
+    assert.ok(capturedGenerateRequest.prompt.includes('Use tool 1 please'));
 });

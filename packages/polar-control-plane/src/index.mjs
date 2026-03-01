@@ -368,6 +368,7 @@ export function createControlPlaneService(config = {}) {
     providerGateway,
     extensionGateway,
     approvalStore,
+    skillRegistry,
     gateway,
     now: config.now,
     lineageStore,

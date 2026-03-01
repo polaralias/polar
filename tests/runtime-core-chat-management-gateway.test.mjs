@@ -122,7 +122,7 @@ test("chat-management lists sessions with deterministic filtering", async () => 
   );
 });
 
-test("chat-management appends messages and rejects invalid append states", async () => {
+test("chat-management appends messages and auto-registers missing sessions", async () => {
   const { gateway } = setupChatManagementGateway({
     initialSessions: [
       {
@@ -175,11 +175,105 @@ test("chat-management appends messages and rejects invalid append states", async
     timestampMs: Date.UTC(2026, 1, 22, 9, 6, 0),
   });
   assert.deepEqual(unknownSession, {
-    status: "rejected",
+    status: "appended",
     sessionId: "session-missing",
     messageId: "msg-x",
-    messageCount: 0,
-    reason: "Session is not registered",
+    messageCount: 1,
+  });
+
+  const unknownHistory = await gateway.getSessionHistory({
+    sessionId: "session-missing",
+  });
+  assert.deepEqual(unknownHistory, {
+    status: "ok",
+    sessionId: "session-missing",
+    items: [
+      {
+        messageId: "msg-x",
+        userId: "user-1",
+        role: "user",
+        text: "x",
+        timestampMs: Date.UTC(2026, 1, 22, 9, 6, 0),
+      },
+    ],
+    totalCount: 1,
+  });
+});
+
+test("chat-management keeps message history for a newly auto-created session", async () => {
+  const { gateway } = setupChatManagementGateway();
+
+  const userAppend = await gateway.appendMessage({
+    sessionId: "telegram:chat:1001",
+    userId: "telegram:user:7",
+    messageId: "msg-u-1",
+    role: "user",
+    text: "hello",
+    timestampMs: Date.UTC(2026, 1, 22, 12, 0, 0),
+  });
+  assert.deepEqual(userAppend, {
+    status: "appended",
+    sessionId: "telegram:chat:1001",
+    messageId: "msg-u-1",
+    messageCount: 1,
+  });
+
+  const assistantAppend = await gateway.appendMessage({
+    sessionId: "telegram:chat:1001",
+    userId: "assistant",
+    messageId: "msg-a-1",
+    role: "assistant",
+    text: "hi there",
+    timestampMs: Date.UTC(2026, 1, 22, 12, 0, 1),
+  });
+  assert.deepEqual(assistantAppend, {
+    status: "appended",
+    sessionId: "telegram:chat:1001",
+    messageId: "msg-a-1",
+    messageCount: 2,
+  });
+
+  const history = await gateway.getSessionHistory({
+    sessionId: "telegram:chat:1001",
+  });
+  assert.deepEqual(history, {
+    status: "ok",
+    sessionId: "telegram:chat:1001",
+    items: [
+      {
+        messageId: "msg-u-1",
+        userId: "telegram:user:7",
+        role: "user",
+        text: "hello",
+        timestampMs: Date.UTC(2026, 1, 22, 12, 0, 0),
+      },
+      {
+        messageId: "msg-a-1",
+        userId: "assistant",
+        role: "assistant",
+        text: "hi there",
+        timestampMs: Date.UTC(2026, 1, 22, 12, 0, 1),
+      },
+    ],
+    totalCount: 2,
+  });
+
+  const sessions = await gateway.listSessions({ channel: "telegram" });
+  assert.deepEqual(sessions, {
+    status: "ok",
+    items: [
+      {
+        sessionId: "telegram:chat:1001",
+        userId: "assistant",
+        channel: "telegram",
+        tags: [],
+        archived: false,
+        messageCount: 2,
+        lastMessageAtMs: Date.UTC(2026, 1, 22, 12, 0, 1),
+        updatedAtMs: Date.UTC(2026, 1, 22, 12, 0, 1),
+      },
+    ],
+    totalCount: 1,
   });
 });
 

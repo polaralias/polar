@@ -247,7 +247,9 @@ test("mcp connector sync installs and auto-enables trusted source with wrapped e
     sessionId: "s1",
     userId: "u1",
     capabilityScope: {
-      allowedTools: ["repo.status"],
+      allowed: {
+        "mcp.git-server": ["mcp.git-server.repo.status"],
+      },
     },
     input: {
       repo: "polar",

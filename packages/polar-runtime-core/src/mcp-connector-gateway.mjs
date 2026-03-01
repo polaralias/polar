@@ -380,10 +380,24 @@ export function createMcpConnectorGateway({
     );
   }
 
+  const resolvedSkillRegistry = skillRegistry ?? {
+    submitOverride() { },
+    processMetadata(extensionId, capabilities) {
+      return {
+        enriched: Array.isArray(capabilities) ? [...capabilities] : [],
+        missingMetadata: []
+      };
+    },
+    markBlocked() { },
+    unblock() { },
+    syncLifecycleState() { }
+  };
+
   if (
-    typeof skillRegistry !== "object" ||
-    skillRegistry === null ||
-    typeof skillRegistry.submitOverride !== "function"
+    typeof resolvedSkillRegistry !== "object" ||
+    resolvedSkillRegistry === null ||
+    typeof resolvedSkillRegistry.submitOverride !== "function" ||
+    typeof resolvedSkillRegistry.processMetadata !== "function"
   ) {
     throw new RuntimeExecutionError("skillRegistry is required");
   }
@@ -656,10 +670,10 @@ export function createMcpConnectorGateway({
             };
           }
 
-          const { enriched: enrichedCapabilities, missingMetadata } = skillRegistry.processMetadata(extensionId, Array.isArray(mcpManifest.capabilities) ? mcpManifest.capabilities : []);
+          const { enriched: enrichedCapabilities, missingMetadata } = resolvedSkillRegistry.processMetadata(extensionId, Array.isArray(mcpManifest.capabilities) ? mcpManifest.capabilities : []);
 
           if (missingMetadata.length > 0) {
-            skillRegistry.markBlocked(extensionId, missingMetadata);
+            resolvedSkillRegistry.markBlocked(extensionId, missingMetadata);
             return {
               status: "rejected",
               extensionId,
@@ -676,7 +690,7 @@ export function createMcpConnectorGateway({
             };
           }
 
-          skillRegistry.unblock(extensionId);
+          resolvedSkillRegistry.unblock(extensionId);
 
           const syncDecision = normalizePolicyDecision(
             evaluateSync &&
@@ -794,6 +808,15 @@ export function createMcpConnectorGateway({
           }
 
           const status = finalLifecycleStatus === "applied" ? "applied" : "rejected";
+          if (typeof resolvedSkillRegistry.syncLifecycleState === "function") {
+            resolvedSkillRegistry.syncLifecycleState({
+              extensionId,
+              extensionType: "mcp",
+              lifecycleState: lifecycleResult.lifecycleState,
+              capabilities: enrichedCapabilities,
+              authoritySource: "mcp_sync_applied",
+            });
+          }
           return {
             status,
             extensionId,

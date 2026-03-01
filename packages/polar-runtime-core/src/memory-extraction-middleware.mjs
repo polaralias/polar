@@ -32,10 +32,16 @@ function parseExtractionResponse(rawText) {
  * @param {{
  *   memoryGateway: { upsert: (req: any) => Promise<any> },
  *   providerGateway: { generate: (req: any) => Promise<any> },
- *   extractionProfileId?: string
+ *   extractionProviderId?: string,
+ *   extractionModel?: string
  * }} config
  */
-export function createMemoryExtractionMiddleware({ memoryGateway, providerGateway, extractionProfileId = 'fact-extractor' }) {
+export function createMemoryExtractionMiddleware({
+    memoryGateway,
+    providerGateway,
+    extractionProviderId = 'openai',
+    extractionModel = 'gpt-4.1-mini'
+}) {
     return {
         id: 'memory-extraction',
 
@@ -52,14 +58,11 @@ export function createMemoryExtractionMiddleware({ memoryGateway, providerGatewa
                     try {
                         const extractionResult = await providerGateway.generate({
                             traceId: `${traceId}-extract`,
-                            profileId: extractionProfileId,
-                            messages: [
-                                {
-                                    role: 'system',
-                                    content: 'You are a fact extraction engine. Analyze the user message and extract any evergreen personal facts, preferences, or project details. Format as a JSON array of strings. If no facts found, return [].'
-                                },
-                                { role: 'user', content: text }
-                            ],
+                            executionType: 'tool',
+                            providerId: extractionProviderId,
+                            model: extractionModel,
+                            system: 'You are a fact extraction engine. Extract only evergreen user/project facts.',
+                            prompt: `Extract durable facts from this user message.\nReturn JSON only in this shape: {"facts":["..."]}\nIf none, return {"facts":[]}\n\nUser message:\n${text}`,
                             responseFormat: { type: 'json_object' }
                         });
 

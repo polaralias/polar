@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { RuntimeExecutionError } from "../../polar-domain/src/index.mjs";
 
 /**
  * @param {unknown} value
@@ -70,7 +71,7 @@ function resolveToolId(tool) {
     }
   }
 
-  throw new Error("MCP tool is missing toolId/id/name");
+  throw new RuntimeExecutionError("MCP tool is missing toolId/id/name");
 }
 
 /**
@@ -83,17 +84,17 @@ function resolveToolId(tool) {
  */
 export function mapMcpToolCatalog(request) {
   if (!isPlainObject(request)) {
-    throw new Error("MCP catalog mapping request must be a plain object");
+    throw new RuntimeExecutionError("MCP catalog mapping request must be a plain object");
   }
 
   const serverId = request.serverId;
   if (typeof serverId !== "string" || serverId.length === 0) {
-    throw new Error("MCP catalog mapping requires serverId");
+    throw new RuntimeExecutionError("MCP catalog mapping requires serverId");
   }
 
   const tools = request.tools;
   if (!Array.isArray(tools)) {
-    throw new Error("MCP catalog mapping requires tools array");
+    throw new RuntimeExecutionError("MCP catalog mapping requires tools array");
   }
 
   const defaultExtensionId = `mcp.${toSlug(serverId)}`;
@@ -102,7 +103,7 @@ export function mapMcpToolCatalog(request) {
       ? request.extensionId
       : defaultExtensionId;
   if (!extensionId.startsWith("mcp.")) {
-    throw new Error("MCP extensionId must use mcp.* namespace");
+    throw new RuntimeExecutionError("MCP extensionId must use mcp.* namespace");
   }
 
   const normalizedTools = [];
@@ -112,23 +113,23 @@ export function mapMcpToolCatalog(request) {
 
   for (const toolCandidate of tools) {
     if (!isPlainObject(toolCandidate)) {
-      throw new Error("MCP tool entries must be plain objects");
+      throw new RuntimeExecutionError("MCP tool entries must be plain objects");
     }
 
     const toolId = resolveToolId(toolCandidate);
     if (knownToolIds.has(toolId)) {
-      throw new Error(`Duplicate MCP tool id in catalog: ${toolId}`);
+      throw new RuntimeExecutionError(`Duplicate MCP tool id in catalog: ${toolId}`);
     }
     knownToolIds.add(toolId);
 
     const normalizedToolSegment = normalizeIdSegment(toolId);
     if (normalizedToolSegment.length === 0) {
-      throw new Error(`MCP tool id cannot be normalized: ${toolId}`);
+      throw new RuntimeExecutionError(`MCP tool id cannot be normalized: ${toolId}`);
     }
 
     const capabilityId = `${extensionId}.${normalizedToolSegment}`;
     if (knownCapabilityIds.has(capabilityId)) {
-      throw new Error(`Duplicate MCP capability id in catalog: ${capabilityId}`);
+      throw new RuntimeExecutionError(`Duplicate MCP capability id in catalog: ${capabilityId}`);
     }
     knownCapabilityIds.add(capabilityId);
 
@@ -165,7 +166,7 @@ export function mapMcpToolCatalog(request) {
   }
 
   if (normalizedTools.length === 0) {
-    throw new Error("MCP catalog must include at least one tool");
+    throw new RuntimeExecutionError("MCP catalog must include at least one tool");
   }
 
   normalizedTools.sort((left, right) => left.toolId.localeCompare(right.toolId));
@@ -200,7 +201,7 @@ export function mapMcpToolCatalog(request) {
  */
 export function verifyMcpConnectionHealth(health) {
   if (!isPlainObject(health)) {
-    throw new Error("MCP health response must be a plain object");
+    throw new RuntimeExecutionError("MCP health response must be a plain object");
   }
 
   const healthy =
@@ -249,16 +250,16 @@ export function verifyMcpConnectionHealth(health) {
  */
 export function createMcpCapabilityAdapter(config) {
   if (!isPlainObject(config)) {
-    throw new Error("createMcpCapabilityAdapter config must be a plain object");
+    throw new RuntimeExecutionError("createMcpCapabilityAdapter config must be a plain object");
   }
 
   if (typeof config.invokeTool !== "function") {
-    throw new Error("createMcpCapabilityAdapter requires invokeTool");
+    throw new RuntimeExecutionError("createMcpCapabilityAdapter requires invokeTool");
   }
 
   const mcpManifest = config.mcpManifest;
   if (!isPlainObject(mcpManifest)) {
-    throw new Error("createMcpCapabilityAdapter requires mcpManifest");
+    throw new RuntimeExecutionError("createMcpCapabilityAdapter requires mcpManifest");
   }
 
   const extensionId = mcpManifest.extensionId;
@@ -269,13 +270,13 @@ export function createMcpCapabilityAdapter(config) {
     : [];
 
   if (typeof extensionId !== "string" || extensionId.length === 0) {
-    throw new Error("mcpManifest.extensionId must be a non-empty string");
+    throw new RuntimeExecutionError("mcpManifest.extensionId must be a non-empty string");
   }
   if (typeof serverId !== "string" || serverId.length === 0) {
-    throw new Error("mcpManifest.serverId must be a non-empty string");
+    throw new RuntimeExecutionError("mcpManifest.serverId must be a non-empty string");
   }
   if (typeof catalogHash !== "string" || catalogHash.length === 0) {
-    throw new Error("mcpManifest.catalogHash must be a non-empty string");
+    throw new RuntimeExecutionError("mcpManifest.catalogHash must be a non-empty string");
   }
 
   const capabilityToTool = new Map();
@@ -299,7 +300,7 @@ export function createMcpCapabilityAdapter(config) {
   }
 
   if (capabilityToTool.size === 0) {
-    throw new Error("mcpManifest.capabilities must include at least one valid capability");
+    throw new RuntimeExecutionError("mcpManifest.capabilities must include at least one valid capability");
   }
 
   return Object.freeze({
@@ -309,17 +310,17 @@ export function createMcpCapabilityAdapter(config) {
      */
     async executeCapability(request) {
       if (!isPlainObject(request)) {
-        throw new Error("MCP executeCapability request must be a plain object");
+        throw new RuntimeExecutionError("MCP executeCapability request must be a plain object");
       }
 
       const capabilityId = request.capabilityId;
       if (typeof capabilityId !== "string" || capabilityId.length === 0) {
-        throw new Error("MCP executeCapability request must include capabilityId");
+        throw new RuntimeExecutionError("MCP executeCapability request must include capabilityId");
       }
 
       const toolId = capabilityToTool.get(capabilityId);
       if (!toolId) {
-        throw new Error(`Unknown MCP capability: ${capabilityId}`);
+        throw new RuntimeExecutionError(`Unknown MCP capability: ${capabilityId}`);
       }
 
       const result = await config.invokeTool({
@@ -357,19 +358,19 @@ export function createMcpCapabilityAdapter(config) {
  */
 export function createMcpConnectionAdapter(config) {
   if (!isPlainObject(config)) {
-    throw new Error("createMcpConnectionAdapter config must be a plain object");
+    throw new RuntimeExecutionError("createMcpConnectionAdapter config must be a plain object");
   }
 
   if (typeof config.serverId !== "string" || config.serverId.length === 0) {
-    throw new Error("createMcpConnectionAdapter requires serverId");
+    throw new RuntimeExecutionError("createMcpConnectionAdapter requires serverId");
   }
 
   if (typeof config.listTools !== "function") {
-    throw new Error("createMcpConnectionAdapter requires listTools(request)");
+    throw new RuntimeExecutionError("createMcpConnectionAdapter requires listTools(request)");
   }
 
   if (typeof config.invokeTool !== "function") {
-    throw new Error("createMcpConnectionAdapter requires invokeTool(request)");
+    throw new RuntimeExecutionError("createMcpConnectionAdapter requires invokeTool(request)");
   }
 
   return Object.freeze({
@@ -399,7 +400,7 @@ export function createMcpConnectionAdapter(config) {
           ? rawCatalog.tools
           : null;
       if (!tools) {
-        throw new Error("MCP listTools must return a tools array");
+        throw new RuntimeExecutionError("MCP listTools must return a tools array");
       }
 
       return mapMcpToolCatalog({

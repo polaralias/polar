@@ -114,7 +114,6 @@ export function createNativeHttpAdapter(config) {
 
     function formatInputResponsesType(input) {
         const arr = [];
-        const systemRole = (endpointMode === "responses" || endpointMode === "anthropic_messages") ? "developer" : "system"; // OpenAI Responses preferred role
 
         if (input.system) {
             arr.push({
@@ -126,10 +125,12 @@ export function createNativeHttpAdapter(config) {
         if (input.messages && Array.isArray(input.messages)) {
             for (const msg of input.messages) {
                 if (msg.role === "system") continue;
+                const normalizedRole = msg.role === "assistant" ? "assistant" : "user";
+                const contentType = normalizedRole === "assistant" ? "output_text" : "input_text";
                 arr.push({
                     type: "message",
-                    role: msg.role === "assistant" ? "assistant" : "user",
-                    content: [{ type: "input_text", text: msg.content || msg.text || "" }]
+                    role: normalizedRole,
+                    content: [{ type: contentType, text: msg.content || msg.text || "" }]
                 });
             }
         }
@@ -410,7 +411,7 @@ export function createNativeHttpAdapter(config) {
                 let lineBuffer = "";
 
                 function extractDelta(parsed) {
-                    if (endpointMode === "chat") {
+                    if (endpointMode === "chat" || endpointMode === "openai") {
                         return parsed.choices?.[0]?.delta?.content || "";
                     } else if (endpointMode === "anthropic_messages") {
                         if (parsed.type === "content_block_delta" && parsed.delta?.type === "text_delta") {
@@ -420,8 +421,9 @@ export function createNativeHttpAdapter(config) {
                     } else if (endpointMode === "gemini_generate_content") {
                         return parsed.candidates?.[0]?.content?.parts?.[0]?.text || "";
                     } else if (endpointMode === "responses") {
+                        // BUG-001 fix: support Responses API delta events (handle both string and object shapes)
                         if (parsed.type === "response.output_text.delta") {
-                            return parsed.delta || "";
+                            return (typeof parsed.delta === "string" ? parsed.delta : (parsed.delta?.text || parsed.delta?.value)) || "";
                         }
                         if (parsed.choices?.[0]?.delta?.content) {
                             return parsed.choices[0].delta.content;
@@ -444,7 +446,7 @@ export function createNativeHttpAdapter(config) {
                                 const parsed = JSON.parse(data);
                                 const delta = extractDelta(parsed);
                                 if (delta) chunks.push(delta);
-                            } catch { /* incomplete JSON in this line, skip */ }
+                            } catch (err) { /* incomplete JSON in this line, skip */ }
                         }
                     }
                 }
@@ -510,7 +512,7 @@ export function createNativeHttpAdapter(config) {
             const headers = await buildHeaders(input, false);
             const bodyArgs = {};
 
-            if (endpointMode === "chat" || endpointMode === "openai") {
+            if (endpointMode === "chat" || endpointMode === "openai" || endpointMode === "responses") {
                 bodyArgs.model = input.model;
                 bodyArgs.input = input.text;
             } else if (endpointMode === "gemini_generate_content") {

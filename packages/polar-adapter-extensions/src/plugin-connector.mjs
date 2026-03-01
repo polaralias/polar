@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { RuntimeExecutionError } from "../../polar-domain/src/index.mjs";
 
 /**
  * @param {unknown} value
@@ -97,7 +98,7 @@ function resolveDescriptorName(descriptor) {
     }
   }
 
-  throw new Error("Plugin descriptor must include name_for_model, name, or id");
+  throw new RuntimeExecutionError("Plugin descriptor must include name_for_model, name, or id");
 }
 
 /**
@@ -115,7 +116,7 @@ function resolvePluginId(descriptor) {
     }
   }
 
-  throw new Error("Plugin descriptor id/name cannot be normalized");
+  throw new RuntimeExecutionError("Plugin descriptor id/name cannot be normalized");
 }
 
 /**
@@ -134,7 +135,7 @@ function resolveDescriptorCapabilities(descriptor) {
     return descriptor.api.operations;
   }
 
-  throw new Error(
+  throw new RuntimeExecutionError(
     "Plugin descriptor must include capabilities array or api.operations array",
   );
 }
@@ -149,7 +150,7 @@ function normalizeAuthScheme(value) {
   }
 
   if (typeof value !== "string" || value.length === 0) {
-    throw new Error("Plugin auth scheme must be a non-empty string");
+    throw new RuntimeExecutionError("Plugin auth scheme must be a non-empty string");
   }
 
   return value.toLowerCase();
@@ -165,7 +166,7 @@ function buildPluginManifest(extensionId, descriptor) {
   const pluginId = resolvePluginId(descriptor);
   const descriptorHash = sha256(stableJsonStringify(descriptor));
   const descriptorPermissions = normalizeStringList(
-    /** @type {readonly string[]|undefined} */ (descriptor.permissions),
+    /** @type {readonly string[]|undefined} */(descriptor.permissions),
   );
   const capabilityCandidates = resolveDescriptorCapabilities(descriptor);
   const defaultAuthScheme = normalizeAuthScheme(
@@ -179,7 +180,7 @@ function buildPluginManifest(extensionId, descriptor) {
 
   for (const capabilityCandidate of capabilityCandidates) {
     if (!isPlainObject(capabilityCandidate)) {
-      throw new Error("Plugin capability entries must be plain objects");
+      throw new RuntimeExecutionError("Plugin capability entries must be plain objects");
     }
 
     const operationIdCandidate =
@@ -190,14 +191,14 @@ function buildPluginManifest(extensionId, descriptor) {
       typeof operationIdCandidate !== "string" ||
       operationIdCandidate.length === 0
     ) {
-      throw new Error(
+      throw new RuntimeExecutionError(
         "Plugin capability entries require operationId, id, or name",
       );
     }
     const operationId = operationIdCandidate;
     const operationSegment = normalizeIdSegment(operationId);
     if (operationSegment.length === 0) {
-      throw new Error(`Plugin operation id cannot be normalized: ${operationId}`);
+      throw new RuntimeExecutionError(`Plugin operation id cannot be normalized: ${operationId}`);
     }
 
     const capabilityIdCandidate = capabilityCandidate.capabilityId;
@@ -206,7 +207,7 @@ function buildPluginManifest(extensionId, descriptor) {
         ? capabilityIdCandidate
         : `${extensionId}.${operationSegment}`;
     if (knownCapabilityIds.has(capabilityId)) {
-      throw new Error(`Duplicate plugin capability id: ${capabilityId}`);
+      throw new RuntimeExecutionError(`Duplicate plugin capability id: ${capabilityId}`);
     }
     knownCapabilityIds.add(capabilityId);
 
@@ -225,10 +226,10 @@ function buildPluginManifest(extensionId, descriptor) {
 
     const authScheme = normalizeAuthScheme(
       capabilityCandidate.authScheme ??
-        (isPlainObject(capabilityCandidate.auth)
-          ? capabilityCandidate.auth.type
-          : undefined) ??
-        defaultAuthScheme,
+      (isPlainObject(capabilityCandidate.auth)
+        ? capabilityCandidate.auth.type
+        : undefined) ??
+      defaultAuthScheme,
     );
     if (authScheme !== "none") {
       requiredAuthSchemes.add(authScheme);
@@ -269,7 +270,7 @@ function buildPluginManifest(extensionId, descriptor) {
   }
 
   if (capabilities.length === 0) {
-    throw new Error("Plugin descriptor must include at least one capability");
+    throw new RuntimeExecutionError("Plugin descriptor must include at least one capability");
   }
   capabilities.sort((left, right) => left.capabilityId.localeCompare(right.capabilityId));
 
@@ -308,12 +309,12 @@ function buildPluginManifest(extensionId, descriptor) {
  */
 export function mapPluginDescriptor(request) {
   if (!isPlainObject(request)) {
-    throw new Error("Plugin descriptor mapping request must be a plain object");
+    throw new RuntimeExecutionError("Plugin descriptor mapping request must be a plain object");
   }
 
   const descriptor = request.pluginDescriptor;
   if (!isPlainObject(descriptor)) {
-    throw new Error("pluginDescriptor must be a plain object");
+    throw new RuntimeExecutionError("pluginDescriptor must be a plain object");
   }
 
   const resolvedExtensionId =
@@ -321,7 +322,7 @@ export function mapPluginDescriptor(request) {
       ? request.extensionId
       : `plugin.${resolvePluginId(descriptor)}`;
   if (!resolvedExtensionId.startsWith("plugin.")) {
-    throw new Error("Plugin extensionId must use plugin.* namespace");
+    throw new RuntimeExecutionError("Plugin extensionId must use plugin.* namespace");
   }
 
   return buildPluginManifest(resolvedExtensionId, descriptor);
@@ -333,20 +334,20 @@ export function mapPluginDescriptor(request) {
  */
 export function verifyPluginAuthBindings(request) {
   if (!isPlainObject(request)) {
-    throw new Error("Plugin auth binding verification request must be a plain object");
+    throw new RuntimeExecutionError("Plugin auth binding verification request must be a plain object");
   }
 
   if (!isPlainObject(request.pluginManifest)) {
-    throw new Error("pluginManifest must be a plain object");
+    throw new RuntimeExecutionError("pluginManifest must be a plain object");
   }
 
   const authBindings = request.authBindings ?? {};
   if (!isPlainObject(authBindings)) {
-    throw new Error("authBindings must be a plain object when provided");
+    throw new RuntimeExecutionError("authBindings must be a plain object when provided");
   }
 
   const requiredSchemes = normalizeStringList(
-    /** @type {readonly string[]|undefined} */ (request.pluginManifest.requiredAuthSchemes),
+    /** @type {readonly string[]|undefined} */(request.pluginManifest.requiredAuthSchemes),
   );
   const providedSchemes = Object.freeze(
     Object.keys(authBindings)
@@ -374,15 +375,15 @@ export function verifyPluginAuthBindings(request) {
  */
 export function createPluginCapabilityAdapter(config) {
   if (!isPlainObject(config)) {
-    throw new Error("createPluginCapabilityAdapter config must be a plain object");
+    throw new RuntimeExecutionError("createPluginCapabilityAdapter config must be a plain object");
   }
 
   if (typeof config.invokeOperation !== "function") {
-    throw new Error("createPluginCapabilityAdapter requires invokeOperation");
+    throw new RuntimeExecutionError("createPluginCapabilityAdapter requires invokeOperation");
   }
 
   if (!isPlainObject(config.pluginManifest)) {
-    throw new Error("createPluginCapabilityAdapter requires pluginManifest");
+    throw new RuntimeExecutionError("createPluginCapabilityAdapter requires pluginManifest");
   }
 
   const pluginManifest = config.pluginManifest;
@@ -390,13 +391,13 @@ export function createPluginCapabilityAdapter(config) {
   const pluginId = pluginManifest.pluginId;
   const descriptorHash = pluginManifest.descriptorHash;
   if (typeof extensionId !== "string" || extensionId.length === 0) {
-    throw new Error("pluginManifest.extensionId must be a non-empty string");
+    throw new RuntimeExecutionError("pluginManifest.extensionId must be a non-empty string");
   }
   if (typeof pluginId !== "string" || pluginId.length === 0) {
-    throw new Error("pluginManifest.pluginId must be a non-empty string");
+    throw new RuntimeExecutionError("pluginManifest.pluginId must be a non-empty string");
   }
   if (typeof descriptorHash !== "string" || descriptorHash.length === 0) {
-    throw new Error("pluginManifest.descriptorHash must be a non-empty string");
+    throw new RuntimeExecutionError("pluginManifest.descriptorHash must be a non-empty string");
   }
 
   const authBindings = isPlainObject(config.authBindings) ? config.authBindings : {};
@@ -440,7 +441,7 @@ export function createPluginCapabilityAdapter(config) {
   }
 
   if (capabilityMap.size === 0) {
-    throw new Error("pluginManifest.capabilities must include at least one valid capability");
+    throw new RuntimeExecutionError("pluginManifest.capabilities must include at least one valid capability");
   }
 
   return Object.freeze({
@@ -450,17 +451,17 @@ export function createPluginCapabilityAdapter(config) {
      */
     async executeCapability(request) {
       if (!isPlainObject(request)) {
-        throw new Error("Plugin executeCapability request must be a plain object");
+        throw new RuntimeExecutionError("Plugin executeCapability request must be a plain object");
       }
 
       const capabilityId = request.capabilityId;
       if (typeof capabilityId !== "string" || capabilityId.length === 0) {
-        throw new Error("Plugin executeCapability request must include capabilityId");
+        throw new RuntimeExecutionError("Plugin executeCapability request must include capabilityId");
       }
 
       const capability = capabilityMap.get(capabilityId);
       if (!capability) {
-        throw new Error(`Unknown plugin capability: ${capabilityId}`);
+        throw new RuntimeExecutionError(`Unknown plugin capability: ${capabilityId}`);
       }
 
       const authBinding =
@@ -468,7 +469,7 @@ export function createPluginCapabilityAdapter(config) {
           ? undefined
           : authBindings[capability.authScheme];
       if (capability.authScheme !== "none" && authBinding === undefined) {
-        throw new Error(
+        throw new RuntimeExecutionError(
           `Missing auth binding for plugin capability scheme: ${capability.authScheme}`,
         );
       }

@@ -402,3 +402,137 @@ test("delegation strips unauthorized forward_skills and blocks delegated access 
     }
   });
 });
+
+test("orchestrator computes capability scope from skill-registry authority states", async () => {
+  await withUnrefedIntervals(async () => {
+    const appendedMessages = [];
+    const extensionExecutions = [];
+    let providerText = `<polar_action>{"template":"search_web","args":{"query":"policy updates"}}</polar_action>`;
+
+    const extensionGateway = createExtensionGateway({
+      middlewarePipeline: {
+        async run(context, next) {
+          return next(context.input);
+        },
+      },
+      extensionRegistry: {
+        get() {
+          return {
+            async executeCapability(request) {
+              extensionExecutions.push(request);
+              return { status: "completed", output: "ok" };
+            },
+          };
+        },
+      },
+      initialStates: [
+        {
+          extensionId: "web",
+          extensionType: "mcp",
+          trustLevel: "trusted",
+          lifecycleState: "enabled",
+          permissions: [],
+          capabilities: [
+            { capabilityId: "search_web", riskLevel: "read", sideEffects: "none", dataEgress: "none" },
+          ],
+        },
+        {
+          extensionId: "email",
+          extensionType: "mcp",
+          trustLevel: "trusted",
+          lifecycleState: "enabled",
+          permissions: [],
+          capabilities: [
+            { capabilityId: "draft_email", riskLevel: "write", sideEffects: "external", dataEgress: "network" },
+          ],
+        },
+      ],
+    });
+
+    const orchestrator = createOrchestrator({
+      profileResolutionGateway: {
+        async resolve() {
+          return {
+            profileConfig: {
+              systemPrompt: "You are a test assistant.",
+              modelPolicy: { providerId: "test-provider", modelId: "test-model" },
+              allowedSkills: ["web", "email"],
+            },
+          };
+        },
+      },
+      chatManagementGateway: {
+        async appendMessage(message) {
+          appendedMessages.push(message);
+          return { status: "appended" };
+        },
+        async getSessionHistory({ sessionId, limit = 100 }) {
+          const items = appendedMessages
+            .filter((message) => message.sessionId === sessionId)
+            .map((message) => ({
+              role: message.role,
+              text: message.text,
+            }));
+          return { items: items.slice(-limit) };
+        },
+      },
+      providerGateway: {
+        async generate({ prompt }) {
+          if (typeof prompt === "string" && prompt.includes("Analyze these execution results")) {
+            return { text: "summary" };
+          }
+          return { text: providerText };
+        },
+      },
+      extensionGateway,
+      approvalStore: createApprovalStore(),
+      skillRegistry: {
+        listAuthorityStates() {
+          return [
+            {
+              extensionId: "web",
+              lifecycleState: "enabled",
+              capabilities: [{ capabilityId: "search_web" }],
+            },
+            {
+              extensionId: "email",
+              lifecycleState: "blocked",
+              capabilities: [{ capabilityId: "draft_email" }],
+            },
+          ];
+        },
+      },
+      gateway: {
+        async getConfig() {
+          return { status: "not_found" };
+        },
+      },
+      now: Date.now,
+    });
+
+    const allowedResult = await orchestrator.orchestrate({
+      sessionId: "session-authority",
+      userId: "user-authority",
+      text: "search policy updates",
+      messageId: "m-1",
+    });
+    assert.equal(allowedResult.status, "completed");
+    assert.equal(extensionExecutions.length, 1);
+    assert.deepEqual(extensionExecutions[0].capabilityScope.allowed.web, ["search_web"]);
+    assert.equal(extensionExecutions[0].capabilityScope.allowed.email, undefined);
+
+    providerText = `<polar_action>{"template":"draft_email","args":{"to":"a@example.com","subject":"hello","body":"world"}}</polar_action>`;
+    const blockedProposal = await orchestrator.orchestrate({
+      sessionId: "session-authority",
+      userId: "user-authority",
+      text: "draft an email",
+      messageId: "m-2",
+    });
+    assert.equal(blockedProposal.status, "workflow_proposed");
+
+    const blockedExecution = await orchestrator.executeWorkflow(blockedProposal.workflowId);
+    assert.equal(blockedExecution.status, "error");
+    assert.match(blockedExecution.text, /Workflow blocked/);
+    assert.equal(extensionExecutions.length, 1);
+  });
+});

@@ -41,7 +41,7 @@ test("extension adapter registry rejects duplicate ids and invalid adapters", ()
   });
 
   assert.throws(
-    () => registry.register("plugin.search", { executeCapability() {} }),
+    () => registry.register("plugin.search", { executeCapability() { } }),
     /already registered/,
   );
   assert.throws(
@@ -86,7 +86,7 @@ test("createPermissionDeltaReport validates invalid permission inputs", () => {
     /must be a non-empty string/,
   );
   assert.throws(
-    () => createPermissionDeltaReport(/** @type {unknown} */ ("bad"), ["x"]),
+    () => createPermissionDeltaReport(/** @type {unknown} */("bad"), ["x"]),
     /must be an array/,
   );
 });
@@ -118,10 +118,16 @@ permissions:
       {
         capabilityId: "docs.search",
         description: "Search docs corpus",
+        riskLevel: "unknown",
+        sideEffects: "unknown",
+        dataEgress: "unknown",
       },
       {
         capabilityId: "docs.summarize",
         description: "Summarize selected docs",
+        riskLevel: "unknown",
+        sideEffects: "unknown",
+        dataEgress: "unknown",
       },
     ],
   });
@@ -417,12 +423,18 @@ test("mapMcpToolCatalog maps tools to deterministic capability wrappers", () => 
         capabilityId: "mcp.git-server.repo.diff",
         toolId: "repo.diff",
         permissions: ["git.diff", "git.read", "mcp.tool.repo.diff"],
+        riskLevel: "unknown",
+        sideEffects: "unknown",
+        dataEgress: "unknown",
       },
       {
         capabilityId: "mcp.git-server.repo.status",
         toolId: "repo.status",
         permissions: ["git.read", "mcp.tool.repo.status"],
         description: "Show repository status",
+        riskLevel: "unknown",
+        sideEffects: "unknown",
+        dataEgress: "unknown",
       },
     ],
   });

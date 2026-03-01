@@ -31,10 +31,15 @@ function parseSynthesisResponse(rawText) {
  * 
  * @param {{
  *   providerGateway: { generate: (req: any) => Promise<any> },
- *   plannerProfileId?: string
+ *   plannerProviderId?: string,
+ *   plannerModel?: string
  * }} config
  */
-export function createToolSynthesisMiddleware({ providerGateway, plannerProfileId = 'primary' }) {
+export function createToolSynthesisMiddleware({
+    providerGateway,
+    plannerProviderId = 'openai',
+    plannerModel = 'gpt-4.1-mini'
+}) {
     return {
         id: 'tool-synthesis',
 
@@ -43,29 +48,22 @@ export function createToolSynthesisMiddleware({ providerGateway, plannerProfileI
             if ((context.actionId === 'provider.generate' || context.actionId === 'provider.stream') &&
                 Array.isArray(context.input.tools) &&
                 context.input.tools.length > 3 &&
+                Array.isArray(context.input.messages) &&
                 !context.input.skipSynthesis) {
 
                 const { messages, tools, traceId } = context.input;
-                const lastUserMessage = [...messages].reverse().find(m => m.role === 'user');
+                const lastUserMessage = messages.findLast ? messages.findLast(m => m.role === 'user') : [...messages].reverse().find(m => m.role === 'user');
 
                 if (lastUserMessage) {
                     try {
                         // Run a lightweight planning turn to rank/select tools
                         const synthesisResult = await providerGateway.generate({
                             traceId: `${traceId}-synthesis`,
-                            profileId: plannerProfileId,
-                            messages: [
-                                {
-                                    role: 'system',
-                                    content: `You are a Tool Selection Planner. Analyze the user request and select the subset of available tools that are RELEVANT to solving it.
-                  
-Available Tools:
-${tools.map(t => `- ${t.id}: ${t.description.substring(0, 100)}...`).join('\n')}
-
-Output JSON: { "selectedToolIds": ["id1", "id2"] }`
-                                },
-                                { role: 'user', content: lastUserMessage.content }
-                            ],
+                            executionType: 'tool',
+                            providerId: plannerProviderId,
+                            model: plannerModel,
+                            system: 'You are a Tool Selection Planner. Return only valid JSON.',
+                            prompt: `Analyze the request and choose only relevant tools.\n\nUser request:\n${lastUserMessage.content}\n\nAvailable tools:\n${tools.map(t => `- ${t.id}: ${t.description.substring(0, 100)}...`).join('\n')}\n\nReturn JSON only in this shape: {"selectedToolIds":["id1","id2"]}`,
                             responseFormat: { type: 'json_object' }
                         });
 

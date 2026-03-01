@@ -260,6 +260,129 @@ test("control-plane service proxies chat-management operations", async () => {
   });
 });
 
+test("control-plane keeps Telegram reply turns in one session and preserves threadId metadata", async () => {
+  const service = createControlPlaneService();
+  const baseTs = Date.UTC(2026, 1, 22, 12, 30, 0);
+
+  const firstEnvelope = await service.normalizeIngress({
+    adapter: "telegram",
+    payload: {
+      chatId: "chat-42",
+      fromId: "user-7",
+      messageId: "m-1",
+      text: "first turn",
+      timestampMs: baseTs,
+    },
+  });
+  assert.equal(firstEnvelope.sessionId, "telegram:chat:chat-42");
+  assert.equal(firstEnvelope.threadId, undefined);
+
+  const firstAppend = await service.appendMessage({
+    sessionId: firstEnvelope.sessionId,
+    userId: firstEnvelope.userId,
+    messageId: firstEnvelope.messageId,
+    role: "user",
+    text: firstEnvelope.messageText,
+    timestampMs: firstEnvelope.timestampMs,
+    metadata: firstEnvelope.metadata,
+  });
+  assert.deepEqual(firstAppend, {
+    status: "appended",
+    sessionId: "telegram:chat:chat-42",
+    messageId: "telegram:chat-42:m-1",
+    messageCount: 1,
+  });
+
+  const replyEnvelope = await service.normalizeIngress({
+    adapter: "telegram",
+    payload: {
+      chatId: "chat-42",
+      fromId: "user-7",
+      messageId: "m-2",
+      replyToMessageId: "m-1",
+      text: "follow up",
+      timestampMs: baseTs + 1_000,
+    },
+  });
+  assert.equal(replyEnvelope.sessionId, "telegram:chat:chat-42");
+  assert.equal(replyEnvelope.threadId, "telegram:reply:chat-42:m-1");
+  assert.equal(replyEnvelope.metadata.replyToMessageId, "m-1");
+
+  const replyAppend = await service.appendMessage({
+    sessionId: replyEnvelope.sessionId,
+    userId: replyEnvelope.userId,
+    messageId: replyEnvelope.messageId,
+    role: "user",
+    text: replyEnvelope.messageText,
+    timestampMs: replyEnvelope.timestampMs,
+    threadId: replyEnvelope.threadId,
+    metadata: replyEnvelope.metadata,
+  });
+  assert.deepEqual(replyAppend, {
+    status: "appended",
+    sessionId: "telegram:chat:chat-42",
+    messageId: "telegram:chat-42:m-2",
+    messageCount: 2,
+  });
+
+  const sessions = await service.listSessions({
+    channel: "telegram",
+  });
+  assert.deepEqual(sessions, {
+    status: "ok",
+    items: [
+      {
+        sessionId: "telegram:chat:chat-42",
+        userId: "telegram:user:user-7",
+        channel: "telegram",
+        tags: [],
+        archived: false,
+        messageCount: 2,
+        lastMessageAtMs: baseTs + 1_000,
+        updatedAtMs: baseTs + 1_000,
+      },
+    ],
+    totalCount: 1,
+  });
+
+  const history = await service.getSessionHistory({
+    sessionId: "telegram:chat:chat-42",
+  });
+  assert.deepEqual(history, {
+    status: "ok",
+    sessionId: "telegram:chat:chat-42",
+    items: [
+      {
+        messageId: "telegram:chat-42:m-1",
+        userId: "telegram:user:user-7",
+        role: "user",
+        text: "first turn",
+        timestampMs: baseTs,
+        metadata: {
+          source: "telegram",
+          chatId: "chat-42",
+          fromId: "user-7",
+        },
+      },
+      {
+        messageId: "telegram:chat-42:m-2",
+        userId: "telegram:user:user-7",
+        role: "user",
+        text: "follow up",
+        timestampMs: baseTs + 1_000,
+        threadId: "telegram:reply:chat-42:m-1",
+        metadata: {
+          source: "telegram",
+          chatId: "chat-42",
+          fromId: "user-7",
+          replyToMessageId: "m-1",
+        },
+      },
+    ],
+    totalCount: 2,
+  });
+});
+
 test("control-plane service proxies ingress health diagnostics", async () => {
   const nowMs = Date.UTC(2026, 1, 23, 8, 30, 0);
   const middlewareEvents = [];

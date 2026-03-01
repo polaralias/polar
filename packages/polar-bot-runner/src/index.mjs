@@ -52,25 +52,57 @@ async function safeReact(ctx, emoji, messageId) {
 }
 
 /**
- * BUG-021/BUG-023 fix: Normalize a Telegram context into a polarSessionId
- * using the control plane's ingress normalization, not raw ctx.chat.id.
- * Falls back to the raw chat ID prefixed form if normalization fails.
+ * Resolve message-bearing context from either a direct message event
+ * or a callback query event.
+ * @param {import("telegraf").Context} ctx
+ * @returns {import("telegraf/typings/core/types/typegram").Message.CommonMessage | undefined}
  */
-async function resolvePolarSessionId(ctx) {
+function resolveTelegramMessageContext(ctx) {
+    const directMessage = ctx.message;
+    if (directMessage && typeof directMessage === "object") {
+        return directMessage;
+    }
+    const callbackMessage = ctx.callbackQuery?.message;
+    if (callbackMessage && typeof callbackMessage === "object" && "message_id" in callbackMessage) {
+        return callbackMessage;
+    }
+    return undefined;
+}
+
+/**
+ * Resolve normalized Telegram chat context from control-plane ingress contracts.
+ * Session identity is always chat-scoped (`telegram:chat:<chatId>`); thread context
+ * is returned separately for routing metadata only.
+ * @param {import("telegraf").Context} ctx
+ */
+async function resolvePolarSessionContext(ctx) {
+    const messageContext = resolveTelegramMessageContext(ctx);
+    const chatId = messageContext?.chat?.id ?? ctx.chat?.id;
+    const fromId = messageContext?.from?.id ?? ctx.from?.id;
+    const messageId = messageContext?.message_id;
+
+    if (chatId === undefined) {
+        return {
+            sessionId: "telegram:chat:unknown",
+            threadId: undefined,
+            replyToMessageId: undefined
+        };
+    }
+
     try {
         const telegramPayload = {
-            chatId: ctx.chat.id,
-            fromId: ctx.from?.id || 0,
-            text: 'session-resolution',
-            messageId: ctx.message?.message_id || 0,
+            chatId,
+            fromId: fromId ?? 0,
+            text: "session-resolution",
+            messageId: messageId ?? 0,
             timestampMs: Date.now()
         };
 
-        if (ctx.message?.message_thread_id) {
-            telegramPayload.messageThreadId = ctx.message.message_thread_id;
+        if (messageContext?.message_thread_id) {
+            telegramPayload.messageThreadId = messageContext.message_thread_id;
         }
-        if (ctx.message?.reply_to_message) {
-            telegramPayload.replyToMessageId = ctx.message.reply_to_message.message_id;
+        if (messageContext?.reply_to_message?.message_id) {
+            telegramPayload.replyToMessageId = messageContext.reply_to_message.message_id;
         }
 
         const envelope = await controlPlane.normalizeIngress({
@@ -78,9 +110,17 @@ async function resolvePolarSessionId(ctx) {
             payload: telegramPayload
         });
 
-        return envelope.threadId || envelope.sessionId;
+        return {
+            sessionId: envelope.sessionId,
+            threadId: envelope.threadId,
+            replyToMessageId: envelope.metadata?.replyToMessageId
+        };
     } catch {
-        return `telegram:chat:${ctx.chat.id}`;
+        return {
+            sessionId: `telegram:chat:${chatId}`,
+            threadId: undefined,
+            replyToMessageId: undefined
+        };
     }
 }
 
@@ -98,13 +138,12 @@ const MESSAGE_BUFFER = new Map();
 const DEBOUNCE_TIMEOUT_MS = 2500;
 
 // UX State Tracking
-const COMPLETED_REACTIONS = new Map(); // sessionId -> Set(messageId)
+const completedReactionsMap = new Map(); // sessionId -> Map(messageId -> timestamp)
 
 async function clearCompletedReactions(ctx, sessionId) {
-    const messageIds = COMPLETED_REACTIONS.get(sessionId);
+    const messageIds = completedReactionsMap.get(sessionId);
     if (messageIds && messageIds.size > 0) {
-        console.log(`[UX] Clearing ${messageIds.size} completed reactions for session ${sessionId}`);
-        for (const msgId of messageIds) {
+        for (const msgId of messageIds.keys()) {
             try {
                 // Passing empty array removes all reactions
                 await ctx.telegram.setMessageReaction(ctx.chat.id, msgId, []);
@@ -117,11 +156,26 @@ async function clearCompletedReactions(ctx, sessionId) {
 }
 
 function markReactionCompleted(sessionId, messageId) {
-    if (!COMPLETED_REACTIONS.has(sessionId)) {
-        COMPLETED_REACTIONS.set(sessionId, new Set());
+    if (!completedReactionsMap.has(sessionId)) {
+        completedReactionsMap.set(sessionId, new Map());
     }
-    COMPLETED_REACTIONS.get(sessionId).add(messageId);
+    completedReactionsMap.get(sessionId).set(messageId, Date.now());
 }
+
+// Global cleanup for stale reactions (staged for health)
+setInterval(() => {
+    const now = Date.now();
+    for (const [sessionId, messageIds] of completedReactionsMap.entries()) {
+        for (const [messageId, timestamp] of messageIds.entries()) {
+            if (now - timestamp > 600000) {
+                messageIds.delete(messageId);
+            }
+        }
+        if (messageIds.size === 0) {
+            completedReactionsMap.delete(sessionId);
+        }
+    }
+}, 600000);
 
 async function handleMessageDebounced(ctx) {
     let envelope;
@@ -327,8 +381,7 @@ bot.on(message('document'), async (ctx) => {
 
             const pdfData = await pdfParse(Buffer.from(buffer));
 
-            // BUG-021 fix: Use stable session ID
-            const polarSessionId = (await resolvePolarSessionId(ctx)).replace(/^telegram:topic:.*:|^telegram:reply:.*:/, 'telegram:chat:');
+            const { sessionId: polarSessionId } = await resolvePolarSessionContext(ctx);
 
             await controlPlane.appendMessage({
                 sessionId: polarSessionId,
@@ -371,8 +424,7 @@ bot.on(message('photo'), async (ctx) => {
         const imageSizeKb = Math.round(buffer.byteLength / 1024);
         const caption = ctx.message.caption || "";
 
-        // BUG-021 fix: Use stable session ID
-        const polarSessionId = (await resolvePolarSessionId(ctx)).replace(/^telegram:topic:.*:|^telegram:reply:.*:/, 'telegram:chat:');
+        const { sessionId: polarSessionId } = await resolvePolarSessionContext(ctx);
 
         await controlPlane.appendMessage({
             sessionId: polarSessionId,
@@ -397,14 +449,11 @@ async function handleReactionUpdate(ctx) {
     // BUG-033 fix: Validate reaction structure before accessing properties
     if (!reaction || !reaction.chat || !reaction.new_reaction || reaction.new_reaction.length === 0) return;
     if (!reaction.user && !reaction.actor_chat) return; // No user info available (channel posts, anonymous)
-
     const emoji = reaction.new_reaction[0].emoji;
     const sessionId = `telegram:chat:${reaction.chat.id}`;
     const messageIdToFind = `msg_a_${reaction.message_id}`;
 
     if (emoji === '👍' || emoji === '💯' || emoji === '🔥') {
-        console.log(`[MEMORY] User gave positive reaction ${emoji} to message ${reaction.message_id}. Writing to REACTIONS.md...`);
-
         const sessionHistory = await controlPlane.getSessionHistory({ sessionId, limit: 50 });
         const targetMsg = sessionHistory.items?.find(m => m.messageId === messageIdToFind);
 
@@ -413,7 +462,6 @@ async function handleReactionUpdate(ctx) {
             fs.appendFileSync(path.join(process.cwd(), 'REACTIONS.md'), memoryLine);
         }
     } else if (emoji === '👎') {
-        console.log(`[MEMORY] User gave negative reaction ${emoji} to message ${reaction.message_id}. Flagging as bad example...`);
         const sessionHistory = await controlPlane.getSessionHistory({ sessionId, limit: 50 });
         const targetMsg = sessionHistory.items?.find(m => m.messageId === messageIdToFind);
 
@@ -440,7 +488,11 @@ bot.on('callback_query', async (ctx) => {
 
         try {
             const result = await controlPlane.executeWorkflow(workflowId);
-            const sessionId = await resolvePolarSessionId(ctx).catch(() => `telegram:chat:${ctx.message?.chat?.id}`);
+            const sessionId = (await resolvePolarSessionContext(ctx).catch(() => ({
+                sessionId: `telegram:chat:${ctx.callbackQuery?.message?.chat?.id ?? ctx.message?.chat?.id ?? "unknown"}`,
+                threadId: undefined,
+                replyToMessageId: undefined
+            }))).sessionId;
 
             if (result.status === 'completed') {
                 if (result.text) {
@@ -480,7 +532,7 @@ bot.on('callback_query', async (ctx) => {
         // Resolve session ID from the chat
         let sessionId;
         try {
-            sessionId = await resolvePolarSessionId(ctx);
+            sessionId = (await resolvePolarSessionContext(ctx)).sessionId;
         } catch {
             sessionId = `telegram:chat:${ctx.callbackQuery.message?.chat?.id}`;
         }

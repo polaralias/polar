@@ -166,6 +166,44 @@ function normalizeTags(value) {
 }
 
 /**
+ * @param {string} sessionId
+ * @returns {"web"|"telegram"|"slack"|"discord"|"other"}
+ */
+function inferChannelFromSessionId(sessionId) {
+  if (sessionId.startsWith("telegram:chat:")) {
+    return "telegram";
+  }
+  if (sessionId.startsWith("slack:channel:")) {
+    return "slack";
+  }
+  if (sessionId.startsWith("discord:channel:")) {
+    return "discord";
+  }
+  if (sessionId.startsWith("web:")) {
+    return "web";
+  }
+  return "other";
+}
+
+/**
+ * @param {{
+ *   sessionId: string,
+ *   userId: string,
+ *   timestampMs: number
+ * }} input
+ * @returns {Record<string, unknown>}
+ */
+function createAutoSessionRecord(input) {
+  return normalizeSessionRecord({
+    sessionId: input.sessionId,
+    userId: input.userId,
+    channel: inferChannelFromSessionId(input.sessionId),
+    createdAtMs: input.timestampMs,
+    updatedAtMs: input.timestampMs,
+  });
+}
+
+/**
  * @param {string|undefined} cursor
  * @param {string} schemaId
  * @returns {number}
@@ -343,15 +381,15 @@ export function createChatManagementGateway({
         },
         async (input) => {
           const sessionId = /** @type {string} */ (input.sessionId);
-          const session = sessions.get(sessionId);
+          let session = sessions.get(sessionId);
           if (!session) {
-            return {
-              status: "rejected",
+            session = createAutoSessionRecord({
               sessionId,
-              messageId: input.messageId,
-              messageCount: 0,
-              reason: "Session is not registered",
-            };
+              userId: /** @type {string} */ (input.userId),
+              timestampMs: /** @type {number} */ (input.timestampMs),
+            });
+            sessions.set(sessionId, session);
+            ensureMessageCollection(sessionId);
           }
 
           const messageList = ensureMessageCollection(sessionId);

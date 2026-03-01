@@ -170,3 +170,44 @@ test("creates responses API request correctly", async () => {
     assert.deepEqual(body.reasoning, { effort: "high", summary: "detailed" });
     assert.deepEqual(body.text, { verbosity: "low" });
 });
+
+test("responses API maps assistant history content to output_text", async () => {
+    let fetchArgs = null;
+    const adapter = createNativeHttpAdapter({
+        providerId: "responses",
+        endpointMode: "responses",
+        baseUrl: "http://localhost:11434/v1/responses",
+        fetcher: async (url, init) => {
+            fetchArgs = { url, init };
+            return {
+                ok: true,
+                json: async () => ({
+                    output: [
+                        {
+                            type: "message",
+                            role: "assistant",
+                            content: [{ type: "output_text", text: "ok" }]
+                        }
+                    ]
+                })
+            };
+        }
+    });
+
+    await adapter.generate({
+        providerId: "responses",
+        model: "qwen2",
+        prompt: "continue",
+        messages: [
+            { role: "user", content: "hello" },
+            { role: "assistant", content: "previous reply" }
+        ]
+    });
+
+    const body = JSON.parse(fetchArgs.init.body);
+    assert.deepEqual(body.input, [
+        { type: "message", role: "user", content: [{ type: "input_text", text: "hello" }] },
+        { type: "message", role: "assistant", content: [{ type: "output_text", text: "previous reply" }] },
+        { type: "message", role: "user", content: [{ type: "input_text", text: "continue" }] }
+    ]);
+});

@@ -56,7 +56,7 @@ test("telegram ingress adapter derives ids and metadata deterministically", () =
     messageId: "telegram:99:42",
     messageText: "hello from telegram",
     timestampMs: 1_700_000_200_000,
-    threadId: "telegram:topic:99:9001",
+    threadId: "telegram:topic:9001:99",
     routingHints: [],
     metadata: {
       source: "telegram",
@@ -66,6 +66,42 @@ test("telegram ingress adapter derives ids and metadata deterministically", () =
       messageThreadId: "9001",
     },
   });
+});
+
+test("telegram ingress uses stable chat-scoped sessionId for normal, reply, and topic turns", () => {
+  const adapter = createTelegramIngressAdapter({
+    now: () => 1_700_000_150_000,
+  });
+
+  const normalTurn = adapter.normalize({
+    chatId: "chat-1",
+    fromId: "user-1",
+    messageId: "m-1",
+    text: "normal",
+  });
+  assert.equal(normalTurn.sessionId, "telegram:chat:chat-1");
+  assert.equal(normalTurn.threadId, undefined);
+
+  const replyTurn = adapter.normalize({
+    chatId: "chat-1",
+    fromId: "user-1",
+    messageId: "m-2",
+    replyToMessageId: "m-1",
+    text: "reply",
+  });
+  assert.equal(replyTurn.sessionId, "telegram:chat:chat-1");
+  assert.equal(replyTurn.threadId, "telegram:reply:chat-1:m-1");
+  assert.equal(replyTurn.metadata.replyToMessageId, "m-1");
+
+  const topicTurn = adapter.normalize({
+    chatId: "chat-1",
+    fromId: "user-1",
+    messageId: "m-3",
+    messageThreadId: "topic-9",
+    text: "topic",
+  });
+  assert.equal(topicTurn.sessionId, "telegram:chat:chat-1");
+  assert.equal(topicTurn.threadId, "telegram:topic:topic-9:chat-1");
 });
 
 test("slack ingress adapter derives ids and metadata deterministically", () => {
