@@ -29,3 +29,5 @@ If you’re implementing or refactoring code, read the relevant spec first:
 - `specs/BOUNDARIES.md`
 - `specs/PROACTIVE_INBOX.md`
 - `specs/TESTING_STRATEGY.md`
+- `specs/PERSONALISATION.md`
+- `specs/PERSONALITY_STORAGE.md`

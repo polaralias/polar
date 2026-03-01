@@ -196,6 +196,7 @@ test("orchestrator clamps forwarded skills before activating delegation", async 
       messageId: "m-3",
     });
     assert.equal(proposed.status, "workflow_proposed");
+    assert.match(proposed.assistantMessageId, /^msg_a_/);
 
     const executed = await orchestrator.executeWorkflow(proposed.workflowId);
     assert.equal(executed.status, "completed");
@@ -364,6 +365,7 @@ test("delegation strips unauthorized forward_skills and blocks delegated access 
         messageId: "m-4",
       });
       assert.equal(proposed.status, "workflow_proposed");
+      assert.match(proposed.assistantMessageId, /^msg_a_/);
 
       const executed = await orchestrator.executeWorkflow(proposed.workflowId);
       assert.equal(executed.status, "completed");
@@ -529,6 +531,7 @@ test("orchestrator computes capability scope from skill-registry authority state
       messageId: "m-2",
     });
     assert.equal(blockedProposal.status, "workflow_proposed");
+    assert.match(blockedProposal.assistantMessageId, /^msg_a_/);
 
     const blockedExecution = await orchestrator.executeWorkflow(blockedProposal.workflowId);
     assert.equal(blockedExecution.status, "error");

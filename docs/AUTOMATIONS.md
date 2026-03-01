@@ -41,13 +41,15 @@ Store jobs and runs separately.
 ## Chat configuration
 The model should:
 - detect “one-off” vs “recurring/notify me” intent
-- when recurring: create/update a job via an automation tool call
+- when recurring: propose a job draft first (schedule + promptTemplate + defaults)
+- require explicit user approval before job creation (no silent auto-create)
 - avoid over-clarifying (eg “every morning” is fine)
 
 Code must:
 - validate schedules
 - enforce limits
 - block missing connector permissions
+- audit proposal + approval/rejection as events
 
 ## Inbox-style checks (default behaviour)
 Start conservative:

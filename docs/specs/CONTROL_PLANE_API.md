@@ -55,11 +55,18 @@ Surfaces must obtain it via:
 - `listSchedulerEventQueue(request)`
 - `runSchedulerQueueAction(request)`
 
+### Run ledger
+- `listAutomationRunLedger(request)`
+- `listHeartbeatRunLedger(request)`
+
 ### Provider operations (operator-only)
 - `generateOutput(request)`
 - `streamOutput(request)`
 - `embedText(request)`
 - `listModels(request)`
+- `getModelRegistry(request?)`
+- `upsertModelRegistry(request)`
+- `setModelRegistryDefault(request)`
 
 ### Extensions and skills
 - `executeExtension(request)`
@@ -79,29 +86,37 @@ Surfaces must obtain it via:
 - `upsertMemory(request)`
 - `compactMemory(request)`
 
+### Feedback events
+- `recordFeedbackEvent(request)`
+- `listFeedbackEvents(request)`
+
 ### Orchestration and UX callbacks (Telegram critical)
 - `orchestrate(envelope)`
 - `updateMessageChannelId(sessionId, internalId, channelId)`
 - `executeWorkflow(workflowId | { workflowId })`
 - `rejectWorkflow(workflowId | { workflowId })`
+- `consumeAutomationProposal(proposalId | { proposalId })`
+- `rejectAutomationProposal(proposalId | { proposalId })`
 - `handleRepairSelection({ sessionId, selection, correlationId })`
 
-## Planned additions (must be added to allowlists when implemented)
-These are referenced in `docs/specs/DATA_MODEL.md` and `docs/AUTOMATIONS.md`:
-
-Feedback events:
-- `recordFeedbackEvent(request)`
-- `listFeedbackEvents(request)`
-
-Automations:
+## Automations
 - `createAutomationJob(request)`
 - `listAutomationJobs(request)`
 - `updateAutomationJob(request)`
 - `disableAutomationJob(request)` (or `deleteAutomationJob(request)`)
 
-Run ledger:
-- `listAutomationRunLedger(request)`
-- `listHeartbeatRunLedger(request)`
+## Proactive inbox scaffolding
+- `proactiveInboxCheckHeaders(request)`
+- `proactiveInboxReadBody(request)`
+- `proactiveInboxDryRun(request)`
+
+## Personalisation
+
+- `getPersonalityProfile`
+- `getEffectivePersonality`
+- `upsertPersonalityProfile`
+- `resetPersonalityProfile`
+- `listPersonalityProfiles`
 
 ## Allowlist enforcement points
 ### Web UI

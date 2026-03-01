@@ -7,6 +7,8 @@ export {
   resolveDefaultLineageStorePath,
 } from "./durable-lineage-store.mjs";
 export { createAutomationGateway, registerAutomationContracts } from "./automation-gateway.mjs";
+export { createSqliteAutomationJobStore, parseAutomationSchedule, isWithinQuietHours } from "./automation-job-store-sqlite.mjs";
+export { createAutomationRunner } from "./automation-runner.mjs";
 export { createBudgetGateway, registerBudgetContracts } from "./budget-gateway.mjs";
 export { createSqliteBudgetStateStore } from "./budget-state-store-sqlite.mjs";
 export { createBudgetMiddleware } from "./budget-middleware.mjs";
@@ -30,6 +32,7 @@ export {
   registerTaskBoardContracts,
 } from "./task-board-gateway.mjs";
 export { createTaskBoardRunLinker } from "./task-board-run-linker.mjs";
+export { createSqliteRunEventLinker } from "./sqlite-run-event-linker.mjs";
 export {
   createRoutingPolicyEngine,
   classifyUserMessage,
@@ -65,6 +68,10 @@ export { createSkillRegistry } from "./skill-registry.mjs";
 export { createMcpConnectorGateway, registerMcpConnectorContract } from "./mcp-connector-gateway.mjs";
 export { createMemoryGateway, registerMemoryContracts } from "./memory-gateway.mjs";
 export {
+  createProactiveInboxGateway,
+  registerProactiveInboxContracts,
+} from "./proactive-inbox-gateway.mjs";
+export {
   createSchedulerGateway,
   registerSchedulerContracts,
 } from "./scheduler-gateway.mjs";
@@ -81,3 +88,6 @@ export { createMemoryRecallMiddleware } from "./memory-recall-middleware.mjs";
 export { createToolSynthesisMiddleware } from "./tool-synthesis-middleware.mjs";
 export { createApprovalStore } from "./approval-store.mjs";
 export { createSqliteMemoryProvider } from "./memory-provider-sqlite.mjs";
+export { createSqliteFeedbackEventStore } from "./feedback-event-store-sqlite.mjs";
+export { createSqlitePersonalityStore } from "./personality-store-sqlite.mjs";
+export { exportArtifactsFromDb, listArtifactFiles } from "./artifact-exporter.mjs";

@@ -2,8 +2,11 @@ import Database from "better-sqlite3";
 import { resolve } from "node:path";
 import { createControlPlaneService } from "@polar/control-plane";
 import {
+  createSqliteAutomationJobStore,
   createSqliteBudgetStateStore,
+  createSqliteFeedbackEventStore,
   createSqliteMemoryProvider,
+  createSqlitePersonalityStore,
   createSqliteSchedulerStateStore,
 } from "@polar/runtime-core";
 
@@ -33,10 +36,17 @@ export function createPolarPlatform(config = {}) {
   const schedulerStateStore = createSqliteSchedulerStateStore({ db, now });
   const budgetStateStore = createSqliteBudgetStateStore({ db, now });
   const memoryProvider = createSqliteMemoryProvider({ db, now });
+  const feedbackEventStore = createSqliteFeedbackEventStore({ db, now });
+  const automationJobStore = createSqliteAutomationJobStore({ db, now });
+  const personalityStore = createSqlitePersonalityStore({ db, now });
   const controlPlane = createControlPlaneService({
     schedulerStateStore,
     budgetStateStore,
     memoryProvider,
+    feedbackEventStore,
+    automationJobStore,
+    personalityStore,
+    runEventDb: db,
     auditSink: config.auditSink,
     now,
     devMode: config.devMode,

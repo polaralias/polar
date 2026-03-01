@@ -58,7 +58,9 @@ Names may evolve, but keep these responsibilities stable:
 - `polar-web-ui`: Operator UI surface
 - `polar-adapter-native`: HTTP provider adapter(s)
 
-There is legacy/experimental adapter code under `polar-adapter-pi`. We’re not positioning that as a customer-facing option.
+Pi adapter code is removed from the active workspace and not part of the supported architecture.
+
+Telegram runner partitions turns by threadKey (topic/reply/root) to prevent cross-topic merges; see docs/specs/TELEGRAM_THREADING_AND_EMOJI.md
 
 ## Data and persistence
 - SQLite is the current source of truth.

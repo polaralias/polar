@@ -72,6 +72,13 @@ Default recommendations (can be overridden per job):
 The runner must not spam:
 - If a job misses a run window, do not “catch up” by firing many runs at once.
 
+## Proactive inbox scaffolding (gated)
+If a job opts into inbox checks (`limits.inbox`):
+- default mode is `headers_only` with capability `mail.search_headers`
+- body reads (`mail.read_body`) are sensitive and must be explicitly allowed
+- if body-read capability is missing, run must be blocked and recorded in run ledger
+- if connector is not configured, runner must fail safely (degraded output, no unsafe fallback)
+
 ## Delivery model (Telegram MVP)
 Telegram runner owns the Telegram API. The automation runner must not embed bot tokens everywhere.
 

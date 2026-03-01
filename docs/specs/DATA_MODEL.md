@@ -41,10 +41,9 @@ Created by `packages/polar-runtime-core/src/budget-state-store-sqlite.mjs`
 - `polar_budget_policies` primary key `(scope, targetId)`
 - `polar_budget_usage` primary key `(scope, targetId)`
 
-## Planned tables (next work)
+### Feedback events
+Created by `packages/polar-runtime-core/src/feedback-event-store-sqlite.mjs`
 
-### Feedback events (reactions and quality signals)
-Create:
 - `polar_feedback_events`
   - `id TEXT PRIMARY KEY` (uuid)
   - `type TEXT NOT NULL` (eg `reaction_added`)
@@ -63,8 +62,9 @@ Rules:
 - Append-only.
 - Store enough to analyse and export. Do not dump the full session history into payload.
 
-### Run ledger (automation and heartbeat runs)
-Create:
+### Run ledger
+Created by `packages/polar-runtime-core/src/sqlite-run-event-linker.mjs`
+
 - `polar_run_events`
   - `sequence INTEGER PRIMARY KEY AUTOINCREMENT`
   - `source TEXT NOT NULL` (`automation` or `heartbeat`)
@@ -85,7 +85,8 @@ Rules:
 - Replay into task board must be idempotent.
 
 ### Automation jobs (scheduled proactive)
-Create:
+- created by `packages/polar-runtime-core/src/automation-job-store-sqlite.mjs`
+
 - `polar_automation_jobs`
   - `id TEXT PRIMARY KEY`
   - `ownerUserId TEXT NOT NULL`
@@ -106,6 +107,12 @@ Rules:
 - Opt-in only.
 - Enabled by default once created.
 - Execution must run through the same middleware pipeline as chat turns.
+
+## Planned tables
+
+### Personality profiles
+Table: `polar_personality_profiles`
+See: `docs/specs/PERSONALITY_STORAGE.md`
 
 ## Markdown exports (projection only)
 Folder:

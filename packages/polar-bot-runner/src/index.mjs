@@ -2,9 +2,9 @@ import { Telegraf } from 'telegraf';
 import { message } from 'telegraf/filters';
 import dotenv from 'dotenv';
 import { createPolarPlatform } from '@polar/platform';
-import fs from 'fs';
 import path from 'path';
 import { createRequire } from 'module';
+import { createTelegramCommandRouter } from './commands.mjs';
 const require = createRequire(import.meta.url);
 const pdfParse = require('pdf-parse');
 
@@ -26,17 +26,214 @@ const platform = createPolarPlatform({
 });
 const controlPlane = platform.controlPlane;
 
-// Helper for safe reactions (prevents crashes on 400s)
-async function safeReact(ctx, emoji, messageId) {
+function automationProposalTaskId(proposalId) {
+    return `automation:proposal:${proposalId}`;
+}
+
+async function recordAutomationProposalEvent({ proposalId, sessionId, userId, metadata, status = "todo" }) {
+    try {
+        await controlPlane.upsertTask({
+            executionType: "automation",
+            taskId: automationProposalTaskId(proposalId),
+            title: `Automation proposal ${proposalId}`,
+            assigneeType: "user",
+            assigneeId: userId,
+            sessionId,
+            status,
+            metadata
+        });
+    } catch (error) {
+        console.warn(`[AUTOMATION_AUDIT] failed to upsert proposal task ${proposalId}: ${error.message}`);
+    }
+}
+
+async function recordAutomationProposalDecision({ proposalId, toStatus, sessionId, userId, reason, metadata }) {
+    try {
+        await controlPlane.transitionTask({
+            executionType: "automation",
+            taskId: automationProposalTaskId(proposalId),
+            toStatus,
+            assigneeType: "user",
+            assigneeId: userId,
+            sessionId,
+            actorId: userId,
+            reason,
+            metadata
+        });
+    } catch (error) {
+        console.warn(`[AUTOMATION_AUDIT] failed to transition proposal task ${proposalId}: ${error.message}`);
+    }
+}
+
+const REACTION_EMOJI_BY_STATE = Object.freeze({
+    received: '👀',
+    thinking: '✍️',
+    waiting_user: '⏳',
+    done: '✅',
+    error: '❌',
+});
+const REACTION_DONE_CLEAR_MS = 45_000;
+const REACTION_CLEAR_RATE_LIMIT_MS = 250;
+const reactionStateMap = new Map(); // reactionKey -> { state, lastSetAtMs, clearAtMs? }
+const reactionClearTimers = new Map(); // reactionKey -> Timeout
+const reactionClearRateLimit = new Map(); // reactionKey -> lastClearMs
+
+function createReactionKey(chatId, messageId) {
+    return `${chatId}:${messageId}`;
+}
+
+function parseFinitePositiveInteger(value) {
+    const parsed = typeof value === 'number' ? value : Number(value);
+    return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+function deriveThreadKey(messageContext) {
+    const chatId = messageContext?.chat?.id;
+    if (chatId === undefined || chatId === null) {
+        return "root:unknown";
+    }
+    if (messageContext?.message_thread_id !== undefined) {
+        return `topic:${chatId}:${messageContext.message_thread_id}`;
+    }
+    if (messageContext?.reply_to_message?.message_id !== undefined) {
+        return `reply:${chatId}:${messageContext.reply_to_message.message_id}`;
+    }
+    return `root:${chatId}`;
+}
+
+async function safeReact(ctx, emoji, messageId, chatIdOverride) {
     try {
         await ctx.telegram.setMessageReaction(
-            ctx.chat.id,
-            messageId || ctx.message.message_id,
+            chatIdOverride ?? ctx.chat?.id ?? ctx.message?.chat?.id,
+            messageId || ctx.message?.message_id,
             [{ type: 'emoji', emoji }]
         );
     } catch (err) {
         console.warn(`[REACTION_FAIL] Could not set reaction ${emoji}: ${err.message}`);
     }
+}
+
+async function clearReaction(ctx, chatId, inboundMessageId) {
+    const reactionKey = createReactionKey(chatId, inboundMessageId);
+    const nowMs = Date.now();
+    const lastClearMs = reactionClearRateLimit.get(reactionKey) || 0;
+    if (nowMs - lastClearMs < REACTION_CLEAR_RATE_LIMIT_MS) {
+        return;
+    }
+    reactionClearRateLimit.set(reactionKey, nowMs);
+    try {
+        await ctx.telegram.setMessageReaction(chatId, inboundMessageId, []);
+    } catch (err) {
+        // no-op: message can be stale/deleted or the reaction may already be cleared
+    } finally {
+        reactionStateMap.delete(reactionKey);
+        const timer = reactionClearTimers.get(reactionKey);
+        if (timer) {
+            clearTimeout(timer);
+            reactionClearTimers.delete(reactionKey);
+        }
+    }
+}
+
+async function setReactionState(ctx, chatId, inboundMessageId, state) {
+    const emoji = REACTION_EMOJI_BY_STATE[state];
+    if (!emoji) {
+        return;
+    }
+    const reactionKey = createReactionKey(chatId, inboundMessageId);
+    const existing = reactionStateMap.get(reactionKey);
+    if (existing?.state === state) {
+        return;
+    }
+    await safeReact(ctx, emoji, inboundMessageId, chatId);
+    reactionStateMap.set(reactionKey, {
+        state,
+        lastSetAtMs: Date.now(),
+    });
+
+    const existingTimer = reactionClearTimers.get(reactionKey);
+    if (existingTimer) {
+        clearTimeout(existingTimer);
+        reactionClearTimers.delete(reactionKey);
+    }
+
+    if (state === 'done') {
+        const clearAtMs = Date.now() + REACTION_DONE_CLEAR_MS;
+        reactionStateMap.set(reactionKey, {
+            state,
+            lastSetAtMs: Date.now(),
+            clearAtMs,
+        });
+        const timer = setTimeout(() => {
+            clearReaction(ctx, chatId, inboundMessageId).catch(() => undefined);
+        }, REACTION_DONE_CLEAR_MS);
+        if (typeof timer.unref === "function") {
+            timer.unref();
+        }
+        reactionClearTimers.set(reactionKey, timer);
+    }
+}
+
+function parseCallbackOriginMessageId(callbackData) {
+    const parts = callbackData.split(':');
+    const maybeId = parts[parts.length - 1];
+    const parsed = parseFinitePositiveInteger(maybeId);
+    return parsed;
+}
+
+async function transitionWaitingReactionToDone(ctx, callbackData) {
+    const messageContext = resolveTelegramMessageContext(ctx);
+    const chatId = messageContext?.chat?.id ?? ctx.chat?.id;
+    const originMessageId = parseCallbackOriginMessageId(callbackData);
+    if (chatId === undefined || originMessageId === null) {
+        return;
+    }
+    await setReactionState(ctx, chatId, originMessageId, 'done');
+}
+
+async function resolveAnchorChannelMessageId(sessionId, anchorId) {
+    if (anchorId === undefined || anchorId === null) {
+        return null;
+    }
+    const numericAnchor = parseFinitePositiveInteger(anchorId);
+    if (numericAnchor !== null) {
+        return numericAnchor;
+    }
+    if (typeof anchorId !== "string" || anchorId.length === 0) {
+        return null;
+    }
+
+    const history = await controlPlane.getSessionHistory({ sessionId, limit: 500 });
+    const items = Array.isArray(history.items) ? history.items : [];
+    for (let index = items.length - 1; index >= 0; index -= 1) {
+        const item = items[index];
+        const itemMetadata = item?.metadata && typeof item.metadata === "object" ? item.metadata : {};
+        if (item.messageId === anchorId) {
+            const directChannelId = parseFinitePositiveInteger(
+                itemMetadata.channelMessageId ?? itemMetadata.telegram?.message_id
+            );
+            if (directChannelId !== null) {
+                return directChannelId;
+            }
+        }
+        if (
+            itemMetadata.bindingType === "channel_message_id" &&
+            itemMetadata.internalMessageId === anchorId
+        ) {
+            const mapped = parseFinitePositiveInteger(itemMetadata.channelMessageId);
+            if (mapped !== null) {
+                return mapped;
+            }
+        }
+    }
+    return null;
+}
+
+function buildTopicReplyOptions(inboundMessage) {
+    if (!inboundMessage || inboundMessage.message_thread_id === undefined) {
+        return {};
+    }
+    return { message_thread_id: inboundMessage.message_thread_id };
 }
 
 /**
@@ -112,9 +309,37 @@ async function resolvePolarSessionContext(ctx) {
     }
 }
 
+function parseTelegramIdAllowlist(rawValue) {
+    if (typeof rawValue !== 'string' || rawValue.trim().length === 0) {
+        return new Set();
+    }
+    return new Set(
+        rawValue
+            .split(',')
+            .map((value) => value.trim())
+            .filter((value) => value.length > 0)
+    );
+}
+
+const OPERATOR_TELEGRAM_IDS = parseTelegramIdAllowlist(process.env.POLAR_OPERATOR_TELEGRAM_IDS);
+const ADMIN_TELEGRAM_IDS = parseTelegramIdAllowlist(process.env.POLAR_ADMIN_TELEGRAM_IDS);
+
+const commandRouter = createTelegramCommandRouter({
+    controlPlane,
+    dbPath: platform.dbPath,
+    fallbackOperatorUserIds: [...OPERATOR_TELEGRAM_IDS],
+    fallbackAdminUserIds: [...ADMIN_TELEGRAM_IDS],
+    resolveSessionContext: resolvePolarSessionContext,
+    deriveThreadKey,
+    setReactionState,
+    async replyWithOptions(ctx, text) {
+        await ctx.reply(text, buildTopicReplyOptions(ctx.message));
+    },
+});
+
 // --- Bot Middleware for UX ---
 bot.use(async (ctx, next) => {
-    // Catch reaction updates (User Feedback -> REACTIONS.md flow)
+    // Catch reaction updates (User Feedback -> SQLite feedback event flow)
     if (ctx.updateType === 'message_reaction') {
         return handleReactionUpdate(ctx);
     }
@@ -124,46 +349,6 @@ bot.use(async (ctx, next) => {
 // --- Debounce & Grouping Logic ---
 const MESSAGE_BUFFER = new Map();
 const DEBOUNCE_TIMEOUT_MS = 2500;
-
-// UX State Tracking
-const completedReactionsMap = new Map(); // sessionId -> Map(messageId -> timestamp)
-
-async function clearCompletedReactions(ctx, sessionId) {
-    const messageIds = completedReactionsMap.get(sessionId);
-    if (messageIds && messageIds.size > 0) {
-        for (const msgId of messageIds.keys()) {
-            try {
-                // Passing empty array removes all reactions
-                await ctx.telegram.setMessageReaction(ctx.chat.id, msgId, []);
-            } catch (err) {
-                // Reaction might already be gone or message deleted
-            }
-        }
-        messageIds.clear();
-    }
-}
-
-function markReactionCompleted(sessionId, messageId) {
-    if (!completedReactionsMap.has(sessionId)) {
-        completedReactionsMap.set(sessionId, new Map());
-    }
-    completedReactionsMap.get(sessionId).set(messageId, Date.now());
-}
-
-// Global cleanup for stale reactions (staged for health)
-setInterval(() => {
-    const now = Date.now();
-    for (const [sessionId, messageIds] of completedReactionsMap.entries()) {
-        for (const [messageId, timestamp] of messageIds.entries()) {
-            if (now - timestamp > 600000) {
-                messageIds.delete(messageId);
-            }
-        }
-        if (messageIds.size === 0) {
-            completedReactionsMap.delete(sessionId);
-        }
-    }
-}, 600000);
 
 async function handleMessageDebounced(ctx) {
     let envelope;
@@ -192,32 +377,39 @@ async function handleMessageDebounced(ctx) {
         return;
     }
 
-    // Natively isolated context bubble: stability per chat is key for 1:1 context continuity.
-    // ThreadId is used for internal routing/anchoring, not storage partitioning.
+    const messageThreadKey = deriveThreadKey(ctx.message);
     const polarSessionId = envelope.sessionId;
+    const bufferKey = `${polarSessionId}|${messageThreadKey}|${ctx.from.id.toString()}`;
 
-    // UX Enhancement: Clear old success reactions when new message starts
-    await clearCompletedReactions(ctx, polarSessionId);
-
-    if (!MESSAGE_BUFFER.has(polarSessionId)) {
-        MESSAGE_BUFFER.set(polarSessionId, { contexts: [], timer: null });
+    if (!MESSAGE_BUFFER.has(bufferKey)) {
+        MESSAGE_BUFFER.set(bufferKey, { contexts: [], timer: null });
     }
-    const buffer = MESSAGE_BUFFER.get(polarSessionId);
+    const buffer = MESSAGE_BUFFER.get(bufferKey);
     buffer.contexts.push({ ctx, envelope });
 
     if (buffer.timer) clearTimeout(buffer.timer);
 
     buffer.timer = setTimeout(() => {
-        MESSAGE_BUFFER.delete(polarSessionId);
+        MESSAGE_BUFFER.delete(bufferKey);
         processGroupedMessages(polarSessionId, buffer.contexts).catch(err => {
             console.error("Error processing grouped text:", err);
-            safeReact(ctx, '👎', ctx.message.message_id);
+            setReactionState(ctx, ctx.chat.id, ctx.message.message_id, 'error').catch(() => undefined);
         });
     }, DEBOUNCE_TIMEOUT_MS);
 }
 
 // --- Handlers ---
 bot.on(message('text'), async (ctx) => {
+    try {
+        const result = await commandRouter.handle(ctx);
+        if (result.handled) {
+            return;
+        }
+    } catch (error) {
+        console.error('[COMMAND_ROUTER_ERROR]', error);
+        await ctx.reply(`❌ Command failed: ${error.message}`, buildTopicReplyOptions(ctx.message));
+        return;
+    }
     await handleMessageDebounced(ctx);
 });
 
@@ -226,12 +418,12 @@ async function processGroupedMessages(polarSessionId, items) {
     const lastItem = items[items.length - 1];
     const { ctx, envelope } = lastItem;
     const telegramMessageId = ctx.message.message_id;
+    const threadKey = deriveThreadKey(ctx.message);
+    const topicReplyOptions = buildTopicReplyOptions(ctx.message);
 
     try {
-        // 1. Initial State: Message Received -> 👀 (Looking/Reading)
-        await safeReact(ctx, '👀', telegramMessageId);
+        await setReactionState(ctx, ctx.chat.id, telegramMessageId, 'received');
 
-        // 2. Collate messages
         let userText = "";
         for (const { ctx: c } of items) {
             let chunkText = c.message.text || "";
@@ -246,9 +438,8 @@ async function processGroupedMessages(polarSessionId, items) {
             userText += chunkText;
         }
 
-        await safeReact(ctx, '✍', telegramMessageId);
+        await setReactionState(ctx, ctx.chat.id, telegramMessageId, 'thinking');
 
-        // 3. Orchestrate via Control Plane
         const result = await controlPlane.orchestrate({
             sessionId: polarSessionId,
             userId: ctx.from.id.toString(),
@@ -256,33 +447,39 @@ async function processGroupedMessages(polarSessionId, items) {
             messageId: `msg_u_${telegramMessageId}`,
             metadata: {
                 threadId: envelope.threadId,
-                replyToMessageId: ctx.message.reply_to_message?.message_id
+                threadKey,
+                replyToMessageId: ctx.message.reply_to_message?.message_id,
+                ...(ctx.message.message_thread_id !== undefined
+                    ? { messageThreadId: ctx.message.message_thread_id }
+                    : {}),
             }
         });
 
-        // Logic for inline replies: only set reply-to when backend explicitly requests it
-        // AND provides a concrete anchor message. Otherwise send a normal message.
         const useInlineReply = result.useInlineReply === true;
-        const anchorId = result.anchorMessageId; // specific message to reply to, if provided
-        // anchorMessageId may be a synthetic internal ID (e.g. "msg_err_<uuid>") — only use
-        // it for Telegram reply_parameters if it's a valid numeric message ID.
-        const parsedAnchor = typeof anchorId === 'number' ? anchorId : Number(anchorId);
-        const numericAnchor =
-            Number.isSafeInteger(parsedAnchor) && parsedAnchor > 0
-                ? parsedAnchor
-                : null;
-        let replyOptions = {};
+        const anchorId = result.anchorMessageId;
+        const numericAnchor = useInlineReply
+            ? await resolveAnchorChannelMessageId(polarSessionId, anchorId)
+            : null;
+        let replyOptions = { ...topicReplyOptions };
         if (useInlineReply && numericAnchor !== null) {
-            replyOptions = { reply_parameters: { message_id: numericAnchor } };
+            replyOptions = {
+                ...replyOptions,
+                reply_parameters: {
+                    message_id: numericAnchor,
+                    allow_sending_without_reply: true,
+                },
+            };
         }
 
         if (result.status === 'workflow_proposed') {
-            // Send the explanation text first
+            let primaryReplyMessage;
             if (result.text) {
-                await ctx.reply(result.text, replyOptions);
+                primaryReplyMessage = await ctx.reply(result.text, replyOptions);
+            }
+            if (result.assistantMessageId && primaryReplyMessage?.message_id) {
+                await controlPlane.updateMessageChannelId(polarSessionId, result.assistantMessageId, primaryReplyMessage.message_id);
             }
 
-            // Format the workflow blocks for the UI
             let formattedSteps = "✨ *Proposed Workflow:*\n\n";
             result.steps.forEach((step, idx) => {
                 formattedSteps += `*Step ${idx + 1}:* \`${step.capabilityId}\`\n`;
@@ -296,17 +493,61 @@ async function processGroupedMessages(polarSessionId, items) {
                 reply_markup: {
                     inline_keyboard: [
                         [
-                            { text: "✅ Approve", callback_data: `wf_app:${result.workflowId}` },
-                            { text: "❌ Reject", callback_data: `wf_rej:${result.workflowId}` }
+                            { text: "✅ Approve", callback_data: `wf_app:${result.workflowId}:${telegramMessageId}` },
+                            { text: "❌ Reject", callback_data: `wf_rej:${result.workflowId}:${telegramMessageId}` }
                         ]
                     ]
                 }
             });
-            if (result.assistantMessageId) {
+            if (result.assistantMessageId && !primaryReplyMessage?.message_id) {
                 await controlPlane.updateMessageChannelId(polarSessionId, result.assistantMessageId, stepsMsg.message_id);
             }
+        } else if (result.status === 'automation_proposed') {
+            let primaryReplyMessage;
+            if (result.text) {
+                primaryReplyMessage = await ctx.reply(result.text, replyOptions);
+            }
+            if (result.assistantMessageId && primaryReplyMessage?.message_id) {
+                await controlPlane.updateMessageChannelId(polarSessionId, result.assistantMessageId, primaryReplyMessage.message_id);
+            }
+
+            const proposal = result.proposal || {};
+            const proposalMsg = await ctx.reply(
+                `🗓️ *Automation Proposal*\n` +
+                `Schedule: \`${proposal.schedule || 'unknown'}\`\n` +
+                `Prompt: \`${proposal.promptTemplate || 'unknown'}\`\n` +
+                `Limits: \`${JSON.stringify(proposal.limits || {})}\`\n` +
+                `Quiet hours: \`${JSON.stringify(proposal.quietHours || {})}\`\n` +
+                `Template: \`${proposal.templateType || 'generic'}\``,
+                {
+                    parse_mode: 'Markdown',
+                    ...replyOptions,
+                    reply_markup: {
+                        inline_keyboard: [
+                            [
+                                { text: "✅ Approve", callback_data: `auto_app:${result.proposalId}:${telegramMessageId}` },
+                                { text: "❌ Reject", callback_data: `auto_rej:${result.proposalId}:${telegramMessageId}` }
+                            ]
+                        ]
+                    }
+                }
+            );
+            if (result.assistantMessageId && !primaryReplyMessage?.message_id) {
+                await controlPlane.updateMessageChannelId(polarSessionId, result.assistantMessageId, proposalMsg.message_id);
+            }
+            if (result.proposalId) {
+                await recordAutomationProposalEvent({
+                    proposalId: result.proposalId,
+                    sessionId: polarSessionId,
+                    userId: ctx.from.id.toString(),
+                    metadata: {
+                        source: "telegram",
+                        decision: "proposed",
+                        proposal: result.proposal || {}
+                    }
+                });
+            }
         } else if (result.status === 'repair_question') {
-            // Render repair disambiguation with A/B inline keyboard buttons
             const optA = result.options.find(o => o.id === 'A');
             const optB = result.options.find(o => o.id === 'B');
             const repairMsg = await ctx.reply(result.question, {
@@ -314,8 +555,8 @@ async function processGroupedMessages(polarSessionId, items) {
                 reply_markup: {
                     inline_keyboard: [
                         [
-                            { text: `🅰️ ${optA?.label || 'Option A'}`, callback_data: `repair_sel:A:${result.correlationId}` },
-                            { text: `🅱️ ${optB?.label || 'Option B'}`, callback_data: `repair_sel:B:${result.correlationId}` }
+                            { text: `🅰️ ${optA?.label || 'Option A'}`, callback_data: `repair_sel:A:${result.correlationId}:${telegramMessageId}` },
+                            { text: `🅱️ ${optB?.label || 'Option B'}`, callback_data: `repair_sel:B:${result.correlationId}:${telegramMessageId}` }
                         ]
                     ]
                 }
@@ -332,27 +573,19 @@ async function processGroupedMessages(polarSessionId, items) {
             await ctx.reply(result.text || "Wait, I didn't generate any text.", replyOptions);
         }
 
-        // Handle additional ID binding for proposed workflows and repair questions
-        if (result.status === 'workflow_proposed') {
-            // result.text was sent in 237, formattedSteps in 248. Bind to the steps message (more interactive)
-            // wait, we can't easily capture the msg from 237 if we didn't store it.
-            // Let's just bind if result.assistantMessageId exists on the latest reply.
-        }
-
-        // 4. Final State: Success vs Pending
         if (result.status === 'completed') {
-            await safeReact(ctx, '👌', telegramMessageId);
-            markReactionCompleted(polarSessionId, telegramMessageId);
-        } else if (result.status === 'workflow_proposed' || result.status === 'repair_question') {
-            await safeReact(ctx, '⏳', telegramMessageId);
-            // Both are "blocked" waiting for user button press
+            await setReactionState(ctx, ctx.chat.id, telegramMessageId, 'done');
+        } else if (result.status === 'workflow_proposed' || result.status === 'repair_question' || result.status === 'automation_proposed') {
+            await setReactionState(ctx, ctx.chat.id, telegramMessageId, 'waiting_user');
+        } else if (result.status === 'error') {
+            await setReactionState(ctx, ctx.chat.id, telegramMessageId, 'error');
         } else {
-            // Errors keep their 👎 or transient icons
+            await setReactionState(ctx, ctx.chat.id, telegramMessageId, 'done');
         }
 
     } catch (err) {
         console.error("Error processing text:", err);
-        await safeReact(ctx, '👎', telegramMessageId);
+        await setReactionState(ctx, ctx.chat.id, telegramMessageId, 'error');
     }
 }
 
@@ -361,7 +594,8 @@ bot.on(message('document'), async (ctx) => {
     try {
         const doc = ctx.message.document;
         if (doc.mime_type === 'application/pdf') {
-            await safeReact(ctx, '⏳', ctx.message.message_id);
+            await setReactionState(ctx, ctx.chat.id, ctx.message.message_id, 'received');
+            await setReactionState(ctx, ctx.chat.id, ctx.message.message_id, 'thinking');
 
             const fileUrl = await ctx.telegram.getFileLink(doc.file_id);
             const response = await fetch(fileUrl);
@@ -370,6 +604,8 @@ bot.on(message('document'), async (ctx) => {
             const pdfData = await pdfParse(Buffer.from(buffer));
 
             const { sessionId: polarSessionId } = await resolvePolarSessionContext(ctx);
+            const threadKey = deriveThreadKey(ctx.message);
+            const topicReplyOptions = buildTopicReplyOptions(ctx.message);
 
             await controlPlane.appendMessage({
                 sessionId: polarSessionId,
@@ -377,23 +613,32 @@ bot.on(message('document'), async (ctx) => {
                 messageId: `msg_u_${ctx.message.message_id}`,
                 role: "user",
                 text: `[User uploaded PDF Document: ${doc.file_name}]\n\n${pdfData.text}`,
-                timestampMs: Date.now()
+                timestampMs: Date.now(),
+                metadata: {
+                    threadKey,
+                    ...(ctx.message.message_thread_id !== undefined
+                        ? { messageThreadId: ctx.message.message_thread_id }
+                        : {}),
+                },
             });
 
-            await safeReact(ctx, '👌', ctx.message.message_id);
-            await ctx.reply(`✅ Parsed PDF: ${doc.file_name} (${pdfData.text.length} characters)`);
+            await setReactionState(ctx, ctx.chat.id, ctx.message.message_id, 'done');
+            await ctx.reply(`✅ Parsed PDF: ${doc.file_name} (${pdfData.text.length} characters)`, topicReplyOptions);
         } else {
-            await ctx.reply("❌ Only PDF documents are supported locally right now.");
+            await setReactionState(ctx, ctx.chat.id, ctx.message.message_id, 'error');
+            await ctx.reply("❌ Only PDF documents are supported locally right now.", buildTopicReplyOptions(ctx.message));
         }
     } catch (err) {
         console.error("Error parsing document:", err);
-        await ctx.reply("❌ Failed to parse document.");
+        await setReactionState(ctx, ctx.chat.id, ctx.message.message_id, 'error');
+        await ctx.reply("❌ Failed to parse document.", buildTopicReplyOptions(ctx.message));
     }
 });
 
 bot.on(message('photo'), async (ctx) => {
     try {
-        await safeReact(ctx, '⏳', ctx.message.message_id);
+        await setReactionState(ctx, ctx.chat.id, ctx.message.message_id, 'received');
+        await setReactionState(ctx, ctx.chat.id, ctx.message.message_id, 'thinking');
 
         // BUG-034 fix: Defensive check for empty photo array
         const photos = ctx.message.photo;
@@ -413,6 +658,8 @@ bot.on(message('photo'), async (ctx) => {
         const caption = ctx.message.caption || "";
 
         const { sessionId: polarSessionId } = await resolvePolarSessionContext(ctx);
+        const threadKey = deriveThreadKey(ctx.message);
+        const topicReplyOptions = buildTopicReplyOptions(ctx.message);
 
         await controlPlane.appendMessage({
             sessionId: polarSessionId,
@@ -420,14 +667,21 @@ bot.on(message('photo'), async (ctx) => {
             messageId: `msg_u_${ctx.message.message_id}`,
             role: "user",
             text: `[User uploaded Photo: ${imageSizeKb}KB image${caption ? `, caption: "${caption}"` : ""}. Photo stored as file reference, not embedded in context.]`,
-            timestampMs: Date.now()
+            timestampMs: Date.now(),
+            metadata: {
+                threadKey,
+                ...(ctx.message.message_thread_id !== undefined
+                    ? { messageThreadId: ctx.message.message_thread_id }
+                    : {}),
+            },
         });
 
-        await safeReact(ctx, '👌', ctx.message.message_id);
-        await ctx.reply(`✅ Photo received (${imageSizeKb}KB). Stored in context as reference.`);
+        await setReactionState(ctx, ctx.chat.id, ctx.message.message_id, 'done');
+        await ctx.reply(`✅ Photo received (${imageSizeKb}KB). Stored in context as reference.`, topicReplyOptions);
     } catch (err) {
         console.error("Error parsing photo:", err);
-        await ctx.reply("❌ Failed to parse photo.");
+        await setReactionState(ctx, ctx.chat.id, ctx.message.message_id, 'error');
+        await ctx.reply("❌ Failed to parse photo.", buildTopicReplyOptions(ctx.message));
     }
 });
 
@@ -438,41 +692,79 @@ async function handleReactionUpdate(ctx) {
     if (!reaction || !reaction.chat || !reaction.new_reaction || reaction.new_reaction.length === 0) return;
     if (!reaction.user && !reaction.actor_chat) return; // No user info available (channel posts, anonymous)
     const emoji = reaction.new_reaction[0].emoji;
+    if (typeof emoji !== 'string' || emoji.length === 0) return;
+
     const sessionId = `telegram:chat:${reaction.chat.id}`;
-    const messageIdToFind = `msg_a_${reaction.message_id}`;
+    const polarity = (emoji === '👍' || emoji === '💯' || emoji === '🔥')
+        ? 'positive'
+        : (emoji === '👎' ? 'negative' : 'neutral');
 
-    if (emoji === '👍' || emoji === '💯' || emoji === '🔥') {
-        const sessionHistory = await controlPlane.getSessionHistory({ sessionId, limit: 50 });
-        const targetMsg = sessionHistory.items?.find(m => m.messageId === messageIdToFind);
+    const sessionHistory = await controlPlane.getSessionHistory({ sessionId, limit: 500 });
+    const items = Array.isArray(sessionHistory.items) ? sessionHistory.items : [];
 
-        if (targetMsg) {
-            const memoryLine = `[${new Date().toISOString()}] Positive Feedback (${emoji}) for sessionId ${sessionId}:\n${targetMsg.text}\n---\n`;
-            fs.appendFileSync(path.join(process.cwd(), 'REACTIONS.md'), memoryLine);
+    let resolvedInternalMessageId = null;
+    let targetMsg = null;
+    for (let index = items.length - 1; index >= 0; index -= 1) {
+        const item = items[index];
+        const itemMetadata = item?.metadata && typeof item.metadata === "object" ? item.metadata : {};
+        if (
+            itemMetadata.bindingType === "channel_message_id" &&
+            parseFinitePositiveInteger(itemMetadata.channelMessageId) === reaction.message_id &&
+            typeof itemMetadata.internalMessageId === "string"
+        ) {
+            resolvedInternalMessageId = itemMetadata.internalMessageId;
+            targetMsg = items.find((entry) => entry.messageId === resolvedInternalMessageId) || null;
+            break;
         }
-    } else if (emoji === '👎') {
-        const sessionHistory = await controlPlane.getSessionHistory({ sessionId, limit: 50 });
-        const targetMsg = sessionHistory.items?.find(m => m.messageId === messageIdToFind);
-
-        if (targetMsg) {
-            const memoryLine = `[${new Date().toISOString()}] Negative Feedback (${emoji}) for sessionId ${sessionId}:\n${targetMsg.text}\n---\n`;
-            fs.appendFileSync(path.join(process.cwd(), 'REACTIONS.md'), memoryLine);
+        if (
+            item.role === "assistant" &&
+            parseFinitePositiveInteger(itemMetadata.channelMessageId ?? itemMetadata.telegram?.message_id) === reaction.message_id
+        ) {
+            resolvedInternalMessageId = item.messageId;
+            targetMsg = item;
+            break;
         }
     }
+
+    if (!resolvedInternalMessageId) {
+        const legacy = items.find((entry) => entry.messageId === `msg_a_${reaction.message_id}`);
+        if (legacy) {
+            resolvedInternalMessageId = legacy.messageId;
+            targetMsg = legacy;
+        }
+    }
+
+    const feedbackMessageId = resolvedInternalMessageId || `telegram:${reaction.chat.id}:${reaction.message_id}`;
+
+    await controlPlane.recordFeedbackEvent({
+        type: 'reaction_added',
+        sessionId,
+        messageId: feedbackMessageId,
+        emoji,
+        polarity,
+        payload: {
+            telegramMessageId: reaction.message_id,
+            targetMessageText: targetMsg?.text,
+            timestampMs: Date.now(),
+            ...(resolvedInternalMessageId ? {} : { unresolved: true }),
+        }
+    });
 }
 
 // --- Callback Query Handlers (Buttons) ---
 bot.on('callback_query', async (ctx) => {
     const callbackData = ctx.callbackQuery.data;
-    const messageText = ctx.callbackQuery.message?.text || "";
+    const callbackReplyOptions = buildTopicReplyOptions(ctx.callbackQuery?.message);
 
     // We stored the JSON in an in-memory Map, mapping an ID from callback_data
 
     if (callbackData.startsWith('wf_app:')) {
-        const workflowId = callbackData.split(':')[1];
+        const parts = callbackData.split(':');
+        const workflowId = parts[1];
 
         await ctx.answerCbQuery("Workflow Approved! Executing...");
         await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
-        await ctx.reply("🚀 Executing workflow... ");
+        await ctx.reply("🚀 Executing workflow... ", callbackReplyOptions);
 
         try {
             const result = await controlPlane.executeWorkflow(workflowId);
@@ -484,38 +776,182 @@ bot.on('callback_query', async (ctx) => {
 
             if (result.status === 'completed') {
                 if (result.text) {
-                    const msg = await ctx.reply(result.text);
+                    const msg = await ctx.reply(result.text, callbackReplyOptions);
                     if (result.assistantMessageId) {
                         await controlPlane.updateMessageChannelId(sessionId, result.assistantMessageId, msg.message_id);
                     }
                 }
             } else if (result.status === 'error') {
-                const errMsg = await ctx.reply("❌ " + (result.text || "Workflow execution failed."));
+                const errMsg = await ctx.reply("❌ " + (result.text || "Workflow execution failed."), callbackReplyOptions);
                 if (result.internalMessageId) {
                     await controlPlane.updateMessageChannelId(sessionId, result.internalMessageId, errMsg.message_id);
                 }
             }
+            await transitionWaitingReactionToDone(ctx, callbackData);
         } catch (execErr) {
             console.error(execErr);
-            const crashMsg = await ctx.reply("❌ Workflow execution crashed: " + execErr.message);
-            // If it crashed, result is null/undefined here. The orchestrator generates 
-            // the internal ID inside its try-catch block, but we don't have it on result here.
-            // Actually result will be the caught { status: 'error', text: ... } from the orchestrator.
+            await ctx.reply("❌ Workflow execution crashed: " + execErr.message, callbackReplyOptions);
+            await transitionWaitingReactionToDone(ctx, callbackData);
         }
 
     } else if (callbackData.startsWith('wf_rej:')) {
-        const workflowId = callbackData.split(':')[1];
+        const parts = callbackData.split(':');
+        const workflowId = parts[1];
         await controlPlane.rejectWorkflow(workflowId);
 
         await ctx.answerCbQuery("Workflow Rejected.");
         await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
-        await ctx.reply("❌ The workflow was abandoned.");
+        await ctx.reply("❌ The workflow was abandoned.", callbackReplyOptions);
+        await transitionWaitingReactionToDone(ctx, callbackData);
+
+    } else if (callbackData.startsWith('auto_app:')) {
+        const parts = callbackData.split(':');
+        const proposalId = parts[1];
+        await ctx.answerCbQuery("Automation approved. Creating job...");
+        await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
+
+        const sessionContext = await resolvePolarSessionContext(ctx).catch(() => ({
+            sessionId: `telegram:chat:${ctx.callbackQuery?.message?.chat?.id ?? "unknown"}`,
+            threadId: undefined,
+            replyToMessageId: undefined
+        }));
+
+        try {
+            const proposalResult = await controlPlane.consumeAutomationProposal(proposalId);
+            if (proposalResult.status !== "found") {
+                await ctx.reply("⚠️ This automation proposal expired or was already handled.", callbackReplyOptions);
+                await transitionWaitingReactionToDone(ctx, callbackData);
+                return;
+            }
+            const proposal = proposalResult.proposal;
+            const created = await controlPlane.createAutomationJob({
+                ownerUserId: proposal.userId,
+                sessionId: proposal.sessionId,
+                schedule: proposal.schedule,
+                promptTemplate: proposal.promptTemplate,
+                limits: proposal.limits,
+                quietHours: proposal.quietHours,
+                enabled: true
+            });
+
+            if (created.status === "created") {
+                let dryRunSummary = "";
+                if (proposal.templateType === "inbox_check") {
+                    const inboxLimits = proposal.limits?.inbox && typeof proposal.limits.inbox === "object"
+                        ? proposal.limits.inbox
+                        : {};
+                    const dryRun = await controlPlane.proactiveInboxDryRun({
+                        sessionId: proposal.sessionId,
+                        userId: proposal.userId,
+                        ...(typeof inboxLimits.connectorId === "string" ? { connectorId: inboxLimits.connectorId } : {}),
+                        ...(typeof inboxLimits.lookbackHours === "number" ? { lookbackHours: inboxLimits.lookbackHours } : {}),
+                        maxNotificationsPerDay:
+                            typeof proposal.limits?.maxNotificationsPerDay === "number"
+                                ? proposal.limits.maxNotificationsPerDay
+                                : 3,
+                        capabilities: Array.isArray(inboxLimits.capabilities)
+                            ? inboxLimits.capabilities
+                            : ["mail.search_headers"]
+                    });
+                    const wouldTrigger = Array.isArray(dryRun.wouldTrigger) ? dryRun.wouldTrigger : [];
+                    if (dryRun.status === "completed") {
+                        dryRunSummary =
+                            `\n\nDry run (headers-only, UTC quiet hours): scanned ${dryRun.scannedHeaderCount} headers, ` +
+                            `would trigger ${dryRun.wouldTriggerCount} notifications.` +
+                            (wouldTrigger.length > 0
+                                ? `\nTop candidates:\n${wouldTrigger
+                                    .map((item) => `- ${item.subject} (${item.senderDomain || "unknown"})`)
+                                    .join("\n")}`
+                                : "");
+                    } else {
+                        dryRunSummary =
+                            `\n\nDry run (headers-only) did not complete: ` +
+                            `${dryRun.blockedReason || dryRun.degradedReason || "unknown_reason"}`;
+                    }
+                }
+                await recordAutomationProposalDecision({
+                    proposalId,
+                    toStatus: "done",
+                    sessionId: sessionContext.sessionId,
+                    userId: ctx.from.id.toString(),
+                    reason: "Automation proposal approved and created",
+                    metadata: {
+                        source: "telegram",
+                        decision: "approved",
+                        jobId: created.job?.id,
+                        schedule: created.job?.schedule,
+                        promptTemplate: created.job?.promptTemplate
+                    }
+                });
+                await ctx.reply(
+                    `✅ Automation created.\nJob ID: ${created.job.id}\nSchedule: ${created.job.schedule}${dryRunSummary}`,
+                    callbackReplyOptions
+                );
+                await transitionWaitingReactionToDone(ctx, callbackData);
+            } else {
+                await recordAutomationProposalDecision({
+                    proposalId,
+                    toStatus: "blocked",
+                    sessionId: sessionContext.sessionId,
+                    userId: ctx.from.id.toString(),
+                    reason: "Automation proposal approval failed",
+                    metadata: {
+                        source: "telegram",
+                        decision: "approved_create_failed",
+                        createStatus: created.status
+                    }
+                });
+                await ctx.reply("⚠️ Automation approval received, but job creation did not complete.", callbackReplyOptions);
+                await transitionWaitingReactionToDone(ctx, callbackData);
+            }
+        } catch (error) {
+            await recordAutomationProposalDecision({
+                proposalId,
+                toStatus: "blocked",
+                sessionId: sessionContext.sessionId,
+                userId: ctx.from.id.toString(),
+                reason: "Automation proposal approval crashed",
+                metadata: {
+                    source: "telegram",
+                    decision: "approved_error",
+                    error: error instanceof Error ? error.message : String(error)
+                }
+            });
+            await ctx.reply(`❌ Failed to create automation: ${error.message}`, callbackReplyOptions);
+            await transitionWaitingReactionToDone(ctx, callbackData);
+        }
+    } else if (callbackData.startsWith('auto_rej:')) {
+        const parts = callbackData.split(':');
+        const proposalId = parts[1];
+        await controlPlane.rejectAutomationProposal(proposalId);
+        const sessionContext = await resolvePolarSessionContext(ctx).catch(() => ({
+            sessionId: `telegram:chat:${ctx.callbackQuery?.message?.chat?.id ?? "unknown"}`,
+            threadId: undefined,
+            replyToMessageId: undefined
+        }));
+        await recordAutomationProposalDecision({
+            proposalId,
+            toStatus: "done",
+            sessionId: sessionContext.sessionId,
+            userId: ctx.from.id.toString(),
+            reason: "Automation proposal rejected",
+            metadata: {
+                source: "telegram",
+                decision: "rejected"
+            }
+        });
+        await ctx.answerCbQuery("Automation proposal rejected.");
+        await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
+        await ctx.reply("❌ Automation proposal rejected.", callbackReplyOptions);
+        await transitionWaitingReactionToDone(ctx, callbackData);
 
     } else if (callbackData.startsWith('repair_sel:')) {
-        // Repair disambiguation button click: repair_sel:A:correlationId or repair_sel:B:correlationId
         const parts = callbackData.split(':');
-        const selection = parts[1]; // 'A' or 'B'
-        const correlationId = parts.slice(2).join(':'); // correlationId (UUID, no colons, but be safe)
+        const selection = parts[1];
+        const originMessageId = parseFinitePositiveInteger(parts[parts.length - 1]);
+        const correlationId = originMessageId !== null
+            ? parts.slice(2, parts.length - 1).join(':')
+            : parts.slice(2).join(':');
 
         // Resolve session ID from the chat
         let sessionId;
@@ -536,13 +972,20 @@ bot.on('callback_query', async (ctx) => {
             });
 
             if (result.status === 'completed') {
-                await ctx.reply(`✅ ${result.text}`);
+                await ctx.reply(`✅ ${result.text}`, callbackReplyOptions);
+                if (originMessageId !== null && ctx.callbackQuery?.message?.chat?.id !== undefined) {
+                    await setReactionState(ctx, ctx.callbackQuery.message.chat.id, originMessageId, 'done');
+                } else {
+                    await transitionWaitingReactionToDone(ctx, callbackData);
+                }
             } else {
-                await ctx.reply(`⚠️ ${result.text || 'Could not process selection.'}`);
+                await ctx.reply(`⚠️ ${result.text || 'Could not process selection.'}`, callbackReplyOptions);
+                await transitionWaitingReactionToDone(ctx, callbackData);
             }
         } catch (repairErr) {
             console.error('[REPAIR_SELECTION_ERROR]', repairErr);
-            await ctx.reply('⚠️ Something went wrong processing your selection.');
+            await ctx.reply('⚠️ Something went wrong processing your selection.', callbackReplyOptions);
+            await transitionWaitingReactionToDone(ctx, callbackData);
         }
     }
 

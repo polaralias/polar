@@ -1,4 +1,4 @@
-# Proactive inbox checks (future, gated)
+# Proactive inbox checks (gated MVP scaffolding)
 
 ## Purpose
 Inbox-style “check in for important emails” can be extremely useful, but it is privacy sensitive and must be opt-in, rate-limited, and conservative by default.
@@ -27,11 +27,13 @@ Rules:
 - lookback: last 24h
 - max notifications per day: 3
 - quiet hours: 22:00–07:00
+- timezone default: `UTC` (until per-user local timezone is available)
 
 ## Dry run
 After job creation:
 - run once immediately
 - report what would have triggered without sending push notifications repeatedly
+- dry run must execute in headers-only mode
 
 ## Data stored
 In feedback and run ledgers, store:

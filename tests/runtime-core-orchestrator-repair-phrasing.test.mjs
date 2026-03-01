@@ -130,6 +130,7 @@ test("repair phrasing path uses resolved provider/model and cannot change routin
     });
 
     assert.equal(repair.status, "repair_question");
+    assert.match(repair.assistantMessageId, /^msg_a_/);
     assert.deepEqual(repair.options.map((option) => option.id), ["A", "B"]);
     assert.equal(repair.question, "Which path should I continue?");
     assert.notEqual(repair.correlationId, "attacker-correlation");
@@ -182,6 +183,7 @@ test("repair phrasing fallback is deterministic when provider phrasing fails", a
     });
 
     assert.equal(repair.status, "repair_question");
+    assert.match(repair.assistantMessageId, /^msg_a_/);
     assert.equal(repair.question, "I'm not sure which topic you mean. Could you pick one?");
     assert.deepEqual(repair.options.map((option) => option.id), ["A", "B"]);
 

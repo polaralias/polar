@@ -68,7 +68,7 @@ These must stop constructing DB/control plane directly and must call `createPola
 ## Provider resolution
 Provider resolution can remain inside the control plane initially (current `resolveProvider` path uses `polar-adapter-native`).
 
-Do not introduce any `pi-*` dependencies into bootstrap. `polar-adapter-pi` is scheduled for removal.
+Do not introduce any `pi-*` dependencies into bootstrap. `polar-adapter-pi` is removed from the active workspace.
 
 ## Acceptance criteria
 - `@polar/platform` exists and is importable.

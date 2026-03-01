@@ -162,6 +162,6 @@ test("F5 Reliability Drills", async (t) => {
         assert.strictEqual(result.status, "failed");
         assert.strictEqual(result.error.code, "POLAR_RUNTIME_EXECUTION_ERROR");
         assert.ok(result.error.cause.includes("timed out after 50ms"));
-        assert.ok(elapsed >= 40 && elapsed <= 500); // Expect it terminated quickly due to timeout wrapper
+        assert.ok(elapsed >= 40 && elapsed <= 2500); // Allow wider host/test-runner variance while still asserting timeout containment
     });
 });

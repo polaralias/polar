@@ -147,6 +147,7 @@ test("orchestrator keeps workflow ownership on proposal thread across active-thr
 
     assert.equal(proposed.status, "workflow_proposed");
     assert.equal(proposed.workflowId, "id-3");
+    assert.match(proposed.assistantMessageId, /^msg_a_/);
 
     const driftTurn = await orchestrator.orchestrate({
       sessionId: "session-1",

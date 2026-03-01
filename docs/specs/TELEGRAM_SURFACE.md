@@ -53,6 +53,7 @@ If grouping is used:
 - preserve ordering
 - do not drop messages silently
 - store merged text once via `appendMessage`
+All debounce/threading/reaction behaviour must comply with `docs/specs/TELEGRAM_THREADING_AND_EMOJI.md`.
 
 ### Buttons and callbacks
 Callback payloads must be validated before use.
@@ -60,10 +61,11 @@ On approval actions, clear inline markup to prevent duplicate execution.
 
 Known callback types:
 - workflow approve/reject
+- automation proposal approve/reject
 - repair selection handlers
 
 ## Reactions and feedback
-Current behaviour appends to `REACTIONS.md`. This must be replaced with feedback events stored in SQLite.
+Reactions are persisted as feedback events in SQLite (`polar_feedback_events`) via control-plane APIs.
 
 Reaction mapping:
 - positive: 👍 💯 🔥
@@ -103,3 +105,6 @@ Run:
 ## Agent checklist
 - Check `AGENTS.md` first.
 - When done, write to `docs/IMPLEMENTATION_LOG.md`.
+
+## See also
+- `docs/specs/TELEGRAM_THREADING_AND_EMOJI.md` (threadKey buffering, anchor mapping, emoji lifecycle)

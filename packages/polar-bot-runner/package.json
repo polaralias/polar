@@ -5,10 +5,12 @@
     "description": "Polar AI Assistant Bot Runner for external messaging platforms",
     "type": "module",
     "scripts": {
-        "start": "node --experimental-modules --no-warnings src/index.mjs"
+        "start": "node --experimental-modules --no-warnings src/index.mjs",
+        "start:automation": "node --experimental-modules --no-warnings src/automation-runner.mjs"
     },
     "dependencies": {
         "@polar/platform": "*",
+        "@polar/runtime-core": "*",
         "dotenv": "^16.6.1",
         "pdf-parse": "^2.4.5",
         "telegraf": "^4.16.3"

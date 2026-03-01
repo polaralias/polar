@@ -12,12 +12,20 @@ export async function renderConfig(container) {
     const providers = records.filter(r => r.resourceType === 'provider');
     const profiles = records.filter(r => r.resourceType === 'profile');
     const extensions = records.filter(r => r.resourceType === 'extension');
+    const globalPersonalityResult = await fetchApi('getPersonalityProfile', { scope: 'global' }).catch(() => ({ status: 'not_found' }));
+    const personalityListResult = await fetchApi('listPersonalityProfiles', { limit: 50 }).catch(() => ({ items: [] }));
+    const globalPersonalityPrompt =
+      globalPersonalityResult.status === 'found' && typeof globalPersonalityResult.profile?.prompt === 'string'
+        ? globalPersonalityResult.profile.prompt
+        : '';
+    const personalityItems = Array.isArray(personalityListResult.items) ? personalityListResult.items : [];
 
     const html = `
       <div style="display: flex; gap: 24px; margin-bottom: 24px;">
          <button class="action-btn" id="tab-budget">Budget & Policy</button>
          <button class="action-btn outline" id="tab-providers">Providers</button>
          <button class="action-btn outline" id="tab-profiles">Agent Profiles</button>
+         <button class="action-btn outline" id="tab-personality">Personality</button>
          <button class="action-btn outline" id="tab-extensions">MCP & Skills</button>
          <button class="action-btn outline" id="tab-files">System Files</button>
       </div>
@@ -176,6 +184,43 @@ export async function renderConfig(container) {
         </div>
       </div>
 
+      <!-- PERSONALITY TAB -->
+      <div id="section-personality" class="config-section fade-in" style="display: none;">
+        <div class="card" style="display: flex; flex-direction: column; gap: 24px;">
+          <h3 class="card-title" style="color: #fff; font-size: 16px;">Personality Profiles</h3>
+          <div class="glass-box" style="display: flex; flex-direction: column; gap: 12px;">
+            <label style="font-size: 11px; color: var(--text-muted); font-weight: 600; text-transform: uppercase;">Global Personality (Operator)</label>
+            <textarea id="personality-global-prompt" rows="5" maxlength="2000" placeholder="Neutral by default..." style="width: 100%; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color: #fff; padding: 10px; border-radius: 6px; font-family: var(--font-family); resize: vertical;">${globalPersonalityPrompt}</textarea>
+            <div style="display:flex; gap:8px; justify-content:flex-end;">
+              <button id="personality-global-reset" class="action-btn outline" type="button">Reset Global</button>
+              <button id="personality-global-save" class="action-btn" type="button">Save Global</button>
+            </div>
+          </div>
+          <div class="glass-box" style="display: flex; flex-direction: column; gap: 12px;">
+            <label style="font-size: 11px; color: var(--text-muted); font-weight: 600; text-transform: uppercase;">User Personality (Operator)</label>
+            <input id="personality-user-id" type="text" placeholder="userId" style="background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color: #fff; padding: 10px; border-radius: 6px;" />
+            <textarea id="personality-user-prompt" rows="4" maxlength="2000" placeholder="Write user-scoped style guidance..." style="width: 100%; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color: #fff; padding: 10px; border-radius: 6px; font-family: var(--font-family); resize: vertical;"></textarea>
+            <div style="display:flex; gap:8px; justify-content:flex-end;">
+              <button id="personality-user-load" class="action-btn outline" type="button">Load User</button>
+              <button id="personality-user-reset" class="action-btn outline" type="button">Reset User</button>
+              <button id="personality-user-save" class="action-btn" type="button">Save User</button>
+            </div>
+          </div>
+          <div class="glass-box" style="display: flex; flex-direction: column; gap: 8px;">
+            <div style="font-size: 11px; color: var(--text-muted); font-weight: 600; text-transform: uppercase;">Stored Profiles (latest 50)</div>
+            <div id="personality-list" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px;">
+              ${personalityItems.map((item) => `
+                <div style="padding: 10px; border-radius: 8px; background: rgba(0,0,0,0.2); border: 1px solid var(--card-border);">
+                  <div style="font-size: 12px; color: #fff; font-weight: 600;">${item.scope}</div>
+                  <div style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">${item.userId || 'n/a'} ${item.sessionId ? `| ${item.sessionId}` : ''}</div>
+                </div>
+              `).join('')}
+            </div>
+          </div>
+          <div id="personality-msg" style="font-size: 13px; min-height: 20px;"></div>
+        </div>
+      </div>
+
       <!-- EXTENSIONS TAB -->
       <div id="section-extensions" class="config-section fade-in" style="display: none;">
         <div class="card" style="display: flex; flex-direction: column;">
@@ -246,7 +291,7 @@ export async function renderConfig(container) {
     container.innerHTML = html;
 
     // TABS LOGIC
-    const tabs = ['budget', 'providers', 'profiles', 'extensions', 'files'];
+    const tabs = ['budget', 'providers', 'profiles', 'personality', 'extensions', 'files'];
     tabs.forEach(tab => {
       container.querySelector(`#tab-${tab}`).addEventListener('click', () => {
         tabs.forEach(t => {
@@ -368,6 +413,100 @@ export async function renderConfig(container) {
         });
       }
       alert('Profile Upserted Successfully. Refresh page to reflect in list.');
+    });
+
+    // PERSONALITY
+    const personalityMsg = container.querySelector('#personality-msg');
+    const personalityGlobalPrompt = container.querySelector('#personality-global-prompt');
+    const personalityUserId = container.querySelector('#personality-user-id');
+    const personalityUserPrompt = container.querySelector('#personality-user-prompt');
+
+    const setPersonalityMsg = (text, tone = 'info') => {
+      personalityMsg.textContent = text;
+      personalityMsg.style.color =
+        tone === 'success' ? 'var(--success)' : tone === 'danger' ? 'var(--danger)' : 'var(--info)';
+    };
+
+    container.querySelector('#personality-global-save').addEventListener('click', async () => {
+      try {
+        await fetchApi('upsertPersonalityProfile', {
+          scope: 'global',
+          prompt: personalityGlobalPrompt.value,
+        });
+        setPersonalityMsg('Global personality saved.', 'success');
+      } catch (error) {
+        setPersonalityMsg(`Failed to save global personality: ${error.message}`, 'danger');
+      }
+    });
+
+    container.querySelector('#personality-global-reset').addEventListener('click', async () => {
+      try {
+        await fetchApi('resetPersonalityProfile', { scope: 'global' });
+        personalityGlobalPrompt.value = '';
+        setPersonalityMsg('Global personality reset.', 'success');
+      } catch (error) {
+        setPersonalityMsg(`Failed to reset global personality: ${error.message}`, 'danger');
+      }
+    });
+
+    container.querySelector('#personality-user-load').addEventListener('click', async () => {
+      const userId = personalityUserId.value.trim();
+      if (!userId) {
+        setPersonalityMsg('Enter a userId to load a user personality profile.', 'danger');
+        return;
+      }
+      try {
+        const result = await fetchApi('getPersonalityProfile', {
+          scope: 'user',
+          userId,
+        });
+        personalityUserPrompt.value =
+          result.status === 'found' ? (result.profile.prompt || '') : '';
+        setPersonalityMsg(
+          result.status === 'found'
+            ? `Loaded personality for ${userId}.`
+            : `No user personality found for ${userId}.`,
+          'success',
+        );
+      } catch (error) {
+        setPersonalityMsg(`Failed to load user personality: ${error.message}`, 'danger');
+      }
+    });
+
+    container.querySelector('#personality-user-save').addEventListener('click', async () => {
+      const userId = personalityUserId.value.trim();
+      if (!userId) {
+        setPersonalityMsg('Enter a userId before saving.', 'danger');
+        return;
+      }
+      try {
+        await fetchApi('upsertPersonalityProfile', {
+          scope: 'user',
+          userId,
+          prompt: personalityUserPrompt.value,
+        });
+        setPersonalityMsg(`User personality saved for ${userId}.`, 'success');
+      } catch (error) {
+        setPersonalityMsg(`Failed to save user personality: ${error.message}`, 'danger');
+      }
+    });
+
+    container.querySelector('#personality-user-reset').addEventListener('click', async () => {
+      const userId = personalityUserId.value.trim();
+      if (!userId) {
+        setPersonalityMsg('Enter a userId before resetting.', 'danger');
+        return;
+      }
+      try {
+        await fetchApi('resetPersonalityProfile', {
+          scope: 'user',
+          userId,
+        });
+        personalityUserPrompt.value = '';
+        setPersonalityMsg(`User personality reset for ${userId}.`, 'success');
+      } catch (error) {
+        setPersonalityMsg(`Failed to reset user personality: ${error.message}`, 'danger');
+      }
     });
 
     // EXTENSIONS

@@ -1,15 +1,22 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import Database from "better-sqlite3";
 
 import { ContractValidationError } from "../packages/polar-domain/src/index.mjs";
 import { createControlPlaneService } from "../packages/polar-control-plane/src/index.mjs";
+import {
+  createSqliteAutomationJobStore,
+  createSqliteFeedbackEventStore,
+  createSqlitePersonalityStore,
+  createSqliteRunEventLinker,
+} from "../packages/polar-runtime-core/src/index.mjs";
 
 test("control-plane service health reports contract and record counts", async () => {
   const service = createControlPlaneService();
 
   assert.deepEqual(await service.health(), {
     status: "ok",
-    contractCount: 40,
+    contractCount: 45,
     recordCount: 0,
     sessionCount: 0,
     taskCount: 0,
@@ -31,7 +38,7 @@ test("control-plane service health reports contract and record counts", async ()
 
   assert.deepEqual(await service.health(), {
     status: "ok",
-    contractCount: 40,
+    contractCount: 45,
     recordCount: 1,
     sessionCount: 0,
     taskCount: 0,
@@ -573,7 +580,7 @@ test("control-plane service proxies task-board operations", async () => {
 
   assert.deepEqual(await service.health(), {
     status: "ok",
-    contractCount: 40,
+    contractCount: 45,
     recordCount: 0,
     sessionCount: 0,
     taskCount: 2,
@@ -1018,6 +1025,441 @@ test("control-plane service proxies scheduler queue retry_now and requeue action
   assert.equal(deadLetterQueue.totalCount, 0);
 });
 
+test("control-plane service records and lists feedback events", async () => {
+  const db = new Database(":memory:");
+  try {
+    let nowMs = Date.UTC(2026, 1, 24, 12, 0, 0);
+    const feedbackEventStore = createSqliteFeedbackEventStore({
+      db,
+      now: () => nowMs,
+    });
+    const service = createControlPlaneService({
+      feedbackEventStore,
+    });
+
+    const recorded = await service.recordFeedbackEvent({
+      type: "reaction_added",
+      sessionId: "telegram:chat:200",
+      messageId: "msg_a_200",
+      emoji: "🔥",
+      polarity: "positive",
+      payload: {
+        telegramMessageId: 200,
+        targetMessageText: "Nice plan",
+        timestampMs: nowMs,
+      },
+    });
+    assert.equal(recorded.status, "recorded");
+    assert.equal(recorded.type, "reaction_added");
+    assert.equal(recorded.sessionId, "telegram:chat:200");
+
+    nowMs += 1_000;
+    await service.recordFeedbackEvent({
+      type: "reaction_added",
+      sessionId: "telegram:chat:200",
+      messageId: "msg_a_201",
+      emoji: "👎",
+      polarity: "negative",
+      payload: {
+        telegramMessageId: 201,
+        targetMessageText: "Wrong direction",
+        timestampMs: nowMs,
+      },
+    });
+
+    const listed = await service.listFeedbackEvents({
+      sessionId: "telegram:chat:200",
+      limit: 10,
+    });
+    assert.deepEqual(listed, {
+      status: "ok",
+      items: [
+        {
+          id: listed.items[0].id,
+          type: "reaction_added",
+          sessionId: "telegram:chat:200",
+          messageId: "msg_a_201",
+          emoji: "👎",
+          polarity: "negative",
+          payload: {
+            telegramMessageId: 201,
+            targetMessageText: "Wrong direction",
+            timestampMs: nowMs,
+          },
+          createdAtMs: nowMs,
+        },
+        {
+          id: listed.items[1].id,
+          type: "reaction_added",
+          sessionId: "telegram:chat:200",
+          messageId: "msg_a_200",
+          emoji: "🔥",
+          polarity: "positive",
+          payload: {
+            telegramMessageId: 200,
+            targetMessageText: "Nice plan",
+            timestampMs: Date.UTC(2026, 1, 24, 12, 0, 0),
+          },
+          createdAtMs: Date.UTC(2026, 1, 24, 12, 0, 0),
+        },
+      ],
+      totalCount: 2,
+    });
+    assert.equal(typeof listed.items[0].id, "string");
+    assert.equal(typeof listed.items[1].id, "string");
+  } finally {
+    db.close();
+  }
+});
+
+test("control-plane service lists automation and heartbeat run ledger entries", async () => {
+  const db = new Database(":memory:");
+  try {
+    const runEventLinker = createSqliteRunEventLinker({
+      db,
+      now: () => Date.UTC(2026, 1, 25, 11, 0, 0),
+    });
+    await runEventLinker.recordAutomationRun({
+      automationId: "auto.daily",
+      runId: "run-a-1",
+      profileId: "profile-default",
+      trigger: "schedule",
+      output: {
+        status: "executed",
+      },
+    });
+    await runEventLinker.recordHeartbeatRun({
+      policyId: "policy.daily",
+      runId: "run-h-1",
+      profileId: "profile-default",
+      trigger: "schedule",
+      output: {
+        status: "executed",
+      },
+    });
+
+    const service = createControlPlaneService({
+      runEventLinker,
+    });
+    const automationLedger = service.listAutomationRunLedger({
+      fromSequence: 0,
+      limit: 10,
+    });
+    assert.equal(automationLedger.status, "ok");
+    assert.equal(automationLedger.totalCount, 1);
+    assert.equal(automationLedger.items[0].automationId, "auto.daily");
+    assert.equal(automationLedger.items[0].runId, "run-a-1");
+
+    const heartbeatLedger = service.listHeartbeatRunLedger({
+      fromSequence: 0,
+      limit: 10,
+    });
+    assert.equal(heartbeatLedger.status, "ok");
+    assert.equal(heartbeatLedger.totalCount, 1);
+    assert.equal(heartbeatLedger.items[0].policyId, "policy.daily");
+    assert.equal(heartbeatLedger.items[0].runId, "run-h-1");
+  } finally {
+    db.close();
+  }
+});
+
+test("control-plane service manages automation jobs via sqlite store", async () => {
+  const db = new Database(":memory:");
+  try {
+    let nowMs = Date.UTC(2026, 1, 25, 12, 0, 0);
+    const automationJobStore = createSqliteAutomationJobStore({
+      db,
+      now: () => nowMs,
+    });
+    const service = createControlPlaneService({
+      automationJobStore,
+    });
+
+    const created = await service.createAutomationJob({
+      id: "job-1",
+      ownerUserId: "user-1",
+      sessionId: "telegram:chat:1",
+      schedule: "every 1 hours",
+      promptTemplate: "Reminder: hydrate",
+    });
+    assert.equal(created.status, "created");
+    assert.equal(created.job.enabled, true);
+
+    const listed = await service.listAutomationJobs({
+      ownerUserId: "user-1",
+      enabled: true,
+    });
+    assert.equal(listed.status, "ok");
+    assert.equal(listed.totalCount, 1);
+    assert.equal(listed.items[0].id, "job-1");
+
+    nowMs += 1_000;
+    const updated = await service.updateAutomationJob({
+      id: "job-1",
+      promptTemplate: "Reminder: stretch",
+      limits: {
+        maxNotificationsPerDay: 1,
+      },
+    });
+    assert.equal(updated.status, "updated");
+    assert.equal(updated.job.promptTemplate, "Reminder: stretch");
+    assert.equal(updated.job.limits.maxNotificationsPerDay, 1);
+
+    nowMs += 1_000;
+    const disabled = await service.disableAutomationJob({
+      id: "job-1",
+    });
+    assert.equal(disabled.status, "disabled");
+    assert.equal(disabled.job.enabled, false);
+
+    const enabled = await service.enableAutomationJob({
+      id: "job-1",
+    });
+    assert.equal(enabled.status, "updated");
+    assert.equal(enabled.job.enabled, true);
+
+    const fetched = await service.getAutomationJob({
+      id: "job-1",
+    });
+    assert.equal(fetched.status, "found");
+    assert.equal(fetched.job.id, "job-1");
+
+    const preview = await service.previewAutomationJob({
+      schedule: "daily 09:15",
+      promptTemplate: "Reminder: hydrate",
+    });
+    assert.equal(preview.status, "ok");
+    assert.equal(preview.preview.schedule, "daily at 09:15");
+
+    const deleted = await service.deleteAutomationJob({
+      id: "job-1",
+    });
+    assert.equal(deleted.status, "deleted");
+  } finally {
+    db.close();
+  }
+});
+
+test("control-plane service exports and shows artifacts through runtime-core exporter", async () => {
+  const db = new Database(":memory:");
+  try {
+    const service = createControlPlaneService({
+      runEventDb: db,
+    });
+    const exported = await service.exportArtifacts({});
+    assert.equal(exported.status, "exported");
+    assert.equal(exported.files.length, 4);
+
+    const shown = await service.showArtifacts({});
+    assert.equal(shown.status, "ok");
+    assert.equal(shown.totalCount, 4);
+  } finally {
+    db.close();
+  }
+});
+
+test("control-plane service can run an automation job manually through orchestrate and ledger", async () => {
+  const db = new Database(":memory:");
+  try {
+    const automationJobStore = createSqliteAutomationJobStore({
+      db,
+      now: () => Date.UTC(2026, 2, 1, 10, 0, 0),
+    });
+    await automationJobStore.createJob({
+      id: "job-manual-1",
+      ownerUserId: "user-1",
+      sessionId: "telegram:chat:1",
+      schedule: "every 1 hours",
+      promptTemplate: "Manual reminder",
+    });
+
+    const service = createControlPlaneService({
+      automationJobStore,
+      runEventDb: db,
+      personalityStore: createSqlitePersonalityStore({ db }),
+      resolveProvider: async () => ({
+        async generate() {
+          return {
+            providerId: "openai",
+            model: "gpt-4.1-mini",
+            text: "manual run completed",
+          };
+        },
+        async stream() {
+          return { chunks: [] };
+        },
+        async embed() {
+          return { vector: [0.1, 0.2] };
+        },
+        async listModels() {
+          return { providerId: "openai", models: ["gpt-4.1-mini"] };
+        },
+      }),
+    });
+
+    const result = await service.runAutomationJob({
+      id: "job-manual-1",
+      userId: "user-1",
+      sessionId: "telegram:chat:1",
+    });
+    assert.equal(result.status, "completed");
+    assert.equal(typeof result.runId, "string");
+
+    const ledger = service.listAutomationRunLedger({});
+    assert.equal(ledger.status, "ok");
+    assert.equal(ledger.totalCount, 1);
+    assert.equal(ledger.items[0].automationId, "job-manual-1");
+    assert.equal(ledger.items[0].trigger, "manual");
+  } finally {
+    db.close();
+  }
+});
+
+test("control-plane service exposes proactive inbox dry run and body-read gating", async () => {
+  const service = createControlPlaneService({
+    inboxConnector: {
+      async searchHeaders() {
+        return [
+          {
+            messageId: "mail-1",
+            subject: "Build failure",
+            from: "alerts@example.com",
+            senderDomain: "example.com",
+          },
+          {
+            messageId: "mail-2",
+            subject: "Daily digest",
+            from: "news@example.org",
+            senderDomain: "example.org",
+          },
+        ];
+      },
+    },
+  });
+
+  const dryRun = await service.proactiveInboxDryRun({
+    sessionId: "telegram:chat:1",
+    userId: "user-1",
+    maxNotificationsPerDay: 1,
+    capabilities: ["mail.search_headers"],
+  });
+  assert.equal(dryRun.status, "completed");
+  assert.equal(dryRun.mode, "headers_only");
+  assert.equal(dryRun.scannedHeaderCount, 2);
+  assert.equal(dryRun.wouldTriggerCount, 1);
+  assert.equal(dryRun.wouldTrigger.length, 1);
+  assert.equal(dryRun.wouldTrigger[0].messageId, "mail-1");
+
+  const blockedBodyRead = await service.proactiveInboxReadBody({
+    sessionId: "telegram:chat:1",
+    userId: "user-1",
+    messageId: "mail-1",
+    capabilities: ["mail.search_headers"],
+  });
+  assert.equal(blockedBodyRead.status, "blocked");
+  assert.equal(
+    blockedBodyRead.blockedReason,
+    "capability_mail.read_body_requires_explicit_permission",
+  );
+});
+
+test("control-plane service manages personality profiles with strict scope validation", async () => {
+  const db = new Database(":memory:");
+  try {
+    const personalityStore = createSqlitePersonalityStore({ db });
+    const service = createControlPlaneService({ personalityStore });
+
+    const global = await service.upsertPersonalityProfile({
+      scope: "global",
+      prompt: "Global style",
+    });
+    assert.equal(global.status, "upserted");
+    assert.equal(global.profile.scope, "global");
+
+    const user = await service.upsertPersonalityProfile({
+      scope: "user",
+      userId: "user-1",
+      prompt: "User style",
+    });
+    assert.equal(user.profile.scope, "user");
+
+    const session = await service.upsertPersonalityProfile({
+      scope: "session",
+      userId: "user-1",
+      sessionId: "session-1",
+      prompt: "Session style",
+    });
+    assert.equal(session.profile.scope, "session");
+
+    const effective = await service.getEffectivePersonality({
+      userId: "user-1",
+      sessionId: "session-1",
+    });
+    assert.equal(effective.status, "found");
+    assert.equal(effective.profile.scope, "session");
+
+    const listed = await service.listPersonalityProfiles({
+      scope: "user",
+      userId: "user-1",
+    });
+    assert.equal(listed.status, "ok");
+    assert.equal(listed.totalCount, 1);
+    assert.equal(listed.items[0].scope, "user");
+
+    const reset = await service.resetPersonalityProfile({
+      scope: "session",
+      userId: "user-1",
+      sessionId: "session-1",
+    });
+    assert.equal(reset.status, "reset");
+    assert.equal(reset.deleted, true);
+  } finally {
+    db.close();
+  }
+});
+
+test("control-plane service stores model registry and applies default model policy to global routing profile", async () => {
+  const service = createControlPlaneService();
+
+  const upserted = await service.upsertModelRegistry({
+    registry: {
+      version: 1,
+      entries: [{ provider: "openai", modelId: "gpt-5-mini", alias: "fast" }],
+      defaults: null,
+    },
+  });
+  assert.equal(upserted.status, "applied");
+  assert.equal(upserted.registry.entries.length, 1);
+
+  const listed = await service.getModelRegistry({});
+  assert.equal(listed.status, "ok");
+  assert.equal(listed.registry.entries[0].provider, "openai");
+  assert.equal(listed.registry.entries[0].alias, "fast");
+
+  const appliedDefault = await service.setModelRegistryDefault({
+    providerId: "openai",
+    modelId: "gpt-5-mini",
+  });
+  assert.equal(appliedDefault.status, "applied");
+
+  const pinned = await service.getConfig({
+    resourceType: "policy",
+    resourceId: "profile-pin:global",
+  });
+  assert.equal(pinned.status, "found");
+  assert.equal(pinned.config.profileId, "profile.global");
+
+  const profile = await service.getConfig({
+    resourceType: "profile",
+    resourceId: "profile.global",
+  });
+  assert.equal(profile.status, "found");
+  assert.deepEqual(profile.config.modelPolicy, {
+    providerId: "openai",
+    modelId: "gpt-5-mini",
+  });
+});
+
 test("control-plane service preserves contract validation errors", async () => {
   const service = createControlPlaneService();
 
@@ -1102,6 +1544,104 @@ test("control-plane service preserves contract validation errors", async () => {
         queue: "processed",
         action: "dismiss",
         eventId: "event-invalid",
+      }),
+    (error) =>
+      error instanceof ContractValidationError &&
+      error.code === "POLAR_CONTRACT_VALIDATION_ERROR",
+  );
+
+  await assert.rejects(
+    async () =>
+      service.recordFeedbackEvent({
+        type: "reaction_added",
+        sessionId: "telegram:chat:1",
+        unexpected: true,
+      }),
+    (error) =>
+      error instanceof ContractValidationError &&
+      error.code === "POLAR_CONTRACT_VALIDATION_ERROR",
+  );
+
+  await assert.rejects(
+    async () =>
+      service.listFeedbackEvents({
+        limit: 0,
+      }),
+    (error) =>
+        error instanceof ContractValidationError &&
+        error.code === "POLAR_CONTRACT_VALIDATION_ERROR",
+  );
+
+  await assert.rejects(
+    async () =>
+      service.createAutomationJob({
+        ownerUserId: "",
+        sessionId: "session-1",
+        schedule: "every 1 hours",
+        promptTemplate: "x",
+      }),
+    (error) =>
+      error instanceof ContractValidationError &&
+      error.code === "POLAR_CONTRACT_VALIDATION_ERROR",
+  );
+
+  await assert.rejects(
+    async () =>
+      service.updateAutomationJob({
+        id: "job-1",
+      }),
+    (error) =>
+      error instanceof ContractValidationError &&
+      error.code === "POLAR_CONTRACT_VALIDATION_ERROR",
+  );
+
+  await assert.rejects(
+    async () =>
+      service.proactiveInboxCheckHeaders({
+        sessionId: "telegram:chat:1",
+        userId: "user-1",
+        lookbackHours: 0,
+      }),
+    (error) =>
+      error instanceof ContractValidationError &&
+      error.code === "POLAR_CONTRACT_VALIDATION_ERROR",
+  );
+
+  await assert.rejects(
+    async () =>
+      service.upsertPersonalityProfile({
+        scope: "user",
+        prompt: "missing user id",
+      }),
+    (error) =>
+      error instanceof ContractValidationError &&
+      error.code === "POLAR_CONTRACT_VALIDATION_ERROR",
+  );
+
+  await assert.rejects(
+    async () =>
+      service.getEffectivePersonality({
+        userId: "user-1",
+      }),
+    (error) =>
+      error instanceof ContractValidationError &&
+      error.code === "POLAR_CONTRACT_VALIDATION_ERROR",
+  );
+
+  assert.throws(
+    () =>
+      service.listAutomationRunLedger({
+        limit: 0,
+      }),
+    (error) =>
+      error instanceof ContractValidationError &&
+      error.code === "POLAR_CONTRACT_VALIDATION_ERROR",
+  );
+
+  assert.throws(
+    () =>
+      service.listHeartbeatRunLedger({
+        unexpected: true,
       }),
     (error) =>
       error instanceof ContractValidationError &&

@@ -1,3 +1,16 @@
+import { randomUUID } from "node:crypto";
+import { resolve } from "node:path";
+
+import {
+  booleanField,
+  ContractValidationError,
+  createStrictObjectSchema,
+  enumField,
+  isPlainObject,
+  jsonField,
+  numberField,
+  stringField,
+} from "@polar/domain";
 import {
   createExtensionAdapterRegistry,
   parseSkillManifest,
@@ -49,12 +62,19 @@ import {
   createSkillInstallerGateway,
   registerSkillInstallerContract,
   createSkillRegistry,
+  createAutomationGateway,
+  registerAutomationContracts,
+  createHeartbeatGateway,
+  registerHeartbeatContract,
   createMcpConnectorGateway,
   registerMcpConnectorContract,
   createPluginInstallerGateway,
   registerPluginInstallerContract,
   createMemoryGateway,
   registerMemoryContracts,
+  createProactiveInboxGateway,
+  registerProactiveInboxContracts,
+  createSqliteRunEventLinker,
   createBudgetMiddleware,
   createMemoryExtractionMiddleware,
   createMemoryRecallMiddleware,
@@ -64,7 +84,409 @@ import {
   createDurableLineageStore,
   isRuntimeDevMode,
   createSqliteSchedulerStateStore,
+  exportArtifactsFromDb,
+  listArtifactFiles,
+  parseAutomationSchedule,
 } from "@polar/runtime-core";
+
+const feedbackRecordRequestSchema = createStrictObjectSchema({
+  schemaId: "controlPlane.recordFeedbackEvent.request",
+  fields: {
+    type: stringField({ minLength: 1 }),
+    sessionId: stringField({ minLength: 1 }),
+    messageId: stringField({ minLength: 1, required: false }),
+    emoji: stringField({ minLength: 1, required: false }),
+    polarity: enumField(["positive", "negative", "neutral"], { required: false }),
+    payload: jsonField({ required: false }),
+    createdAtMs: numberField({ min: 0, required: false }),
+  },
+});
+
+const feedbackListRequestSchema = createStrictObjectSchema({
+  schemaId: "controlPlane.listFeedbackEvents.request",
+  fields: {
+    sessionId: stringField({ minLength: 1, required: false }),
+    type: stringField({ minLength: 1, required: false }),
+    messageId: stringField({ minLength: 1, required: false }),
+    polarity: enumField(["positive", "negative", "neutral"], { required: false }),
+    limit: numberField({ min: 1, max: 500, required: false }),
+    beforeCreatedAtMs: numberField({ min: 0, required: false }),
+    afterCreatedAtMs: numberField({ min: 0, required: false }),
+  },
+});
+
+const runLedgerListRequestSchema = createStrictObjectSchema({
+  schemaId: "controlPlane.runLedger.list.request",
+  fields: {
+    fromSequence: numberField({ min: 0, required: false }),
+    limit: numberField({ min: 1, max: 500, required: false }),
+    id: stringField({ minLength: 1, required: false }),
+    runId: stringField({ minLength: 1, required: false }),
+    profileId: stringField({ minLength: 1, required: false }),
+    trigger: stringField({ minLength: 1, required: false }),
+  },
+});
+
+const automationJobCreateRequestSchema = createStrictObjectSchema({
+  schemaId: "controlPlane.automationJob.create.request",
+  fields: {
+    id: stringField({ minLength: 1, required: false }),
+    ownerUserId: stringField({ minLength: 1 }),
+    sessionId: stringField({ minLength: 1 }),
+    schedule: stringField({ minLength: 1 }),
+    promptTemplate: stringField({ minLength: 1 }),
+    enabled: booleanField({ required: false }),
+    quietHours: jsonField({ required: false }),
+    limits: jsonField({ required: false }),
+  },
+});
+
+const automationJobListRequestSchema = createStrictObjectSchema({
+  schemaId: "controlPlane.automationJob.list.request",
+  fields: {
+    ownerUserId: stringField({ minLength: 1, required: false }),
+    sessionId: stringField({ minLength: 1, required: false }),
+    enabled: booleanField({ required: false }),
+    limit: numberField({ min: 1, max: 500, required: false }),
+  },
+});
+
+const automationJobUpdateRequestSchema = createStrictObjectSchema({
+  schemaId: "controlPlane.automationJob.update.request",
+  fields: {
+    id: stringField({ minLength: 1 }),
+    schedule: stringField({ minLength: 1, required: false }),
+    promptTemplate: stringField({ minLength: 1, required: false }),
+    enabled: booleanField({ required: false }),
+    quietHours: jsonField({ required: false }),
+    limits: jsonField({ required: false }),
+  },
+});
+
+const automationJobDisableRequestSchema = createStrictObjectSchema({
+  schemaId: "controlPlane.automationJob.disable.request",
+  fields: {
+    id: stringField({ minLength: 1 }),
+  },
+});
+
+const automationJobGetRequestSchema = createStrictObjectSchema({
+  schemaId: "controlPlane.automationJob.get.request",
+  fields: {
+    id: stringField({ minLength: 1 }),
+  },
+});
+
+const automationJobDeleteRequestSchema = createStrictObjectSchema({
+  schemaId: "controlPlane.automationJob.delete.request",
+  fields: {
+    id: stringField({ minLength: 1 }),
+  },
+});
+
+const automationJobRunRequestSchema = createStrictObjectSchema({
+  schemaId: "controlPlane.automationJob.run.request",
+  fields: {
+    id: stringField({ minLength: 1 }),
+    sessionId: stringField({ minLength: 1, required: false }),
+    userId: stringField({ minLength: 1, required: false }),
+  },
+});
+
+const automationJobPreviewRequestSchema = createStrictObjectSchema({
+  schemaId: "controlPlane.automationJob.preview.request",
+  fields: {
+    schedule: stringField({ minLength: 1 }),
+    promptTemplate: stringField({ minLength: 1 }),
+  },
+});
+
+const artifactsExportRequestSchema = createStrictObjectSchema({
+  schemaId: "controlPlane.artifacts.export.request",
+  fields: {
+    artifactsDir: stringField({ minLength: 1, required: false }),
+  },
+});
+
+const artifactsShowRequestSchema = createStrictObjectSchema({
+  schemaId: "controlPlane.artifacts.show.request",
+  fields: {
+    artifactsDir: stringField({ minLength: 1, required: false }),
+  },
+});
+
+const proactiveInboxCheckRequestSchema = createStrictObjectSchema({
+  schemaId: "controlPlane.proactiveInbox.checkHeaders.request",
+  fields: {
+    sessionId: stringField({ minLength: 1 }),
+    userId: stringField({ minLength: 1 }),
+    connectorId: stringField({ minLength: 1, required: false }),
+    lookbackHours: numberField({ min: 1, max: 168, required: false }),
+    maxHeaders: numberField({ min: 1, max: 100, required: false }),
+    capabilities: jsonField({ required: false }),
+    mode: enumField(["headers_only", "read_body"], { required: false }),
+    metadata: jsonField({ required: false }),
+  },
+});
+
+const proactiveInboxReadBodyRequestSchema = createStrictObjectSchema({
+  schemaId: "controlPlane.proactiveInbox.readBody.request",
+  fields: {
+    sessionId: stringField({ minLength: 1 }),
+    userId: stringField({ minLength: 1 }),
+    connectorId: stringField({ minLength: 1, required: false }),
+    messageId: stringField({ minLength: 1 }),
+    capabilities: jsonField({ required: false }),
+    metadata: jsonField({ required: false }),
+  },
+});
+
+const proactiveInboxDryRunRequestSchema = createStrictObjectSchema({
+  schemaId: "controlPlane.proactiveInbox.dryRun.request",
+  fields: {
+    sessionId: stringField({ minLength: 1 }),
+    userId: stringField({ minLength: 1 }),
+    connectorId: stringField({ minLength: 1, required: false }),
+    lookbackHours: numberField({ min: 1, max: 168, required: false }),
+    maxNotificationsPerDay: numberField({ min: 1, max: 20, required: false }),
+    capabilities: jsonField({ required: false }),
+  },
+});
+
+const personalityScopeField = enumField(["global", "user", "session"]);
+
+const personalityProfileGetRequestSchema = createStrictObjectSchema({
+  schemaId: "controlPlane.personality.get.request",
+  fields: {
+    scope: personalityScopeField,
+    userId: stringField({ minLength: 1, required: false }),
+    sessionId: stringField({ minLength: 1, required: false }),
+  },
+});
+
+const personalityEffectiveRequestSchema = createStrictObjectSchema({
+  schemaId: "controlPlane.personality.effective.request",
+  fields: {
+    userId: stringField({ minLength: 1 }),
+    sessionId: stringField({ minLength: 1 }),
+  },
+});
+
+const personalityProfileUpsertRequestSchema = createStrictObjectSchema({
+  schemaId: "controlPlane.personality.upsert.request",
+  fields: {
+    scope: personalityScopeField,
+    userId: stringField({ minLength: 1, required: false }),
+    sessionId: stringField({ minLength: 1, required: false }),
+    name: stringField({ minLength: 1, required: false }),
+    prompt: stringField({ minLength: 1 }),
+  },
+});
+
+const personalityProfileResetRequestSchema = createStrictObjectSchema({
+  schemaId: "controlPlane.personality.reset.request",
+  fields: {
+    scope: personalityScopeField,
+    userId: stringField({ minLength: 1, required: false }),
+    sessionId: stringField({ minLength: 1, required: false }),
+  },
+});
+
+const personalityProfileListRequestSchema = createStrictObjectSchema({
+  schemaId: "controlPlane.personality.list.request",
+  fields: {
+    scope: enumField(["global", "user", "session"], { required: false }),
+    userId: stringField({ minLength: 1, required: false }),
+    limit: numberField({ min: 1, max: 500, required: false }),
+  },
+});
+
+const modelRegistryGetRequestSchema = createStrictObjectSchema({
+  schemaId: "controlPlane.modelRegistry.get.request",
+  fields: {},
+});
+
+const modelRegistryUpsertRequestSchema = createStrictObjectSchema({
+  schemaId: "controlPlane.modelRegistry.upsert.request",
+  fields: {
+    registry: jsonField(),
+  },
+});
+
+const modelRegistrySetDefaultRequestSchema = createStrictObjectSchema({
+  schemaId: "controlPlane.modelRegistry.setDefault.request",
+  fields: {
+    providerId: stringField({ minLength: 1 }),
+    modelId: stringField({ minLength: 1 }),
+  },
+});
+
+const MODEL_REGISTRY_RESOURCE_TYPE = "policy";
+const MODEL_REGISTRY_RESOURCE_ID = "model_registry";
+const GLOBAL_PROFILE_PIN_POLICY_ID = "profile-pin:global";
+
+/**
+ * @param {Record<string, unknown>} request
+ * @param {string} schemaId
+ */
+function validatePersonalityScopeRequest(request, schemaId) {
+  const scope = request.scope;
+  const userId = request.userId;
+  const sessionId = request.sessionId;
+
+  if (scope === "global") {
+    if (userId !== undefined || sessionId !== undefined) {
+      throw new ContractValidationError(`Invalid ${schemaId}`, {
+        schemaId,
+        errors: [`${schemaId} global scope must not include userId or sessionId`],
+      });
+    }
+    return;
+  }
+
+  if (scope === "user") {
+    if (typeof userId !== "string" || userId.length === 0) {
+      throw new ContractValidationError(`Invalid ${schemaId}`, {
+        schemaId,
+        errors: [`${schemaId} user scope requires userId`],
+      });
+    }
+    if (sessionId !== undefined) {
+      throw new ContractValidationError(`Invalid ${schemaId}`, {
+        schemaId,
+        errors: [`${schemaId} user scope must not include sessionId`],
+      });
+    }
+    return;
+  }
+
+  if (scope === "session") {
+    if (typeof userId !== "string" || userId.length === 0) {
+      throw new ContractValidationError(`Invalid ${schemaId}`, {
+        schemaId,
+        errors: [`${schemaId} session scope requires userId`],
+      });
+    }
+    if (typeof sessionId !== "string" || sessionId.length === 0) {
+      throw new ContractValidationError(`Invalid ${schemaId}`, {
+        schemaId,
+        errors: [`${schemaId} session scope requires sessionId`],
+      });
+    }
+  }
+}
+
+/**
+ * @param {string} rawSchedule
+ */
+function normalizeAutomationSchedule(rawSchedule) {
+  const schedule = rawSchedule.trim().replace(/\s+/g, " ");
+  const dailyMatch = schedule.match(/^daily\s+(\d{1,2}):(\d{2})$/i);
+  if (dailyMatch) {
+    const hour = Number.parseInt(dailyMatch[1], 10);
+    const minute = Number.parseInt(dailyMatch[2], 10);
+    if (hour < 0 || hour > 23 || minute < 0 || minute > 59) {
+      throw new ContractValidationError("Invalid automation schedule", {
+        schemaId: "controlPlane.automation.schedule",
+        errors: ["daily schedule must be in 24h HH:MM format"],
+      });
+    }
+    return `daily at ${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+  }
+
+  if (parseAutomationSchedule(schedule)) {
+    return schedule.toLowerCase();
+  }
+
+  throw new ContractValidationError("Invalid automation schedule", {
+    schemaId: "controlPlane.automation.schedule",
+    errors: [
+      "supported formats: daily HH:MM, daily at HH:MM, every <n> minutes|hours|days",
+    ],
+  });
+}
+
+/**
+ * @param {unknown} value
+ * @returns {{ version: 1, entries: readonly Record<string, unknown>[], defaults: Record<string, unknown>|null }}
+ */
+function normalizeModelRegistry(value) {
+  if (!isPlainObject(value)) {
+    return {
+      version: 1,
+      entries: Object.freeze([]),
+      defaults: null,
+    };
+  }
+
+  const seenEntries = new Set();
+  const seenAliases = new Set();
+  const normalizedEntries = [];
+  const entries = Array.isArray(value.entries) ? value.entries : [];
+
+  for (const entry of entries) {
+    if (!isPlainObject(entry)) {
+      continue;
+    }
+    const provider = typeof entry.provider === "string" ? entry.provider.trim() : "";
+    const modelId = typeof entry.modelId === "string" ? entry.modelId.trim() : "";
+    if (!provider || !modelId) {
+      continue;
+    }
+    const key = `${provider}::${modelId}`;
+    if (seenEntries.has(key)) {
+      continue;
+    }
+    const normalized = {
+      provider,
+      modelId,
+    };
+    if (typeof entry.alias === "string") {
+      const alias = entry.alias.trim();
+      if (alias && !seenAliases.has(alias)) {
+        normalized.alias = alias;
+        seenAliases.add(alias);
+      }
+    }
+    seenEntries.add(key);
+    normalizedEntries.push(normalized);
+  }
+
+  let defaults = null;
+  if (isPlainObject(value.defaults)) {
+    const provider = typeof value.defaults.provider === "string" ? value.defaults.provider.trim() : "";
+    const modelId = typeof value.defaults.modelId === "string" ? value.defaults.modelId.trim() : "";
+    const alias = typeof value.defaults.alias === "string" ? value.defaults.alias.trim() : "";
+    if (provider && modelId) {
+      defaults = { provider, modelId };
+      if (alias) {
+        defaults.alias = alias;
+      }
+    }
+  }
+
+  return {
+    version: 1,
+    entries: Object.freeze(normalizedEntries),
+    defaults,
+  };
+}
+
+/**
+ * @param {import("@polar/domain").StrictObjectSchema} schema
+ * @param {unknown} request
+ * @param {string} message
+ */
+function validateRequest(schema, request, message) {
+  const validation = schema.validate(request);
+  if (!validation.ok) {
+    throw new ContractValidationError(message, {
+      schemaId: schema.schemaId,
+      errors: validation.errors ?? [],
+    });
+  }
+  return /** @type {Record<string, unknown>} */ (validation.value);
+}
 
 /**
  * @param {{
@@ -98,6 +520,38 @@ import {
  *     removeRetryEvent?: (request: { eventId: string, sequence?: number }) => Promise<unknown>|unknown,
  *     removeDeadLetterEvent?: (request: { eventId: string, sequence?: number }) => Promise<unknown>|unknown
  *   },
+ *   feedbackEventStore?: {
+ *     recordEvent?: (request: Record<string, unknown>) => Promise<Record<string, unknown>>|Record<string, unknown>,
+ *     listEvents?: (request?: Record<string, unknown>) => Promise<Record<string, unknown>>|Record<string, unknown>
+ *   },
+ *   automationJobStore?: {
+ *     createJob?: (request: Record<string, unknown>) => Promise<Record<string, unknown>>|Record<string, unknown>,
+ *     listJobs?: (request?: Record<string, unknown>) => Promise<Record<string, unknown>>|Record<string, unknown>,
+ *     getJob?: (request: Record<string, unknown>) => Promise<Record<string, unknown>>|Record<string, unknown>,
+ *     updateJob?: (request: Record<string, unknown>) => Promise<Record<string, unknown>>|Record<string, unknown>,
+ *     disableJob?: (request: Record<string, unknown>) => Promise<Record<string, unknown>>|Record<string, unknown>,
+ *     deleteJob?: (request: Record<string, unknown>) => Promise<Record<string, unknown>>|Record<string, unknown>,
+ *     listDueJobs?: (request?: Record<string, unknown>) => Promise<Record<string, unknown>>|Record<string, unknown>
+ *   },
+ *   personalityStore?: {
+ *     getEffectiveProfile?: (request: Record<string, unknown>) => Promise<Record<string, unknown>|null>|Record<string, unknown>|null,
+ *     getProfile?: (request: Record<string, unknown>) => Promise<Record<string, unknown>|null>|Record<string, unknown>|null,
+ *     upsertProfile?: (request: Record<string, unknown>) => Promise<Record<string, unknown>>|Record<string, unknown>,
+ *     resetProfile?: (request: Record<string, unknown>) => Promise<{ deleted: boolean }>|{ deleted: boolean },
+ *     listProfiles?: (request?: Record<string, unknown>) => Promise<readonly Record<string, unknown>[]>|readonly Record<string, unknown>[]
+ *   },
+ *   runEventDb?: import("better-sqlite3").Database,
+ *   inboxConnector?: {
+ *     searchHeaders?: (request: Record<string, unknown>) => Promise<unknown>|unknown,
+ *     readBody?: (request: Record<string, unknown>) => Promise<unknown>|unknown
+ *   },
+ *   runEventLinker?: {
+ *     recordAutomationRun?: (request: Record<string, unknown>) => Promise<Record<string, unknown>>|Record<string, unknown>,
+ *     recordHeartbeatRun?: (request: Record<string, unknown>) => Promise<Record<string, unknown>>|Record<string, unknown>,
+ *     replayRecordedRuns?: (request?: Record<string, unknown>) => Promise<Record<string, unknown>>|Record<string, unknown>,
+ *     listAutomationRunLedger?: (request?: Record<string, unknown>) => readonly Record<string, unknown>[],
+ *     listHeartbeatRunLedger?: (request?: Record<string, unknown>) => readonly Record<string, unknown>[]
+ *   },
  *   auditSink?: (event: unknown) => Promise<void>|void,
  *   resolveProvider?: (providerId: string) => Promise<{
  *     generate: (request: Record<string, unknown>) => Promise<Record<string, unknown>>,
@@ -110,6 +564,7 @@ import {
  *     query?: (request?: unknown) => Promise<Record<string, unknown>>|Record<string, unknown>
  *   },
  *   now?: () => number
+ *   artifactsDir?: string
  * }} [config]
  */
 export function createControlPlaneService(config = {}) {
@@ -125,12 +580,15 @@ export function createControlPlaneService(config = {}) {
   registerTelemetryAlertContract(contractRegistry);
   registerTelemetryAlertRouteContract(contractRegistry);
   registerSchedulerContracts(contractRegistry);
+  registerAutomationContracts(contractRegistry);
+  registerHeartbeatContract(contractRegistry);
   registerProviderOperationContracts(contractRegistry);
   registerExtensionContracts(contractRegistry);
   registerSkillInstallerContract(contractRegistry);
   registerMcpConnectorContract(contractRegistry);
   registerPluginInstallerContract(contractRegistry);
   registerMemoryContracts(contractRegistry);
+  registerProactiveInboxContracts(contractRegistry);
 
   const handoffRoutingTelemetryCollector =
     config.handoffRoutingTelemetryCollector ??
@@ -271,6 +729,50 @@ export function createControlPlaneService(config = {}) {
     initialTasks: config.initialTasks,
     now: config.now,
   });
+  const profileResolutionGateway = createProfileResolutionGateway({
+    middlewarePipeline,
+    readConfigRecord: gateway.readConfigRecord,
+  });
+  const runEventLinker =
+    config.runEventLinker ??
+    (config.runEventDb
+      ? createSqliteRunEventLinker({
+          db: config.runEventDb,
+          now: config.now,
+          taskBoardGateway,
+        })
+      : {
+          async recordAutomationRun() {
+            throw new Error("runEventLinker not configured");
+          },
+          async recordHeartbeatRun() {
+            throw new Error("runEventLinker not configured");
+          },
+          async replayRecordedRuns() {
+            throw new Error("runEventLinker not configured");
+          },
+          listAutomationRunLedger() {
+            return Object.freeze([]);
+          },
+          listHeartbeatRunLedger() {
+            return Object.freeze([]);
+          },
+        });
+  const artifactsDir = resolve(config.artifactsDir ?? "artifacts");
+  const automationGateway = createAutomationGateway({
+    middlewarePipeline,
+    runEventLinker,
+    profileResolver: {
+      resolveProfile: (request) => profileResolutionGateway.resolve(request),
+    },
+  });
+  const heartbeatGateway = createHeartbeatGateway({
+    middlewarePipeline,
+    runEventLinker,
+    profileResolver: {
+      resolveProfile: (request) => profileResolutionGateway.resolve(request),
+    },
+  });
   const handoffRoutingTelemetryGateway = createHandoffRoutingTelemetryGateway({
     middlewarePipeline,
     telemetryCollector: handoffRoutingTelemetryCollector,
@@ -289,6 +791,9 @@ export function createControlPlaneService(config = {}) {
   });
   const schedulerGateway = createSchedulerGateway({
     middlewarePipeline,
+    automationGateway,
+    heartbeatGateway,
+    runEventLinker,
     schedulerStateStore:
       config.schedulerStateStore ||
       (config.schedulerDb
@@ -298,10 +803,6 @@ export function createControlPlaneService(config = {}) {
         })
         : undefined),
     now: config.now,
-  });
-  const profileResolutionGateway = createProfileResolutionGateway({
-    middlewarePipeline,
-    readConfigRecord: gateway.readConfigRecord,
   });
   const resolveProvider =
     typeof config.resolveProvider === "function"
@@ -361,6 +862,58 @@ export function createControlPlaneService(config = {}) {
     }
   });
   memoryGatewayRef = memoryGateway;
+  const proactiveInboxGateway = createProactiveInboxGateway({
+    middlewarePipeline,
+    inboxConnector: config.inboxConnector,
+  });
+  const feedbackEventStore = config.feedbackEventStore ?? {
+    async recordEvent() {
+      throw new Error("feedbackEventStore not configured");
+    },
+    async listEvents() {
+      throw new Error("feedbackEventStore not configured");
+    },
+  };
+  const automationJobStore = config.automationJobStore ?? {
+    async createJob() {
+      throw new Error("automationJobStore not configured");
+    },
+    async listJobs() {
+      throw new Error("automationJobStore not configured");
+    },
+    async getJob() {
+      throw new Error("automationJobStore not configured");
+    },
+    async updateJob() {
+      throw new Error("automationJobStore not configured");
+    },
+    async disableJob() {
+      throw new Error("automationJobStore not configured");
+    },
+    async deleteJob() {
+      throw new Error("automationJobStore not configured");
+    },
+    async listDueJobs() {
+      throw new Error("automationJobStore not configured");
+    },
+  };
+  const personalityStore = config.personalityStore ?? {
+    async getProfile() {
+      throw new Error("personalityStore not configured");
+    },
+    async getEffectiveProfile() {
+      throw new Error("personalityStore not configured");
+    },
+    async upsertProfile() {
+      throw new Error("personalityStore not configured");
+    },
+    async resetProfile() {
+      throw new Error("personalityStore not configured");
+    },
+    async listProfiles() {
+      throw new Error("personalityStore not configured");
+    },
+  };
 
   const orchestrator = createOrchestrator({
     profileResolutionGateway,
@@ -370,6 +923,7 @@ export function createControlPlaneService(config = {}) {
     approvalStore,
     skillRegistry,
     gateway,
+    personalityStore,
     now: config.now,
     lineageStore,
   });
@@ -426,6 +980,111 @@ export function createControlPlaneService(config = {}) {
     },
 
     /**
+     * @param {unknown} [request]
+     * @returns {Promise<Record<string, unknown>>}
+     */
+    async getModelRegistry(request = {}) {
+      validateRequest(
+        modelRegistryGetRequestSchema,
+        request,
+        "Invalid model registry get request",
+      );
+      const record = await gateway.getConfig({
+        resourceType: MODEL_REGISTRY_RESOURCE_TYPE,
+        resourceId: MODEL_REGISTRY_RESOURCE_ID,
+      });
+      const registry = normalizeModelRegistry(
+        record.status === "found" ? record.config : {},
+      );
+      return {
+        status: "ok",
+        registry,
+      };
+    },
+
+    /**
+     * @param {unknown} request
+     * @returns {Promise<Record<string, unknown>>}
+     */
+    async upsertModelRegistry(request) {
+      const parsed = validateRequest(
+        modelRegistryUpsertRequestSchema,
+        request,
+        "Invalid model registry upsert request",
+      );
+      const registry = normalizeModelRegistry(parsed.registry);
+      await gateway.upsertConfig({
+        resourceType: MODEL_REGISTRY_RESOURCE_TYPE,
+        resourceId: MODEL_REGISTRY_RESOURCE_ID,
+        config: registry,
+      });
+      return {
+        status: "applied",
+        registry,
+      };
+    },
+
+    /**
+     * Applies default model policy to the globally pinned profile so orchestration routing
+     * uses the selected provider/model by default.
+     * @param {unknown} request
+     * @returns {Promise<Record<string, unknown>>}
+     */
+    async setModelRegistryDefault(request) {
+      const parsed = validateRequest(
+        modelRegistrySetDefaultRequestSchema,
+        request,
+        "Invalid model registry default request",
+      );
+      const pinRecord = await gateway.getConfig({
+        resourceType: "policy",
+        resourceId: GLOBAL_PROFILE_PIN_POLICY_ID,
+      });
+      const profileId =
+        pinRecord.status === "found" &&
+        isPlainObject(pinRecord.config) &&
+        typeof pinRecord.config.profileId === "string" &&
+        pinRecord.config.profileId.length > 0
+          ? pinRecord.config.profileId
+          : "profile.global";
+
+      const profileRecord = await gateway.getConfig({
+        resourceType: "profile",
+        resourceId: profileId,
+      });
+      const profileConfig =
+        profileRecord.status === "found" && isPlainObject(profileRecord.config)
+          ? { ...profileRecord.config }
+          : {};
+      profileConfig.modelPolicy = {
+        providerId: parsed.providerId,
+        modelId: parsed.modelId,
+      };
+
+      await gateway.upsertConfig({
+        resourceType: "profile",
+        resourceId: profileId,
+        config: profileConfig,
+      });
+
+      if (pinRecord.status !== "found") {
+        await gateway.upsertConfig({
+          resourceType: "policy",
+          resourceId: GLOBAL_PROFILE_PIN_POLICY_ID,
+          config: {
+            profileId,
+          },
+        });
+      }
+
+      return {
+        status: "applied",
+        profileId,
+        modelPolicy: profileConfig.modelPolicy,
+      };
+    },
+
+    /**
      * @param {unknown} request
      * @returns {Promise<Record<string, unknown>>}
      */
@@ -447,6 +1106,121 @@ export function createControlPlaneService(config = {}) {
      */
     async getBudgetPolicy(request) {
       return budgetGateway.getPolicy(request);
+    },
+
+    /**
+     * @param {unknown} request
+     * @returns {Promise<Record<string, unknown>>}
+     */
+    async getPersonalityProfile(request) {
+      const parsed = validateRequest(
+        personalityProfileGetRequestSchema,
+        request,
+        "Invalid personality get request",
+      );
+      validatePersonalityScopeRequest(parsed, personalityProfileGetRequestSchema.schemaId);
+      const profile = await personalityStore.getProfile(parsed);
+      if (!profile) {
+        return {
+          status: "not_found",
+          scope: parsed.scope,
+          ...(parsed.userId !== undefined ? { userId: parsed.userId } : {}),
+          ...(parsed.sessionId !== undefined ? { sessionId: parsed.sessionId } : {}),
+        };
+      }
+      return {
+        status: "found",
+        profile,
+      };
+    },
+
+    /**
+     * @param {unknown} request
+     * @returns {Promise<Record<string, unknown>>}
+     */
+    async getEffectivePersonality(request) {
+      const parsed = validateRequest(
+        personalityEffectiveRequestSchema,
+        request,
+        "Invalid effective personality request",
+      );
+      const profile = await personalityStore.getEffectiveProfile(parsed);
+      if (!profile) {
+        return {
+          status: "not_found",
+          userId: parsed.userId,
+          sessionId: parsed.sessionId,
+        };
+      }
+      return {
+        status: "found",
+        profile,
+      };
+    },
+
+    /**
+     * @param {unknown} request
+     * @returns {Promise<Record<string, unknown>>}
+     */
+    async upsertPersonalityProfile(request) {
+      const parsed = validateRequest(
+        personalityProfileUpsertRequestSchema,
+        request,
+        "Invalid personality upsert request",
+      );
+      validatePersonalityScopeRequest(parsed, personalityProfileUpsertRequestSchema.schemaId);
+      const profile = await personalityStore.upsertProfile(parsed);
+      return {
+        status: "upserted",
+        profile,
+      };
+    },
+
+    /**
+     * @param {unknown} request
+     * @returns {Promise<Record<string, unknown>>}
+     */
+    async resetPersonalityProfile(request) {
+      const parsed = validateRequest(
+        personalityProfileResetRequestSchema,
+        request,
+        "Invalid personality reset request",
+      );
+      validatePersonalityScopeRequest(parsed, personalityProfileResetRequestSchema.schemaId);
+      const result = await personalityStore.resetProfile(parsed);
+      return {
+        status: "reset",
+        deleted: result.deleted === true,
+        scope: parsed.scope,
+        ...(parsed.userId !== undefined ? { userId: parsed.userId } : {}),
+        ...(parsed.sessionId !== undefined ? { sessionId: parsed.sessionId } : {}),
+      };
+    },
+
+    /**
+     * @param {unknown} [request]
+     * @returns {Promise<Record<string, unknown>>}
+     */
+    async listPersonalityProfiles(request = {}) {
+      const parsed = validateRequest(
+        personalityProfileListRequestSchema,
+        request,
+        "Invalid personality list request",
+      );
+      if (parsed.scope === "global" && parsed.userId !== undefined) {
+        throw new ContractValidationError("Invalid controlPlane.personality.list.request", {
+          schemaId: personalityProfileListRequestSchema.schemaId,
+          errors: [
+            "controlPlane.personality.list.request global scope must not include userId",
+          ],
+        });
+      }
+      const items = await personalityStore.listProfiles(parsed);
+      return {
+        status: "ok",
+        items,
+        totalCount: items.length,
+      };
     },
 
     /**
@@ -495,6 +1269,404 @@ export function createControlPlaneService(config = {}) {
      */
     async getSessionHistory(request) {
       return chatManagementGateway.getSessionHistory(request);
+    },
+
+    /**
+     * @param {unknown} request
+     * @returns {Promise<Record<string, unknown>>}
+     */
+    async recordFeedbackEvent(request) {
+      if (!isPlainObject(request)) {
+        throw new ContractValidationError(
+          "Invalid feedback event record request",
+          {
+            schemaId: feedbackRecordRequestSchema.schemaId,
+            errors: [`${feedbackRecordRequestSchema.schemaId} must be a plain object`],
+          },
+        );
+      }
+      const parsed = validateRequest(
+        feedbackRecordRequestSchema,
+        request,
+        "Invalid feedback event record request",
+      );
+      return feedbackEventStore.recordEvent(parsed);
+    },
+
+    /**
+     * @param {unknown} [request]
+     * @returns {Promise<Record<string, unknown>>}
+     */
+    async listFeedbackEvents(request = {}) {
+      const parsed = validateRequest(
+        feedbackListRequestSchema,
+        request,
+        "Invalid feedback event list request",
+      );
+      return feedbackEventStore.listEvents(parsed);
+    },
+
+    /**
+     * @param {unknown} request
+     * @returns {Promise<Record<string, unknown>>}
+     */
+    async createAutomationJob(request) {
+      const parsed = validateRequest(
+        automationJobCreateRequestSchema,
+        request,
+        "Invalid automation job create request",
+      );
+      return automationJobStore.createJob({
+        ...parsed,
+        schedule: normalizeAutomationSchedule(parsed.schedule),
+      });
+    },
+
+    /**
+     * @param {unknown} [request]
+     * @returns {Promise<Record<string, unknown>>}
+     */
+    async listAutomationJobs(request = {}) {
+      const parsed = validateRequest(
+        automationJobListRequestSchema,
+        request,
+        "Invalid automation job list request",
+      );
+      return automationJobStore.listJobs(parsed);
+    },
+
+    /**
+     * @param {unknown} request
+     * @returns {Promise<Record<string, unknown>>}
+     */
+    async updateAutomationJob(request) {
+      const parsed = validateRequest(
+        automationJobUpdateRequestSchema,
+        request,
+        "Invalid automation job update request",
+      );
+      if (
+        parsed.schedule === undefined &&
+        parsed.promptTemplate === undefined &&
+        parsed.enabled === undefined &&
+        parsed.quietHours === undefined &&
+        parsed.limits === undefined
+      ) {
+        throw new ContractValidationError("Invalid automation job update request", {
+          schemaId: automationJobUpdateRequestSchema.schemaId,
+          errors: [`${automationJobUpdateRequestSchema.schemaId} requires at least one mutable field`],
+        });
+      }
+      return automationJobStore.updateJob({
+        ...parsed,
+        ...(parsed.schedule !== undefined
+          ? { schedule: normalizeAutomationSchedule(parsed.schedule) }
+          : {}),
+      });
+    },
+
+    /**
+     * @param {unknown} request
+     * @returns {Promise<Record<string, unknown>>}
+     */
+    async disableAutomationJob(request) {
+      const parsed = validateRequest(
+        automationJobDisableRequestSchema,
+        request,
+        "Invalid automation job disable request",
+      );
+      return automationJobStore.disableJob(parsed);
+    },
+
+    /**
+     * @param {unknown} request
+     * @returns {Promise<Record<string, unknown>>}
+     */
+    async getAutomationJob(request) {
+      const parsed = validateRequest(
+        automationJobGetRequestSchema,
+        request,
+        "Invalid automation job get request",
+      );
+      return automationJobStore.getJob(parsed);
+    },
+
+    /**
+     * @param {unknown} request
+     * @returns {Promise<Record<string, unknown>>}
+     */
+    async enableAutomationJob(request) {
+      const parsed = validateRequest(
+        automationJobDisableRequestSchema,
+        request,
+        "Invalid automation job enable request",
+      );
+      return automationJobStore.updateJob({
+        id: parsed.id,
+        enabled: true,
+      });
+    },
+
+    /**
+     * @param {unknown} request
+     * @returns {Promise<Record<string, unknown>>}
+     */
+    async deleteAutomationJob(request) {
+      const parsed = validateRequest(
+        automationJobDeleteRequestSchema,
+        request,
+        "Invalid automation job delete request",
+      );
+      return automationJobStore.deleteJob(parsed);
+    },
+
+    /**
+     * @param {unknown} request
+     * @returns {Promise<Record<string, unknown>>}
+     */
+    async previewAutomationJob(request) {
+      const parsed = validateRequest(
+        automationJobPreviewRequestSchema,
+        request,
+        "Invalid automation job preview request",
+      );
+      const schedule = normalizeAutomationSchedule(parsed.schedule);
+      return {
+        status: "ok",
+        preview: {
+          schedule,
+          promptTemplate: parsed.promptTemplate,
+          quietHours: {
+            startHour: 22,
+            endHour: 7,
+            timezone: "UTC",
+          },
+          limits: {
+            maxNotificationsPerDay: 3,
+          },
+        },
+      };
+    },
+
+    /**
+     * @param {unknown} request
+     * @returns {Promise<Record<string, unknown>>}
+     */
+    async runAutomationJob(request) {
+      const parsed = validateRequest(
+        automationJobRunRequestSchema,
+        request,
+        "Invalid automation job run request",
+      );
+      const jobResponse = await automationJobStore.getJob({ id: parsed.id });
+      if (jobResponse.status !== "found" || !jobResponse.job) {
+        return {
+          status: "not_found",
+          id: parsed.id,
+        };
+      }
+      const job = jobResponse.job;
+      const runId = `run_manual_${randomUUID()}`;
+      const orchestrateResult = await orchestrator.orchestrate({
+        sessionId: parsed.sessionId ?? job.sessionId,
+        userId: parsed.userId ?? job.ownerUserId,
+        text: job.promptTemplate,
+        messageId: `msg_auto_manual_${randomUUID()}`,
+        metadata: {
+          executionType: "automation",
+          trigger: "manual",
+          automationJobId: job.id,
+          runId,
+        },
+      });
+      await runEventLinker.recordAutomationRun({
+        automationId: job.id,
+        runId,
+        profileId: "profile-default",
+        trigger: "manual",
+        output: orchestrateResult,
+        metadata: {
+          source: "control-plane-manual-run",
+        },
+      });
+      return {
+        status: "completed",
+        runId,
+        job,
+        output: orchestrateResult,
+      };
+    },
+
+    /**
+     * @param {unknown} request
+     * @returns {Promise<Record<string, unknown>>}
+     */
+    async proactiveInboxCheckHeaders(request) {
+      const parsed = validateRequest(
+        proactiveInboxCheckRequestSchema,
+        request,
+        "Invalid proactive inbox check request",
+      );
+      return proactiveInboxGateway.checkHeaders({
+        executionType: "automation",
+        sessionId: parsed.sessionId,
+        userId: parsed.userId,
+        ...(parsed.connectorId !== undefined ? { connectorId: parsed.connectorId } : {}),
+        ...(parsed.lookbackHours !== undefined ? { lookbackHours: parsed.lookbackHours } : {}),
+        ...(parsed.maxHeaders !== undefined ? { maxHeaders: parsed.maxHeaders } : {}),
+        ...(Array.isArray(parsed.capabilities) ? { capabilities: parsed.capabilities } : {}),
+        ...(parsed.mode !== undefined ? { mode: parsed.mode } : {}),
+        ...(parsed.metadata !== undefined ? { metadata: parsed.metadata } : {}),
+      });
+    },
+
+    /**
+     * @param {unknown} request
+     * @returns {Promise<Record<string, unknown>>}
+     */
+    async proactiveInboxReadBody(request) {
+      const parsed = validateRequest(
+        proactiveInboxReadBodyRequestSchema,
+        request,
+        "Invalid proactive inbox read body request",
+      );
+      return proactiveInboxGateway.readBody({
+        executionType: "automation",
+        sessionId: parsed.sessionId,
+        userId: parsed.userId,
+        messageId: parsed.messageId,
+        ...(parsed.connectorId !== undefined ? { connectorId: parsed.connectorId } : {}),
+        ...(Array.isArray(parsed.capabilities) ? { capabilities: parsed.capabilities } : {}),
+        ...(parsed.metadata !== undefined ? { metadata: parsed.metadata } : {}),
+      });
+    },
+
+    /**
+     * @param {unknown} request
+     * @returns {Promise<Record<string, unknown>>}
+     */
+    async proactiveInboxDryRun(request) {
+      const parsed = validateRequest(
+        proactiveInboxDryRunRequestSchema,
+        request,
+        "Invalid proactive inbox dry run request",
+      );
+      const maxNotificationsPerDay =
+        parsed.maxNotificationsPerDay !== undefined
+          ? parsed.maxNotificationsPerDay
+          : 3;
+      const checkResult = await proactiveInboxGateway.checkHeaders({
+        executionType: "automation",
+        sessionId: parsed.sessionId,
+        userId: parsed.userId,
+        mode: "headers_only",
+        ...(parsed.connectorId !== undefined ? { connectorId: parsed.connectorId } : {}),
+        ...(parsed.lookbackHours !== undefined ? { lookbackHours: parsed.lookbackHours } : {}),
+        ...(Array.isArray(parsed.capabilities)
+          ? { capabilities: parsed.capabilities }
+          : { capabilities: ["mail.search_headers"] }),
+        metadata: {
+          source: "proactive_inbox_dry_run",
+        },
+      });
+      const headers = Array.isArray(checkResult.headers) ? checkResult.headers : [];
+      return {
+        status: checkResult.status,
+        mode: "headers_only",
+        connectorStatus: checkResult.connectorStatus,
+        ...(checkResult.blockedReason !== undefined
+          ? { blockedReason: checkResult.blockedReason }
+          : {}),
+        ...(checkResult.degradedReason !== undefined
+          ? { degradedReason: checkResult.degradedReason }
+          : {}),
+        lookbackHours: parsed.lookbackHours ?? 24,
+        scannedHeaderCount: headers.length,
+        wouldTriggerCount: Math.min(maxNotificationsPerDay, headers.length),
+        wouldTrigger: Object.freeze(
+          headers.slice(0, maxNotificationsPerDay).map((header) => ({
+            messageId: header.messageId,
+            subject: header.subject,
+            senderDomain: header.senderDomain,
+          })),
+        ),
+      };
+    },
+
+    /**
+     * @param {unknown} [request]
+     * @returns {Promise<Record<string, unknown>>}
+     */
+    async exportArtifacts(request = {}) {
+      const parsed = validateRequest(
+        artifactsExportRequestSchema,
+        request,
+        "Invalid artifacts export request",
+      );
+      if (!config.runEventDb) {
+        throw new Error("artifacts export requires runEventDb");
+      }
+      const result = await exportArtifactsFromDb({
+        db: config.runEventDb,
+        artifactsDir: parsed.artifactsDir ?? artifactsDir,
+      });
+      return result;
+    },
+
+    /**
+     * @param {unknown} [request]
+     * @returns {Promise<Record<string, unknown>>}
+     */
+    async showArtifacts(request = {}) {
+      const parsed = validateRequest(
+        artifactsShowRequestSchema,
+        request,
+        "Invalid artifacts show request",
+      );
+      const items = await listArtifactFiles({
+        artifactsDir: parsed.artifactsDir ?? artifactsDir,
+      });
+      return {
+        status: "ok",
+        items,
+        totalCount: items.length,
+      };
+    },
+
+    /**
+     * @param {unknown} [request]
+     * @returns {{ status: "ok", items: readonly Record<string, unknown>[], totalCount: number }}
+     */
+    listAutomationRunLedger(request = {}) {
+      const parsed = validateRequest(
+        runLedgerListRequestSchema,
+        request,
+        "Invalid automation run ledger list request",
+      );
+      const items = runEventLinker.listAutomationRunLedger(parsed);
+      return {
+        status: "ok",
+        items,
+        totalCount: items.length,
+      };
+    },
+
+    /**
+     * @param {unknown} [request]
+     * @returns {{ status: "ok", items: readonly Record<string, unknown>[], totalCount: number }}
+     */
+    listHeartbeatRunLedger(request = {}) {
+      const parsed = validateRequest(
+        runLedgerListRequestSchema,
+        request,
+        "Invalid heartbeat run ledger list request",
+      );
+      const items = runEventLinker.listHeartbeatRunLedger(parsed);
+      return {
+        status: "ok",
+        items,
+        totalCount: items.length,
+      };
     },
 
     /**
@@ -799,6 +1971,22 @@ export function createControlPlaneService(config = {}) {
     async rejectWorkflow(request) {
       const workflowId = typeof request === 'string' ? request : request.workflowId;
       return orchestrator.rejectWorkflow(workflowId);
+    },
+
+    /**
+     * @param {string | { proposalId: string }} request
+     */
+    async consumeAutomationProposal(request) {
+      const proposalId = typeof request === "string" ? request : request.proposalId;
+      return orchestrator.consumeAutomationProposal(proposalId);
+    },
+
+    /**
+     * @param {string | { proposalId: string }} request
+     */
+    async rejectAutomationProposal(request) {
+      const proposalId = typeof request === "string" ? request : request.proposalId;
+      return orchestrator.rejectAutomationProposal(proposalId);
     },
 
     /**

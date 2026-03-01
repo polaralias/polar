@@ -30,9 +30,8 @@ Allowed:
   - bypass middleware
 
 4) Pi is not part of the product
-- `packages/polar-adapter-pi/` and any `@mariozechner/pi-*` dependencies are scheduled for removal.
-- Do not add new code that depends on them.
-- Remove them entirely once bootstrap refactor is stable.
+- `packages/polar-adapter-pi/` is removed from the active workspace.
+- Do not add `@mariozechner/pi-*` dependencies or any new pi-adapter package.
 
 ## Enforcement
 Replace pi-specific boundary scripts with workspace boundary checks:
@@ -41,7 +40,7 @@ Replace pi-specific boundary scripts with workspace boundary checks:
 
 The boundary checker must fail the build if it finds:
 - any cross-package src import
-- any surface depending on forbidden packages (pi packages, if removed)
+- any surface depending on forbidden packages (pi packages)
 - optional: any import of `packages/` absolute paths
 
 ## Acceptance criteria

@@ -23,11 +23,14 @@ const ALLOWED_ACTIONS = new Set([
     'upsertTask', 'transitionTask', 'listTasks', 'listTaskEvents', 'replayTaskRunLinks',
     'listHandoffRoutingTelemetry', 'listUsageTelemetry', 'listTelemetryAlerts', 'routeTelemetryAlerts',
     'listSchedulerEventQueue', 'runSchedulerQueueAction',
+    'createAutomationJob', 'listAutomationJobs', 'updateAutomationJob', 'disableAutomationJob',
     'generateOutput', 'listModels', 'streamOutput', 'embedText',
     'executeExtension', 'applyExtensionLifecycle', 'listExtensionStates',
     'installSkill', 'reviewSkillInstallProposal', 'syncMcpServer', 'installPlugin',
     'submitSkillMetadataOverride', 'listBlockedSkills', 'listCapabilityAuthorityStates',
     'searchMemory', 'getMemory', 'upsertMemory', 'compactMemory',
+    'getPersonalityProfile', 'getEffectivePersonality', 'upsertPersonalityProfile', 'resetPersonalityProfile', 'listPersonalityProfiles',
+    'getModelRegistry', 'upsertModelRegistry', 'setModelRegistryDefault',
     'orchestrate', 'updateMessageChannelId', 'executeWorkflow', 'rejectWorkflow', 'handleRepairSelection'
 ]);
 

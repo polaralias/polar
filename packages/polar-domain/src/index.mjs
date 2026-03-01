@@ -176,6 +176,13 @@ export {
   createPluginInstallerContract,
 } from "./plugin-installer-contracts.mjs";
 export {
+  PROACTIVE_INBOX_ACTIONS,
+  PROACTIVE_INBOX_CAPABILITIES,
+  PROACTIVE_INBOX_MODES,
+  PROACTIVE_INBOX_STATUSES,
+  createProactiveInboxContracts,
+} from "./proactive-inbox-contracts.mjs";
+export {
   TOOL_LIFECYCLE_ACTION,
   TOOL_LIFECYCLE_PHASES,
   TOOL_LIFECYCLE_SOURCES,

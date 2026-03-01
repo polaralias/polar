@@ -61,6 +61,165 @@ function normalizeJsonText(rawText) {
 }
 
 /**
+ * @param {string} text
+ * @returns {{ hour: number, minute: number } | null}
+ */
+function parseTimeOfDay(text) {
+    if (typeof text !== "string" || text.trim().length === 0) {
+        return null;
+    }
+    const match = text.trim().toLowerCase().match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/);
+    if (!match) {
+        return null;
+    }
+    let hour = Number.parseInt(match[1], 10);
+    const minute = match[2] !== undefined ? Number.parseInt(match[2], 10) : 0;
+    const meridiem = match[3];
+    if (!Number.isInteger(hour) || !Number.isInteger(minute) || minute < 0 || minute > 59) {
+        return null;
+    }
+    if (meridiem === "am" || meridiem === "pm") {
+        if (hour < 1 || hour > 12) {
+            return null;
+        }
+        if (hour === 12) {
+            hour = 0;
+        }
+        if (meridiem === "pm") {
+            hour += 12;
+        }
+    } else if (hour < 0 || hour > 23) {
+        return null;
+    }
+    return { hour, minute };
+}
+
+/**
+ * @param {string} text
+ * @returns {string | null}
+ */
+function inferAutomationSchedule(text) {
+    if (typeof text !== "string") {
+        return null;
+    }
+    const normalized = text.trim().toLowerCase();
+
+    const everyMatch = normalized.match(/\bevery\s+(\d+)\s*(minute|minutes|min|m|hour|hours|h|day|days|d)\b/);
+    if (everyMatch) {
+        const interval = Number.parseInt(everyMatch[1], 10);
+        if (!Number.isInteger(interval) || interval < 1) {
+            return null;
+        }
+        const unit = everyMatch[2];
+        if (unit === "minute" || unit === "minutes" || unit === "min" || unit === "m") {
+            return `every ${interval} minutes`;
+        }
+        if (unit === "hour" || unit === "hours" || unit === "h") {
+            return `every ${interval} hours`;
+        }
+        return `every ${interval} days`;
+    }
+
+    const dailyMatch = normalized.match(/\b(?:daily|every day)\b(?:\s+at\s+([^\n,.;!?]+))?/);
+    if (!dailyMatch) {
+        return null;
+    }
+    const parsedTime = dailyMatch[1] ? parseTimeOfDay(dailyMatch[1]) : { hour: 9, minute: 0 };
+    if (!parsedTime) {
+        return null;
+    }
+    const hh = String(parsedTime.hour).padStart(2, "0");
+    const mm = String(parsedTime.minute).padStart(2, "0");
+    return `daily at ${hh}:${mm}`;
+}
+
+/**
+ * @param {string} text
+ * @returns {string}
+ */
+function inferAutomationPromptTemplate(text) {
+    if (typeof text !== "string" || text.trim().length === 0) {
+        return "Reminder: check in.";
+    }
+    const toMatch = text.match(/\b(?:to|about)\s+(.+)$/i);
+    let body = toMatch ? toMatch[1].trim() : text.trim();
+    body = body.replace(/\s+/g, " ").replace(/[.?!]+$/, "").trim();
+    if (body.length === 0) {
+        return "Reminder: check in.";
+    }
+    return `Reminder: ${body}`;
+}
+
+/**
+ * @param {string} text
+ * @returns {null|{ schedule: string, promptTemplate: string, limits: Record<string, unknown>, quietHours: Record<string, unknown> }}
+ */
+function detectAutomationProposal(text) {
+    if (typeof text !== "string") {
+        return null;
+    }
+    const normalized = text.toLowerCase();
+    if (!/\b(remind|notify|ping)\s+me\b/.test(normalized)) {
+        return null;
+    }
+    const schedule = inferAutomationSchedule(text);
+    if (!schedule) {
+        return null;
+    }
+    return {
+        schedule,
+        promptTemplate: inferAutomationPromptTemplate(text),
+        limits: {
+            maxNotificationsPerDay: 3,
+        },
+        quietHours: {
+            startHour: 22,
+            endHour: 7,
+            timezone: "UTC",
+        },
+    };
+}
+
+/**
+ * @param {string} text
+ * @returns {null|{ schedule: string, promptTemplate: string, limits: Record<string, unknown>, quietHours: Record<string, unknown>, templateType: "inbox_check" }}
+ */
+function detectInboxAutomationProposal(text) {
+    if (typeof text !== "string") {
+        return null;
+    }
+    const normalized = text.toLowerCase();
+    const asksInboxCheck =
+        /\b(check|monitor|scan)\b/.test(normalized) &&
+        /\b(inbox|email|emails)\b/.test(normalized);
+    const asksNotify =
+        /\b(notify|alert|ping|remind)\b/.test(normalized) &&
+        /\b(inbox|email|emails)\b/.test(normalized);
+    if (!asksInboxCheck && !asksNotify) {
+        return null;
+    }
+    const schedule = inferAutomationSchedule(text) ?? "every 1 hours";
+    return {
+        templateType: "inbox_check",
+        schedule,
+        promptTemplate: "Proactive inbox check (headers-only). Notify only if important new headers are detected.",
+        limits: {
+            maxNotificationsPerDay: 3,
+            inbox: {
+                mode: "headers_only",
+                lookbackHours: 24,
+                capabilities: ["mail.search_headers"]
+            }
+        },
+        quietHours: {
+            startHour: 22,
+            endHour: 7,
+            timezone: "UTC",
+        },
+    };
+}
+
+/**
  * @param {string} rawText
  * @param {{ validate: (value: unknown) => { ok: boolean, value?: unknown, errors?: string[] }, schemaId: string }} schema
  * @returns {Record<string, unknown>}
@@ -72,6 +231,22 @@ function parseJsonWithSchema(rawText, schema) {
         throw new RuntimeExecutionError(`Invalid ${schema.schemaId}: ${(validation.errors || []).join('; ')}`);
     }
     return /** @type {Record<string, unknown>} */ (validation.value);
+}
+
+/**
+ * @param {string} systemPrompt
+ * @param {Record<string, unknown>|null|undefined} personalityProfile
+ */
+function appendPersonalityBlock(systemPrompt, personalityProfile) {
+    if (
+        !personalityProfile ||
+        typeof personalityProfile !== "object" ||
+        typeof personalityProfile.prompt !== "string" ||
+        personalityProfile.prompt.length === 0
+    ) {
+        return systemPrompt;
+    }
+    return `${systemPrompt}\n\n## Personality\nFollow the style guidance below unless it conflicts with system/developer instructions.\n${personalityProfile.prompt}`;
 }
 
 /**
@@ -94,12 +269,15 @@ export function createOrchestrator({
     approvalStore,
     skillRegistry,
     gateway, // ControlPlaneGateway for config
+    personalityStore,
     now = Date.now,
     lineageStore,
 }) {
     const PENDING_WORKFLOWS = new Map();
     const WORKFLOW_TTL_MS = 30 * 60 * 1000;
     const WORKFLOW_MAX_SIZE = 100;
+    const PENDING_AUTOMATION_PROPOSALS = new Map();
+    const AUTOMATION_PROPOSAL_TTL_MS = 30 * 60 * 1000;
 
     const SESSION_THREADS = new Map();
     const THREAD_TTL_MS = 60 * 60 * 1000;
@@ -110,6 +288,11 @@ export function createOrchestrator({
         for (const [id, entry] of PENDING_WORKFLOWS) {
             if (currentTime - entry.createdAt > WORKFLOW_TTL_MS) {
                 PENDING_WORKFLOWS.delete(id);
+            }
+        }
+        for (const [id, entry] of PENDING_AUTOMATION_PROPOSALS) {
+            if (currentTime - entry.createdAt > AUTOMATION_PROPOSAL_TTL_MS) {
+                PENDING_AUTOMATION_PROPOSALS.delete(id);
             }
         }
         for (const [id, entry] of SESSION_THREADS) {
@@ -263,6 +446,19 @@ export function createOrchestrator({
         async orchestrate(envelope) {
             const { sessionId, userId, text, messageId, metadata = {} } = envelope;
             const polarSessionId = sessionId;
+            const inboundThreadId =
+                typeof metadata.threadId === "string" && metadata.threadId.length > 0
+                    ? metadata.threadId
+                    : undefined;
+            const inboundThreadKey =
+                typeof metadata.threadKey === "string" && metadata.threadKey.length > 0
+                    ? metadata.threadKey
+                    : undefined;
+            const inboundMetadata =
+                typeof metadata === "object" && metadata !== null
+                    ? Object.freeze({ ...metadata })
+                    : undefined;
+            const isPreviewMode = metadata?.previewMode === true;
 
             let sessionState = SESSION_THREADS.get(polarSessionId) || { threads: [], activeThreadId: null };
             let routingRecommendation = null;
@@ -272,6 +468,17 @@ export function createOrchestrator({
             const policy = profile.profileConfig?.modelPolicy || {};
             const providerId = policy.providerId || "openai";
             const model = policy.modelId || "gpt-4.1-mini";
+            let effectivePersonality = null;
+            if (
+                personalityStore &&
+                typeof personalityStore === "object" &&
+                typeof personalityStore.getEffectiveProfile === "function"
+            ) {
+                effectivePersonality = await personalityStore.getEffectiveProfile({
+                    userId: String(userId),
+                    sessionId: polarSessionId,
+                });
+            }
 
             if (text) {
                 const classification = classifyUserMessage({ text, sessionState });
@@ -336,12 +543,25 @@ export function createOrchestrator({
                             .map((option) => option.threadId)
                             .filter((threadId) => typeof threadId === "string"),
                     });
+                    const assistantMessageId = `msg_a_${crypto.randomUUID()}`;
+                    await chatManagementGateway.appendMessage({
+                        sessionId: polarSessionId,
+                        userId: "assistant",
+                        messageId: assistantMessageId,
+                        role: "assistant",
+                        text: repairDecision.question,
+                        timestampMs: now(),
+                        ...(inboundThreadId !== undefined ? { threadId: inboundThreadId } : {}),
+                        ...(inboundMetadata !== undefined ? { metadata: inboundMetadata } : {}),
+                    });
                     return {
                         status: 'repair_question',
                         type: 'repair_question',
                         question: repairDecision.question,
                         correlationId: repairDecision.correlationId,
-                        options: repairDecision.options
+                        options: repairDecision.options,
+                        assistantMessageId,
+                        useInlineReply: false,
                     };
                 }
 
@@ -366,6 +586,7 @@ export function createOrchestrator({
             }
 
             let systemPrompt = profile.profileConfig?.systemPrompt || "You are a helpful Polar AI assistant. Be concise and friendly.";
+            systemPrompt = appendPersonalityBlock(systemPrompt, effectivePersonality);
 
             let multiAgentConfig;
             try {
@@ -457,14 +678,75 @@ Current Session Threads:
 ${JSON.stringify(sessionState, null, 2)}
 ${routingRecommendation || ""}`;
 
-            await chatManagementGateway.appendMessage({
-                sessionId: polarSessionId,
-                userId: userId.toString(),
-                messageId: messageId || `msg_u_${crypto.randomUUID()}`,
-                role: "user",
-                text,
-                timestampMs: now()
-            });
+            if (!isPreviewMode) {
+                await chatManagementGateway.appendMessage({
+                    sessionId: polarSessionId,
+                    userId: userId.toString(),
+                    messageId: messageId || `msg_u_${crypto.randomUUID()}`,
+                    role: "user",
+                    text,
+                    timestampMs: now(),
+                    ...(inboundThreadId !== undefined ? { threadId: inboundThreadId } : {}),
+                    ...(inboundMetadata !== undefined ? { metadata: inboundMetadata } : {}),
+                });
+            }
+
+            const automationProposal =
+                !isPreviewMode
+                    ? (detectInboxAutomationProposal(text) ??
+                        detectAutomationProposal(text))
+                    : null;
+            if (automationProposal) {
+                const proposalId = `auto_prop_${crypto.randomUUID()}`;
+                const assistantMessageId = `msg_a_${crypto.randomUUID()}`;
+                const proposalText =
+                    `I can create this automation proposal:\n` +
+                    `- Schedule: ${automationProposal.schedule}\n` +
+                    `- Prompt template: ${automationProposal.promptTemplate}\n` +
+                    `- Limits: maxNotificationsPerDay=${automationProposal.limits.maxNotificationsPerDay}\n` +
+                    `- Quiet hours: ${automationProposal.quietHours.startHour}:00-${automationProposal.quietHours.endHour}:00 ${automationProposal.quietHours.timezone}\n\n` +
+                    `Approve to create the job.`;
+
+                PENDING_AUTOMATION_PROPOSALS.set(proposalId, {
+                    proposalId,
+                    createdAt: now(),
+                    sessionId: polarSessionId,
+                    userId: userId.toString(),
+                    schedule: automationProposal.schedule,
+                    promptTemplate: automationProposal.promptTemplate,
+                    limits: automationProposal.limits,
+                    quietHours: automationProposal.quietHours,
+                    templateType: automationProposal.templateType ?? "generic",
+                });
+
+                await chatManagementGateway.appendMessage({
+                    sessionId: polarSessionId,
+                    userId: "assistant",
+                    messageId: assistantMessageId,
+                    role: "assistant",
+                    text: proposalText,
+                    timestampMs: now(),
+                    ...(inboundThreadId !== undefined ? { threadId: inboundThreadId } : {}),
+                    ...(inboundMetadata !== undefined ? { metadata: inboundMetadata } : {}),
+                });
+
+                return {
+                    status: "automation_proposed",
+                    type: "automation_proposed",
+                    text: proposalText,
+                    assistantMessageId,
+                    proposalId,
+                    proposal: Object.freeze({
+                        schedule: automationProposal.schedule,
+                        promptTemplate: automationProposal.promptTemplate,
+                        limits: automationProposal.limits,
+                        quietHours: automationProposal.quietHours,
+                        templateType: automationProposal.templateType ?? "generic",
+                    }),
+                    useInlineReply: currentTurnAnchor ?? false,
+                    anchorMessageId: currentAnchorMessageId,
+                };
+            }
 
             const historyData = await chatManagementGateway.getSessionHistory({
                 sessionId: polarSessionId,
@@ -484,8 +766,8 @@ ${routingRecommendation || ""}`;
 
             if (result && result.text) {
                 const responseText = result.text;
-                const actionMatch = responseText.match(/<polar_action>([\s\S]*?)<\/polar_action>/);
-                const stateMatch = responseText.match(/<thread_state>([\s\S]*?)<\/thread_state>/);
+                const actionMatch = isPreviewMode ? null : responseText.match(/<polar_action>([\s\S]*?)<\/polar_action>/);
+                const stateMatch = isPreviewMode ? null : responseText.match(/<thread_state>([\s\S]*?)<\/thread_state>/);
                 const assistantMessageId = `msg_a_${crypto.randomUUID()}`;
 
                 const cleanText = responseText
@@ -493,19 +775,21 @@ ${routingRecommendation || ""}`;
                     .replace(/<thread_state>[\s\S]*?<\/thread_state>/, '')
                     .trim();
 
-                if (cleanText) {
+                if (cleanText && !isPreviewMode) {
                     await chatManagementGateway.appendMessage({
                         sessionId: polarSessionId,
                         userId: "assistant",
                         messageId: assistantMessageId,
                         role: "assistant",
                         text: cleanText,
-                        timestampMs: now()
+                        timestampMs: now(),
+                        ...(inboundThreadId !== undefined ? { threadId: inboundThreadId } : {}),
+                        ...(inboundMetadata !== undefined ? { metadata: inboundMetadata } : {}),
                     });
                 }
 
                 // Detect offers in assistant response and set open offer on active thread
-                if (cleanText) {
+                if (cleanText && !isPreviewMode) {
                     const offerDetection = detectOfferInText(cleanText);
                     if (offerDetection.isOffer) {
                         let st = SESSION_THREADS.get(polarSessionId) || { threads: [], activeThreadId: null };
@@ -599,6 +883,7 @@ ${routingRecommendation || ""}`;
 
                     return {
                         status: 'workflow_proposed',
+                        assistantMessageId,
                         text: cleanText,
                         workflowId,
                         steps: workflowSteps,
@@ -712,6 +997,17 @@ ${routingRecommendation || ""}`;
 
             try {
                 const profile = await profileResolutionGateway.resolve({ sessionId: polarSessionId });
+                let effectivePersonality = null;
+                if (
+                    personalityStore &&
+                    typeof personalityStore === "object" &&
+                    typeof personalityStore.getEffectiveProfile === "function"
+                ) {
+                    effectivePersonality = await personalityStore.getEffectiveProfile({
+                        userId: String(userId),
+                        sessionId: polarSessionId,
+                    });
+                }
                 const baseAllowedSkills = profile.profileConfig?.allowedSkills || multiAgentConfig?.globalAllowedSkills || [];
                 const historyData = await chatManagementGateway.getSessionHistory({ sessionId: polarSessionId, limit: 15 });
 
@@ -882,7 +1178,13 @@ ${routingRecommendation || ""}`;
                 const deterministicHeader = "### 🛠️ Execution Results\n" + toolResults.map(r => (r.status === "failed" || r.status === "error" ? "❌ " : "✅ ") + `**${r.tool}**: ${typeof r.output === 'string' ? r.output.slice(0, 100) : 'Done.'}`).join("\n") + "\n\n";
                 await chatManagementGateway.appendMessage({ sessionId: polarSessionId, userId: "system", role: "system", text: `[TOOL RESULTS] threadId=${targetThreadId} runId=${runId}\n${JSON.stringify(toolResults, null, 2)}`, timestampMs: now() });
 
-                const finalSystemPrompt = activeDelegation ? `You are sub-agent ${activeDelegation.agentId}. Task: ${activeDelegation.task_instructions}. Skills: ${activeDelegation.forward_skills?.join(", ")}` : profile.profileConfig?.systemPrompt;
+                const finalSystemPromptBase = activeDelegation
+                    ? `You are sub-agent ${activeDelegation.agentId}. Task: ${activeDelegation.task_instructions}. Skills: ${activeDelegation.forward_skills?.join(", ")}`
+                    : profile.profileConfig?.systemPrompt;
+                const finalSystemPrompt = appendPersonalityBlock(
+                    finalSystemPromptBase || "You are a helpful Polar AI assistant. Be concise and friendly.",
+                    effectivePersonality,
+                );
                 const finalResult = await providerGateway.generate({
                     executionType: "handoff",
                     providerId: activeDelegation?.pinnedProvider || profile.profileConfig?.modelPolicy?.providerId || "openai",
@@ -942,15 +1244,29 @@ ${routingRecommendation || ""}`;
 
         updateMessageChannelId(sessionId, messageId, channelMessageId) {
             let st = SESSION_THREADS.get(sessionId);
-            if (!st) return;
-            for (const t of st.threads) {
-                if (t.pendingQuestion?.askedAtMessageId === messageId) {
-                    t.pendingQuestion.channelMessageId = channelMessageId;
-                }
-                if (t.lastError?.messageId === messageId) {
-                    t.lastError.channelMessageId = channelMessageId;
+            if (st) {
+                for (const t of st.threads) {
+                    if (t.pendingQuestion?.askedAtMessageId === messageId) {
+                        t.pendingQuestion.channelMessageId = channelMessageId;
+                    }
+                    if (t.lastError?.messageId === messageId) {
+                        t.lastError.channelMessageId = channelMessageId;
+                    }
                 }
             }
+            return chatManagementGateway.appendMessage({
+                sessionId,
+                userId: "system",
+                messageId: `msg_sys_bind_${crypto.randomUUID()}`,
+                role: "system",
+                text: `[CHANNEL_BINDING] ${messageId} -> ${channelMessageId}`,
+                timestampMs: now(),
+                metadata: {
+                    bindingType: "channel_message_id",
+                    internalMessageId: messageId,
+                    channelMessageId,
+                },
+            }).catch(() => undefined);
         },
 
         async rejectWorkflow(workflowId) {
@@ -969,6 +1285,45 @@ ${routingRecommendation || ""}`;
             }
             PENDING_WORKFLOWS.delete(workflowId);
             return { status: 'rejected' };
+        },
+
+        /**
+         * Atomically consumes a pending automation proposal so approval cannot create duplicate jobs.
+         * @param {string} proposalId
+         * @returns {{ status: "found", proposal: Record<string, unknown> } | { status: "not_found", proposalId: string }}
+         */
+        consumeAutomationProposal(proposalId) {
+            const proposal = PENDING_AUTOMATION_PROPOSALS.get(proposalId);
+            if (!proposal) {
+                return { status: "not_found", proposalId };
+            }
+            PENDING_AUTOMATION_PROPOSALS.delete(proposalId);
+            return {
+                status: "found",
+                proposal: Object.freeze({
+                    proposalId: proposal.proposalId,
+                    sessionId: proposal.sessionId,
+                    userId: proposal.userId,
+                    schedule: proposal.schedule,
+                    promptTemplate: proposal.promptTemplate,
+                    limits: proposal.limits,
+                    quietHours: proposal.quietHours,
+                    templateType: proposal.templateType,
+                    createdAt: proposal.createdAt,
+                }),
+            };
+        },
+
+        /**
+         * @param {string} proposalId
+         * @returns {{ status: "rejected"|"not_found", proposalId: string }}
+         */
+        rejectAutomationProposal(proposalId) {
+            if (!PENDING_AUTOMATION_PROPOSALS.has(proposalId)) {
+                return { status: "not_found", proposalId };
+            }
+            PENDING_AUTOMATION_PROPOSALS.delete(proposalId);
+            return { status: "rejected", proposalId };
         },
 
         /**
