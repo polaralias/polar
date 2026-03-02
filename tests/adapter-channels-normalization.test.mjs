@@ -90,10 +90,19 @@ test("telegram ingress uses stable chat-scoped sessionId for normal, reply, and 
     messageId: "m-2",
     replyToMessageId: "m-1",
     text: "reply",
+    metadata: {
+      replyTo: {
+        messageId: 1,
+        snippet: "Previous assistant message",
+        from: { isBot: true, role: "assistant" },
+        threadKey: "reply:chat-1:m-1",
+      },
+    },
   });
   assert.equal(replyTurn.sessionId, "telegram:chat:chat-1");
   assert.equal(replyTurn.threadId, "telegram:reply:chat-1:m-1");
   assert.equal(replyTurn.metadata.replyToMessageId, "m-1");
+  assert.equal(replyTurn.metadata.replyTo.from.role, "assistant");
   assert.equal(replyTurn.metadata.threadKey, "reply:chat-1:m-1");
 
   const topicTurn = adapter.normalize({
