@@ -132,6 +132,7 @@ test("orchestrator does not execute tools when template args are invalid", async
 test("orchestrator clamps forwarded skills before activating delegation", async () => {
   await withUnrefedIntervals(async () => {
     const appendedMessages = [];
+    const lineageEvents = [];
     const orchestrator = createOrchestrator({
       profileResolutionGateway: {
         async resolve() {
@@ -186,6 +187,11 @@ test("orchestrator clamps forwarded skills before activating delegation", async 
           return { status: "not_found" };
         },
       },
+      lineageStore: {
+        async append(event) {
+          lineageEvents.push(event);
+        },
+      },
       now: Date.now,
     });
 
@@ -201,14 +207,12 @@ test("orchestrator clamps forwarded skills before activating delegation", async 
     const executed = await orchestrator.executeWorkflow(proposed.workflowId);
     assert.equal(executed.status, "completed");
 
-    const delegationMessage = appendedMessages.find(
-      (message) => message.role === "system" && typeof message.text === "string" && message.text.startsWith("[DELEGATION ACTIVE]"),
+    const delegationEvent = lineageEvents.find(
+      (event) => event?.eventType === "delegation.activated",
     );
-    assert.ok(delegationMessage);
-
-    const payload = JSON.parse(delegationMessage.text.replace("[DELEGATION ACTIVE]", "").trim());
-    assert.deepEqual(payload.forward_skills, ["email_mcp"]);
-    assert.equal(payload.forward_skills.includes("exfiltrate_keys"), false);
+    assert.ok(delegationEvent);
+    assert.deepEqual(delegationEvent.allowedSkills, ["email_mcp"]);
+    assert.equal(delegationEvent.allowedSkills.includes("exfiltrate_keys"), false);
   });
 });
 
@@ -248,6 +252,7 @@ test("delegation strips unauthorized forward_skills and blocks delegated access 
     };
 
     const appendedMessages = [];
+    const lineageEvents = [];
     let emailAdapterCalls = 0;
 
     const extensionGateway = createExtensionGateway({
@@ -354,6 +359,11 @@ test("delegation strips unauthorized forward_skills and blocks delegated access 
           return { status: "not_found" };
         },
       },
+      lineageStore: {
+        async append(event) {
+          lineageEvents.push(event);
+        },
+      },
       now: Date.now,
     });
 
@@ -371,27 +381,20 @@ test("delegation strips unauthorized forward_skills and blocks delegated access 
       assert.equal(executed.status, "completed");
       assert.equal(emailAdapterCalls, 0);
 
-      const delegationMessage = appendedMessages.find(
-        (message) =>
-          message.role === "system" &&
-          typeof message.text === "string" &&
-          message.text.startsWith("[DELEGATION ACTIVE]"),
+      const delegationEvent = lineageEvents.find(
+        (event) => event?.eventType === "delegation.activated",
       );
-      assert.ok(delegationMessage);
-      const delegationPayload = JSON.parse(
-        delegationMessage.text.replace("[DELEGATION ACTIVE]", "").trim(),
-      );
-      assert.deepEqual(delegationPayload.forward_skills, ["web"]);
-      assert.equal(delegationPayload.forward_skills.includes("exfiltrate_keys"), false);
+      assert.ok(delegationEvent);
+      assert.deepEqual(delegationEvent.allowedSkills, ["web"]);
+      assert.equal(delegationEvent.allowedSkills.includes("exfiltrate_keys"), false);
 
-      const toolResultsMessage = appendedMessages.find(
-        (message) =>
-          message.role === "system" &&
-          typeof message.text === "string" &&
-          message.text.startsWith("[TOOL RESULTS]"),
+      const toolResultsEvent = lineageEvents.find(
+        (event) => event?.eventType === "workflow.execution.results",
       );
-      assert.ok(toolResultsMessage);
-      const toolResults = JSON.parse(toolResultsMessage.text.split("\n").slice(1).join("\n"));
+      assert.ok(toolResultsEvent);
+      const toolResults = Array.isArray(toolResultsEvent.metadata?.toolResults)
+        ? toolResultsEvent.metadata.toolResults
+        : [];
       const sendStep = toolResults.find((entry) => entry.tool === "send_email");
       assert.equal(sendStep.status, "failed");
       assert.equal(sendStep.output.code, "POLAR_EXTENSION_POLICY_DENIED");
@@ -627,7 +630,7 @@ test("tool unavailable returns stable response and clears pending slot state", a
   });
 });
 
-test("internal contract bug during workflow append returns stable non-crashing error", async () => {
+test("workflow execution remains stable when chat appends reject internal system markers", async () => {
   await withUnrefedIntervals(async () => {
     const orchestrator = createOrchestrator({
       profileResolutionGateway: {
@@ -642,7 +645,7 @@ test("internal contract bug during workflow append returns stable non-crashing e
       },
       chatManagementGateway: {
         async appendMessage(message) {
-          if (typeof message.text === "string" && message.text.startsWith("[TOOL RESULTS]")) {
+          if (message.role === "system") {
             throw new Error("Invalid chat.management.gateway.message.append.request");
           }
           return { status: "appended" };
@@ -689,8 +692,7 @@ test("internal contract bug during workflow append returns stable non-crashing e
       messageId: "m-contract",
     });
 
-    assert.equal(result.status, "error");
-    assert.match(result.text, /Something broke internally/);
-    assert.equal(result.text.includes("Crashed:"), false);
+    assert.equal(result.status, "completed");
+    assert.match(result.text, /Execution Results/);
   });
 });

@@ -75,7 +75,7 @@ test("telegram inline reply anchoring is strict: invalid anchor disables inline 
 test("telegram debounce buffer key includes session, threadKey, and user id", () => {
   const runnerSource = readFile(telegramRunnerPath);
 
-  assert.match(runnerSource, /const messageThreadKey = deriveThreadKey\(ctx\.message\)/);
+  assert.match(runnerSource, /const messageThreadKey = await resolveThreadKeyForMessage\(polarSessionId, ctx\.message\)/);
   assert.match(runnerSource, /const bufferKey = `\$\{polarSessionId\}\|\$\{messageThreadKey\}\|\$\{ctx\.from\.id\.toString\(\)\}`/);
   assert.match(runnerSource, /MESSAGE_BUFFER\.has\(bufferKey\)/);
 });
@@ -91,6 +91,7 @@ test("telegram replies preserve message_thread_id when inbound turn is in a topi
 test("telegram runner resolves internal anchors and reactions via session history mappings", () => {
   const runnerSource = readFile(telegramRunnerPath);
 
+  assert.match(runnerSource, /async function resolveThreadKeyForMessage\(sessionId, messageContext\)/);
   assert.match(runnerSource, /async function resolveAnchorChannelMessageId\(sessionId, anchorId\)/);
   assert.match(runnerSource, /controlPlane\.getSessionHistory\(\{ sessionId, limit: 500 \}\)/);
   assert.match(runnerSource, /bindingType === "channel_message_id"/);
@@ -136,6 +137,13 @@ test("web chat renders repair_question A/B controls and routes selection to hand
   assert.match(chatSource, /selection: 'A'/);
   assert.match(chatSource, /selection: 'B'/);
   assert.match(chatSource, /correlationId: result\.correlationId/);
+});
+
+test("web chat sends reply anchors via orchestrator metadata", () => {
+  const chatSource = readFile(webChatPath);
+
+  assert.match(chatSource, /metadata:\s*\{/);
+  assert.match(chatSource, /\.\.\.\(replyToMessageId \? \{ replyToMessageId \} : \{\}\)/);
 });
 
 test("web ui allowlist includes personality profile control-plane actions", () => {

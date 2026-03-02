@@ -253,6 +253,16 @@ test("integration: lane-scoped context, focus-anchor routing, and normalized too
     assert.equal(laneASummary.record.type, "thread_summary");
     assert.equal(laneASummary.record.threadKey, laneA);
 
+    const sessionSummary = await platform.controlPlane.getMemory({
+      executionType: "handoff",
+      scope: "session",
+      sessionId,
+      userId,
+      memoryId: `session_summary:${sessionId}`,
+    });
+    assert.equal(sessionSummary.status, "completed");
+    assert.equal(sessionSummary.record.type, "session_summary");
+
     const beforeFinalCall = fetchCalls.length;
     await platform.controlPlane.orchestrate({
       sessionId,

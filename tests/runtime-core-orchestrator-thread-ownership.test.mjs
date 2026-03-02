@@ -23,6 +23,7 @@ test("orchestrator keeps workflow ownership on proposal thread across active-thr
   };
 
   const appendedMessages = [];
+  const lineageEvents = [];
   const extensionExecutions = [];
   const providerCalls = [];
 
@@ -134,6 +135,11 @@ test("orchestrator keeps workflow ownership on proposal thread across active-thr
         return { status: "not_found" };
       },
     },
+    lineageStore: {
+      async append(event) {
+        lineageEvents.push(event);
+      },
+    },
     now: Date.now,
   });
 
@@ -164,16 +170,15 @@ test("orchestrator keeps workflow ownership on proposal thread across active-thr
     assert.match(executed.text, /❌ \*\*send_email\*\*: SMTP unavailable/);
     assert.match(executed.text, /Execution summary\./);
 
-    const toolResultsLog = appendedMessages
-      .filter((message) => message.role === "system" && typeof message.text === "string" && message.text.startsWith("[TOOL RESULTS]"))
+    const toolResultsEvent = lineageEvents
+      .filter((event) => event?.eventType === "workflow.execution.results")
       .at(-1);
 
-    assert.ok(toolResultsLog);
-    assert.match(toolResultsLog.text, /threadId=id-1/);
-    assert.doesNotMatch(toolResultsLog.text, /threadId=id-4/);
-    const runIdMatch = toolResultsLog.text.match(/runId=(run_[^\s]+)/);
-    assert.ok(runIdMatch);
-    const runId = runIdMatch[1];
+    assert.ok(toolResultsEvent);
+    assert.equal(toolResultsEvent.threadId, "id-1");
+    assert.notEqual(toolResultsEvent.threadId, "id-4");
+    const runId = toolResultsEvent.runId;
+    assert.ok(typeof runId === "string" && runId.startsWith("run_"));
 
     const followUp = await orchestrator.orchestrate({
       sessionId: "session-1",

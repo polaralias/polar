@@ -410,6 +410,9 @@ const LANE_RECENT_MESSAGE_LIMIT = 15;
 const LANE_COMPACTION_MESSAGE_THRESHOLD = 30;
 const LANE_COMPACTION_TOKEN_THRESHOLD = 2500;
 const LANE_UNSUMMARIZED_TAIL_COUNT = 10;
+const SESSION_COMPACTION_MESSAGE_THRESHOLD = 30;
+const SESSION_COMPACTION_TOKEN_THRESHOLD = 3000;
+const SESSION_UNSUMMARIZED_TAIL_COUNT = 20;
 const MEMORY_RETRIEVAL_LIMIT = 8;
 
 function estimateMessageTokens(messages) {
@@ -484,6 +487,36 @@ function buildThreadSummaryRecord(laneMessages) {
         "- Preserve lane-scoped context and unresolved asks.",
         "Pending actions:",
         "- Continue from unsummarized tail if user follows up.",
+    ].join("\n");
+
+    return {
+        summary,
+        unsummarizedTail: latestMessages,
+        summarizedCount: olderMessages.length,
+    };
+}
+
+function buildSessionSummaryRecord(sessionMessages) {
+    const olderMessages = sessionMessages.slice(0, Math.max(0, sessionMessages.length - SESSION_UNSUMMARIZED_TAIL_COUNT));
+    const latestMessages = sessionMessages.slice(-SESSION_UNSUMMARIZED_TAIL_COUNT);
+    const userPoints = olderMessages
+        .filter((item) => item.role === "user")
+        .slice(-10)
+        .map((item) => `- ${redactSecrets(item.text).slice(0, 220)}`);
+    const assistantPoints = olderMessages
+        .filter((item) => item.role === "assistant")
+        .slice(-10)
+        .map((item) => `- ${redactSecrets(item.text).slice(0, 220)}`);
+
+    const summary = [
+        "Session goals / open requests:",
+        ...(userPoints.length > 0 ? userPoints : ["- (none captured)"]),
+        "Session outcomes / decisions:",
+        ...(assistantPoints.length > 0 ? assistantPoints : ["- (none captured)"]),
+        "Continuity notes:",
+        "- Preserve active lane constraints and unresolved asks.",
+        "Pending follow-up:",
+        "- Continue from recent unsummarized messages when user resumes.",
     ].join("\n");
 
     return {
@@ -1216,6 +1249,7 @@ ${routingRecommendation || ""}`;
             const laneMessages = allHistoryItems.filter((item) => isMessageInLane(item, laneThreadKey));
 
             let threadSummaryText = "";
+            let sessionSummaryText = "";
             if (memoryGateway && typeof memoryGateway.search === "function") {
                 try {
                     const summarySearch = await memoryGateway.search({
@@ -1234,11 +1268,32 @@ ${routingRecommendation || ""}`;
                 } catch {
                     // non-fatal recall failure
                 }
+                try {
+                    const sessionSummarySearch = await memoryGateway.search({
+                        executionType: "handoff",
+                        sessionId: polarSessionId,
+                        userId: String(userId),
+                        scope: "session",
+                        query: "session_summary",
+                        limit: 3,
+                    });
+                    const sessionRecords = Array.isArray(sessionSummarySearch?.records) ? sessionSummarySearch.records : [];
+                    const sessionSummary = sessionRecords.find((entry) => entry?.record?.type === "session_summary");
+                    if (sessionSummary?.record?.summary && typeof sessionSummary.record.summary === "string") {
+                        sessionSummaryText = sessionSummary.record.summary;
+                    }
+                } catch {
+                    // non-fatal recall failure
+                }
             }
 
             const recentLaneMessages = laneMessages.slice(-(profile.profileConfig?.contextWindow || LANE_RECENT_MESSAGE_LIMIT));
             const estimatedTokens = estimateMessageTokens(laneMessages);
             const shouldCompactLane = laneMessages.length > LANE_COMPACTION_MESSAGE_THRESHOLD || estimatedTokens > LANE_COMPACTION_TOKEN_THRESHOLD;
+            const estimatedSessionTokens = estimateMessageTokens(allHistoryItems);
+            const shouldCompactSession =
+                allHistoryItems.length > SESSION_COMPACTION_MESSAGE_THRESHOLD ||
+                estimatedSessionTokens > SESSION_COMPACTION_TOKEN_THRESHOLD;
 
             if (shouldCompactLane && memoryGateway && typeof memoryGateway.upsert === "function") {
                 const rollup = buildThreadSummaryRecord(laneMessages);
@@ -1269,6 +1324,37 @@ ${routingRecommendation || ""}`;
                         threadSummaryText = rollup.summary;
                     } catch {
                         // non-fatal summary persistence failure
+                    }
+                }
+            }
+
+            if (shouldCompactSession && memoryGateway && typeof memoryGateway.upsert === "function") {
+                const sessionRollup = buildSessionSummaryRecord(allHistoryItems);
+                if (sessionRollup.summarizedCount > 0) {
+                    try {
+                        await memoryGateway.upsert({
+                            executionType: "handoff",
+                            sessionId: polarSessionId,
+                            userId: String(userId),
+                            scope: "session",
+                            memoryId: `session_summary:${polarSessionId}`,
+                            record: {
+                                type: "session_summary",
+                                summary: sessionRollup.summary,
+                                unsummarizedTailCount: sessionRollup.unsummarizedTail.length,
+                            },
+                            metadata: {
+                                summaryVersion: 1,
+                                updatedAtMs: now(),
+                                messageRange: {
+                                    from: allHistoryItems[0]?.messageId,
+                                    to: allHistoryItems[Math.max(0, allHistoryItems.length - SESSION_UNSUMMARIZED_TAIL_COUNT - 1)]?.messageId,
+                                },
+                            },
+                        });
+                        sessionSummaryText = sessionRollup.summary;
+                    } catch {
+                        // non-fatal session summary persistence failure
                     }
                 }
             }
@@ -1312,6 +1398,9 @@ ${routingRecommendation || ""}`;
 
             if (threadSummaryText) {
                 systemPrompt += `\n\n[THREAD_SUMMARY threadKey=${laneThreadKey}]\n${threadSummaryText}\n[/THREAD_SUMMARY]`;
+            }
+            if (sessionSummaryText) {
+                systemPrompt += `\n\n[SESSION_SUMMARY]\n${sessionSummaryText}\n[/SESSION_SUMMARY]`;
             }
             if (retrievalHints.length > 0) {
                 systemPrompt += `\n\n[RETRIEVED_MEMORIES]\n${retrievalHints.join("\n")}\n[/RETRIEVED_MEMORIES]`;
@@ -1771,10 +1860,6 @@ ${routingRecommendation || ""}`;
                             timestampMs: now(),
                         });
 
-                        await chatManagementGateway.appendMessage({
-                            sessionId: polarSessionId, userId: "system", role: "system",
-                            text: `[DELEGATION ACTIVE] ${JSON.stringify(activeDelegation)}`, timestampMs: now()
-                        });
                         continue;
                     }
 
@@ -1789,7 +1874,15 @@ ${routingRecommendation || ""}`;
                             authorityStates: listAuthorityStates()
                         });
                         toolResults.push({ tool: capabilityId, status: "completed", output: "Task completed." });
-                        await chatManagementGateway.appendMessage({ sessionId: polarSessionId, userId: "system", role: "system", text: `[DELEGATION CLEARED]`, timestampMs: now() });
+                        await emitLineageEvent({
+                            eventType: "delegation.cleared",
+                            sessionId: polarSessionId,
+                            userId,
+                            workflowId,
+                            runId,
+                            threadId: targetThreadId,
+                            timestampMs: now(),
+                        });
                         continue;
                     }
 
@@ -1909,7 +2002,19 @@ ${routingRecommendation || ""}`;
                 }
 
                 const deterministicHeader = "### 🛠️ Execution Results\n" + toolResults.map(r => (r.status === "failed" || r.status === "error" ? "❌ " : "✅ ") + `**${r.tool}**: ${typeof r.output === 'string' ? r.output.slice(0, 100) : 'Done.'}`).join("\n") + "\n\n";
-                await chatManagementGateway.appendMessage({ sessionId: polarSessionId, userId: "system", role: "system", text: `[TOOL RESULTS] threadId=${targetThreadId} runId=${runId}\n${JSON.stringify(toolResults, null, 2)}`, timestampMs: now() });
+                await emitLineageEvent({
+                    eventType: "workflow.execution.results",
+                    sessionId: polarSessionId,
+                    userId,
+                    workflowId,
+                    runId,
+                    threadId: targetThreadId,
+                    metadata: {
+                        toolResults,
+                        failedCount: toolResults.filter((result) => result.status === "failed" || result.status === "error").length,
+                    },
+                    timestampMs: now(),
+                });
 
                 const finalSystemPromptBase = activeDelegation
                     ? `You are sub-agent ${activeDelegation.agentId}. Task: ${activeDelegation.task_instructions}. Skills: ${activeDelegation.forward_skills?.join(", ")}`

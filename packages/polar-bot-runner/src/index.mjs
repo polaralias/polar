@@ -86,6 +86,84 @@ function deriveThreadKey(messageContext) {
     return `root:${chatId}`;
 }
 
+function getMessageMetadata(item) {
+    return item?.metadata && typeof item.metadata === "object" ? item.metadata : {};
+}
+
+function getMappedInternalMessageIdFromChannelId(items, channelMessageId) {
+    for (let index = items.length - 1; index >= 0; index -= 1) {
+        const itemMetadata = getMessageMetadata(items[index]);
+        if (
+            itemMetadata.bindingType === "channel_message_id" &&
+            parseFinitePositiveInteger(itemMetadata.channelMessageId) === channelMessageId &&
+            typeof itemMetadata.internalMessageId === "string"
+        ) {
+            return itemMetadata.internalMessageId;
+        }
+    }
+    return null;
+}
+
+function findMessageByInternalOrChannelId(items, channelMessageId) {
+    const internalId = getMappedInternalMessageIdFromChannelId(items, channelMessageId);
+    if (internalId) {
+        const mappedMessage = items.find((item) => item?.messageId === internalId);
+        if (mappedMessage) {
+            return mappedMessage;
+        }
+    }
+
+    for (let index = items.length - 1; index >= 0; index -= 1) {
+        const item = items[index];
+        const itemMetadata = getMessageMetadata(item);
+        const directChannelId = parseFinitePositiveInteger(
+            itemMetadata.channelMessageId ?? itemMetadata.telegram?.message_id
+        );
+        if (directChannelId === channelMessageId) {
+            return item;
+        }
+    }
+
+    return (
+        items.find((item) => item?.messageId === `msg_a_${channelMessageId}`) ||
+        items.find((item) => item?.messageId === `msg_u_${channelMessageId}`) ||
+        null
+    );
+}
+
+async function resolveThreadKeyForMessage(sessionId, messageContext) {
+    const directThreadKey = deriveThreadKey(messageContext);
+    if (!messageContext?.reply_to_message?.message_id || messageContext?.message_thread_id !== undefined) {
+        return directThreadKey;
+    }
+
+    const replyToMessageId = parseFinitePositiveInteger(messageContext.reply_to_message.message_id);
+    if (replyToMessageId === null) {
+        return directThreadKey;
+    }
+
+    try {
+        const history = await controlPlane.getSessionHistory({ sessionId, limit: 500 });
+        const items = Array.isArray(history.items) ? history.items : [];
+        const repliedMessage = findMessageByInternalOrChannelId(items, replyToMessageId);
+        const repliedMetadata = getMessageMetadata(repliedMessage);
+        if (typeof repliedMetadata.threadKey === "string" && repliedMetadata.threadKey.length > 0) {
+            return repliedMetadata.threadKey;
+        }
+        if (
+            repliedMetadata.replyTo &&
+            typeof repliedMetadata.replyTo === "object" &&
+            typeof repliedMetadata.replyTo.threadKey === "string" &&
+            repliedMetadata.replyTo.threadKey.length > 0
+        ) {
+            return repliedMetadata.replyTo.threadKey;
+        }
+    } catch {
+        // Best-effort lane reactivation; fallback keeps compatibility.
+    }
+    return directThreadKey;
+}
+
 async function resolveAnchorChannelMessageId(sessionId, anchorId) {
     if (anchorId === undefined || anchorId === null) {
         return null;
@@ -334,15 +412,15 @@ async function handleMessageDebounced(ctx) {
         return;
     }
 
-    const messageThreadKey = deriveThreadKey(ctx.message);
     const polarSessionId = envelope.sessionId;
+    const messageThreadKey = await resolveThreadKeyForMessage(polarSessionId, ctx.message);
     const bufferKey = `${polarSessionId}|${messageThreadKey}|${ctx.from.id.toString()}`;
 
     if (!MESSAGE_BUFFER.has(bufferKey)) {
         MESSAGE_BUFFER.set(bufferKey, { contexts: [], timer: null });
     }
     const buffer = MESSAGE_BUFFER.get(bufferKey);
-    buffer.contexts.push({ ctx, envelope });
+    buffer.contexts.push({ ctx, envelope, threadKey: messageThreadKey });
 
     if (buffer.timer) clearTimeout(buffer.timer);
 
@@ -371,7 +449,9 @@ async function processGroupedMessages(polarSessionId, items) {
     const lastItem = items[items.length - 1];
     const { ctx, envelope } = lastItem;
     const telegramMessageId = ctx.message.message_id;
-    const threadKey = deriveThreadKey(ctx.message);
+    const threadKey = typeof lastItem.threadKey === "string"
+        ? lastItem.threadKey
+        : await resolveThreadKeyForMessage(polarSessionId, ctx.message);
     const topicReplyOptions = buildTopicReplyOptions(ctx.message);
 
     try {
@@ -555,7 +635,7 @@ bot.on(message('document'), async (ctx) => {
             const pdfData = await pdfParse(Buffer.from(buffer));
 
             const { sessionId: polarSessionId } = await resolvePolarSessionContext(ctx);
-            const threadKey = deriveThreadKey(ctx.message);
+            const threadKey = await resolveThreadKeyForMessage(polarSessionId, ctx.message);
             const topicReplyOptions = buildTopicReplyOptions(ctx.message);
 
             await controlPlane.appendMessage({
@@ -609,7 +689,7 @@ bot.on(message('photo'), async (ctx) => {
         const caption = ctx.message.caption || "";
 
         const { sessionId: polarSessionId } = await resolvePolarSessionContext(ctx);
-        const threadKey = deriveThreadKey(ctx.message);
+        const threadKey = await resolveThreadKeyForMessage(polarSessionId, ctx.message);
         const topicReplyOptions = buildTopicReplyOptions(ctx.message);
 
         await controlPlane.appendMessage({
@@ -715,7 +795,6 @@ bot.on('callback_query', async (ctx) => {
 
         await ctx.answerCbQuery("Workflow Approved! Executing...");
         await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
-        await ctx.reply("🚀 Executing workflow... ", callbackReplyOptions);
 
         try {
             const result = await controlPlane.executeWorkflow(workflowId);
@@ -728,6 +807,11 @@ bot.on('callback_query', async (ctx) => {
             if (result.status === 'completed') {
                 if (result.text) {
                     const msg = await ctx.reply(result.text, callbackReplyOptions);
+                    if (result.assistantMessageId) {
+                        await controlPlane.updateMessageChannelId(sessionId, result.assistantMessageId, msg.message_id);
+                    }
+                } else {
+                    const msg = await ctx.reply("✅ Workflow executed.", callbackReplyOptions);
                     if (result.assistantMessageId) {
                         await controlPlane.updateMessageChannelId(sessionId, result.assistantMessageId, msg.message_id);
                     }
@@ -752,7 +836,7 @@ bot.on('callback_query', async (ctx) => {
 
         await ctx.answerCbQuery("Workflow Rejected.");
         await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
-        await ctx.reply("❌ The workflow was abandoned.", callbackReplyOptions);
+        await ctx.reply("❌ Workflow rejected.", callbackReplyOptions);
         await transitionWaitingReactionToDone(ctx, callbackData);
 
     } else if (callbackData.startsWith('auto_app:')) {

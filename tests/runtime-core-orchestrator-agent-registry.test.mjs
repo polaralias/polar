@@ -5,6 +5,7 @@ import { createApprovalStore, createOrchestrator } from "../packages/polar-runti
 
 test("orchestrator includes registered agents in context and clamps delegated model/skills by delegated profile", async () => {
   const appendedMessages = [];
+  const lineageEvents = [];
   const providerCalls = [];
 
   const orchestrator = createOrchestrator({
@@ -93,6 +94,11 @@ test("orchestrator includes registered agents in context and clamps delegated mo
         return undefined;
       },
     },
+    lineageStore: {
+      async append(event) {
+        lineageEvents.push(event);
+      },
+    },
     now: Date.now,
   });
 
@@ -112,20 +118,14 @@ test("orchestrator includes registered agents in context and clamps delegated mo
   const executed = await orchestrator.executeWorkflow(proposed.workflowId);
   assert.equal(executed.status, "completed");
 
-  const delegationMessage = appendedMessages.find(
-    (message) =>
-      message.role === "system" &&
-      typeof message.text === "string" &&
-      message.text.startsWith("[DELEGATION ACTIVE]"),
+  const delegationEvent = lineageEvents.find(
+    (event) => event?.eventType === "delegation.activated",
   );
-  assert.ok(delegationMessage);
-  const payload = JSON.parse(
-    delegationMessage.text.replace("[DELEGATION ACTIVE]", "").trim(),
-  );
-  assert.equal(payload.profileId, "profile.writer");
-  assert.deepEqual(payload.forward_skills, ["web"]);
-  assert.equal(payload.model_override, "claude-sonnet-4-6");
-  assert.equal(payload.pinnedProvider, "anthropic");
+  assert.ok(delegationEvent);
+  assert.equal(delegationEvent.profileId, "profile.writer");
+  assert.deepEqual(delegationEvent.allowedSkills, ["web"]);
+  assert.equal(delegationEvent.modelId, "claude-sonnet-4-6");
+  assert.equal(delegationEvent.providerId, "anthropic");
 
   const summaryCall = providerCalls.find(
     (call) =>

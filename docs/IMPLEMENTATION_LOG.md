@@ -2006,3 +2006,75 @@ Commands run and outcomes:
 
 ### Next
 - **Next prompt:** Optional follow-up to reduce noisy memory-extraction warning logs in tests, if desired.
+
+## 2026-03-02 (UTC) - Prompt Ad-hoc: Remove workflow-internal chat appends and callback status duplicates
+
+**Branch:** `main`  
+**Commit:** `not committed`  
+**Prompt reference:** `Fix invalid chat append request fields in workflow execution; reduce callback two-voice status messages`  
+**Specs referenced:**
+- `docs/specs/ROUTING_AND_DELEGATION_POLICY.md`
+- `docs/specs/TELEGRAM_SURFACE.md`
+
+### Summary
+- Removed workflow-internal system chat appends for `[DELEGATION ACTIVE]`, `[DELEGATION CLEARED]`, and `[TOOL RESULTS]` from orchestrator execution flow.
+- Replaced those internal markers with lineage events (`delegation.cleared`, `workflow.execution.results`) and retained existing `delegation.activated` lineage emission for delegation activation.
+- Removed direct callback chat status replies for workflow approve/reject (`"🚀 Executing workflow..."`, `"The workflow was abandoned."`) to reduce mixed unmanaged voice in Telegram callback handling.
+- Updated orchestrator test coverage to assert lineage events instead of deprecated internal system chat markers.
+
+### Scope and decisions
+- **In scope:** runtime-core orchestrator internal logging path, Telegram workflow callback status messaging path, and related unit/integration assertions.
+- **Out of scope:** full callback messaging unification through personality-governed orchestration for all callback branches.
+- **Key decisions:**
+  - Internal execution/delegation breadcrumbs now live in lineage events rather than conversation history.
+  - Existing history parsing for legacy `[DELEGATION ACTIVE]` markers remains for backward compatibility with old persisted sessions.
+
+### Tests and validation
+Commands run and outcomes:
+- `node --test tests/runtime-core-orchestrator-workflow-validation.test.mjs` - ✅
+- `npm test` - ✅
+- `npm run check:boundaries` - ✅
+
+### Blockers
+- None.
+
+### Next
+- **Next prompt:** Route remaining callback confirmation/error texts through a single personality-governed reply path to fully eliminate two-voice behavior.
+
+## 2026-03-02 (UTC) - Prompt Ad-hoc: Fix reply-lane reactivation, complete session summarisation, and callback follow-up reliability
+
+**Branch:** `main`  
+**Commit:** `not committed`  
+**Prompt reference:** `Investigate + implement chat orchestration/threading/summarisation/follow-up fixes`  
+**Specs referenced:**
+- `docs/specs/CONTEXT_MANAGEMENT_SYSTEM.md`
+- `docs/specs/FOCUS_CONTEXT_AND_PENDING.md`
+- `docs/specs/TELEGRAM_THREADING_AND_EMOJI.md`
+- `docs/specs/ROUTING_AND_DELEGATION_POLICY.md`
+
+### Summary
+- Implemented Telegram reply-lane reactivation so inbound replies resolve the replied message's existing `threadKey` via channel-id/internal-id history mapping, instead of always creating a fresh `reply:<chat>:<messageId>` lane.
+- Added session-level context compaction (`session_summary`) in orchestrator alongside existing lane (`thread_summary`) compaction and injected `[SESSION_SUMMARY]` into model system context when available.
+- Fixed Web UI orchestrate payload to pass `replyToMessageId` inside `metadata`, matching orchestrator focus-context expectations.
+- Hardened Telegram workflow callback UX so users always get a visible follow-up message on approve/reject paths (including a fallback message when workflow completion text is empty).
+- Expanded tests for the new behavior (runner source invariants + integration assertion for persisted `session_summary`).
+
+### Scope and decisions
+- **In scope:** Telegram runner thread-key resolution + callback follow-up messaging, orchestrator context summarisation completeness, Web UI payload alignment, and regression coverage updates.
+- **Out of scope:** redesign of durable thread-state storage (`SESSION_THREADS` remains in-memory), and broad routing-policy model changes.
+- **Key decisions:**
+  - Reply-lane reactivation uses existing session history mappings (`bindingType=channel_message_id`) as the source of truth, with safe fallback to legacy reply-lane derivation when mapping is unavailable.
+  - Session summary compaction uses thresholds close to lane compaction (`>30 messages` or token estimate threshold) so whole-session memory is actually maintained in active chats.
+  - Callback paths now favor deterministic user-visible completion over silent `answerCbQuery`-only acknowledgements.
+
+### Tests and validation
+Commands run and outcomes:
+- `node --test tests/channels-thin-client-enforcement.test.mjs` - ✅
+- `node --test tests/integration-vertical-slice.test.mjs` - ✅
+- `node --test tests/control-plane-service.test.mjs` - ✅
+
+### Blockers
+- None.
+
+### Next
+- **Next prompt:** Consider persisting `SESSION_THREADS` to durable memory/thread-state records so focus/pending context survives process restarts with deterministic continuity.

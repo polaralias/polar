@@ -226,11 +226,11 @@ export async function renderChat(container) {
                 userId: "ui-user",
                 text: text || "",
                 messageId: messageId || crypto.randomUUID(),
-                replyToMessageId: replyToMessageId || undefined,
-                channelMetadata: {
+                metadata: {
+                    ...(replyToMessageId ? { replyToMessageId } : {}),
                     source: "polar-web-ui",
                     userAgent: navigator.userAgent
-                }
+                },
             };
 
             const result = await fetchApi('orchestrate', payload);
