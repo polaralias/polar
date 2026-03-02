@@ -271,6 +271,11 @@ export function createTelegramIngressAdapter(options = {}) {
       if (parsed.replyToMessageId !== undefined) {
         metadata.replyToMessageId = parsed.replyToMessageId;
       }
+      metadata.threadKey = parsed.messageThreadId
+        ? `topic:${chatId}:${parsed.messageThreadId}`
+        : parsed.replyToMessageId
+          ? `reply:${chatId}:${parsed.replyToMessageId}`
+          : `root:${chatId}`;
 
       const envelope = {
         // Session identity is always chat-scoped for Telegram.

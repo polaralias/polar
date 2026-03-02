@@ -1153,6 +1153,7 @@ export function createControlPlaneService(config = {}) {
     approvalStore,
     skillRegistry,
     gateway,
+    memoryGateway,
     personalityStore,
     now: config.now,
     lineageStore,
