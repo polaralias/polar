@@ -318,7 +318,15 @@ function normalizeStringArray(value) {
  */
 function normalizeAgentRegistry(value) {
     if (typeof value !== "object" || value === null || Object.getPrototypeOf(value) !== Object.prototype) {
-        return { version: 1, agents: Object.freeze([]) };
+        return {
+            version: 1,
+            agents: Object.freeze([{
+                agentId: DEFAULT_GENERIC_AGENT_ID,
+                profileId: DEFAULT_GENERIC_PROFILE_ID,
+                description: "General-purpose fallback sub-agent for delegated tasks.",
+                tags: ["general", "fallback"],
+            }]),
+        };
     }
     const seen = new Set();
     const agents = [];
@@ -959,8 +967,11 @@ export function createOrchestrator({
                 || /\bwrite\s+10\b/.test(lowerText)
                 || /\b10\s+(versions|version|variants|variant)\b/.test(lowerText);
 
+            const shouldRunRouter = classification?.type === "new_request"
+                && (stageADelegationSignal || /\b(sub-agent|delegate|workflow|tool|do that|that)\b/.test(lowerText));
+
             let routerDecision = null;
-            if (classification?.type === "new_request") {
+            if (shouldRunRouter) {
                 try {
                     const routerResponse = await providerGateway.generate({
                         executionType: "handoff",
@@ -1635,7 +1646,10 @@ ${routingRecommendation || ""}`;
                             continue;
                         }
 
-                        const agentProfile = agentRegistry.agents.find((agent) => agent.agentId === agentId) || null;
+                        const requestedAgentProfile = agentRegistry.agents.find((agent) => agent.agentId === agentId) || null;
+                        const fallbackAgentProfile = agentRegistry.agents.find((agent) => agent.agentId === DEFAULT_GENERIC_AGENT_ID) || null;
+                        const agentProfile = requestedAgentProfile || fallbackAgentProfile;
+                        const resolvedAgentId = agentProfile?.agentId || agentId;
                         let delegatedProfileConfig = profile.profileConfig || {};
                         let delegatedProfileId = null;
                         let registryAllowedForwardSkills = [];
@@ -1654,7 +1668,7 @@ ${routingRecommendation || ""}`;
                                 delegatedProfileConfig = delegatedProfileRecord.config;
                             }
                         } else {
-                            toolResults.push({ tool: capabilityId, status: "error", output: "Delegation blocked: unregistered agent profile." });
+                            toolResults.push({ tool: capabilityId, status: "error", output: "Delegation blocked: no fallback agent profile registered." });
                             continue;
                         }
 
@@ -1721,7 +1735,7 @@ ${routingRecommendation || ""}`;
 
                         activeDelegation = {
                             ...parsedArgs,
-                            agentId,
+                            agentId: resolvedAgentId,
                             ...(delegatedProfileId ? { profileId: delegatedProfileId } : {}),
                             forward_skills: allowedSkills,
                             model_override: modelId,
@@ -1736,7 +1750,7 @@ ${routingRecommendation || ""}`;
                             authorityStates: listAuthorityStates()
                         });
                         const output =
-                            `Successfully delegated to ${agentId}.` +
+                            `Successfully delegated to ${resolvedAgentId}.` +
                             (rejectedSkills.length ? ` Clamped skills: ${rejectedSkills.join(", ")}.` : "") +
                             (modelRejectedReason ? ` ${modelRejectedReason}` : "");
                         toolResults.push({ tool: capabilityId, status: "delegated", output });
@@ -1748,7 +1762,7 @@ ${routingRecommendation || ""}`;
                             workflowId,
                             runId,
                             threadId: targetThreadId,
-                            agentId,
+                            agentId: resolvedAgentId,
                             ...(delegatedProfileId ? { profileId: delegatedProfileId } : {}),
                             allowedSkills,
                             rejectedSkills,
