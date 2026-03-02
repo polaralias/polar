@@ -1701,3 +1701,41 @@ Commands run and outcomes:
 
 ### Next
 - **Next prompt:** optionally expose per-chat available reaction discovery (via Telegram `getChat`) to precompute chat-allowed emoji set and avoid first-failure fallback attempts.
+
+## 2026-03-02 (UTC) - Prompt CM-01: Implement thread-aware context management (rolling summaries + retrieval)
+
+**Branch:** `main`  
+**Commit:** `not committed`  
+**Prompt reference:** `CM-01 thread-aware context management`
+**Specs referenced:**
+- `docs/specs/CONTEXT_MANAGEMENT_SYSTEM.md`
+- `docs/specs/FOCUS_CONTEXT_AND_PENDING.md`
+- `docs/specs/ROLE_AND_QUOTE_RENDERING.md`
+
+### Summary
+- Added deterministic Telegram `threadKey` normalization at ingress (`topic > reply > root`) and carried it in canonical metadata.
+- Refactored orchestrator context assembly into a lane-scoped pipeline: effective personality, thread summary recall, lane-only recency window, lane-filtered memory retrieval, explicit quoted reply context block, then user prompt.
+- Added rolling `thread_summary` compaction in orchestrator with safety redaction for credentials/secrets and structured summary sections (goals/open questions, decisions, facts, pending actions).
+
+### Scope and decisions
+- **Thresholds used:** compact when lane message count `> 30` OR estimated lane tokens `> 2500`; keep last `10` lane messages unsummarized; recency window defaults to `12` from profile context window (fallback 15).
+- **Summary storage:** persisted as `memoryGateway.upsert` record type `thread_summary` with `memoryId=thread_summary:<sessionId>:<threadKey>`, plus metadata `{threadKey, summaryVersion, updatedAtMs, messageRange}`.
+- **Retrieval policy:** memory search is scoped to session/user, then filtered to the active `threadKey` when memory metadata is lane-tagged to avoid cross-thread noise.
+
+### Files changed
+- `packages/polar-runtime-core/src/orchestrator.mjs`
+- `packages/polar-adapter-channels/src/index.mjs`
+- `tests/runtime-core-orchestrator-context-management.test.mjs`
+- `tests/adapter-channels-normalization.test.mjs`
+
+### Tests and validation
+Commands run and outcomes:
+- `node --test tests/runtime-core-orchestrator-context-management.test.mjs tests/adapter-channels-normalization.test.mjs` - ✅
+- `npm test` - ❌ (`Could not find '/workspace/polar/tests/**/*.test.mjs'` from current script glob)
+- `npm run check:boundaries` - ✅
+
+### Blockers
+- Repository `npm test` script currently fails due glob resolution in this environment (`node --test tests/**/*.test.mjs`).
+
+### Next
+- **Next prompt:** CM-02 pending-state focus resolver integration with explicit typed pending records + reply-anchor-first resolution tests.

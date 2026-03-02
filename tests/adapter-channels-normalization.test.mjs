@@ -64,6 +64,7 @@ test("telegram ingress adapter derives ids and metadata deterministically", () =
       fromId: "7",
       updateId: "55",
       messageThreadId: "9001",
+      threadKey: "topic:99:9001",
     },
   });
 });
@@ -81,6 +82,7 @@ test("telegram ingress uses stable chat-scoped sessionId for normal, reply, and 
   });
   assert.equal(normalTurn.sessionId, "telegram:chat:chat-1");
   assert.equal(normalTurn.threadId, undefined);
+  assert.equal(normalTurn.metadata.threadKey, "root:chat-1");
 
   const replyTurn = adapter.normalize({
     chatId: "chat-1",
@@ -92,6 +94,7 @@ test("telegram ingress uses stable chat-scoped sessionId for normal, reply, and 
   assert.equal(replyTurn.sessionId, "telegram:chat:chat-1");
   assert.equal(replyTurn.threadId, "telegram:reply:chat-1:m-1");
   assert.equal(replyTurn.metadata.replyToMessageId, "m-1");
+  assert.equal(replyTurn.metadata.threadKey, "reply:chat-1:m-1");
 
   const topicTurn = adapter.normalize({
     chatId: "chat-1",
@@ -102,6 +105,7 @@ test("telegram ingress uses stable chat-scoped sessionId for normal, reply, and 
   });
   assert.equal(topicTurn.sessionId, "telegram:chat:chat-1");
   assert.equal(topicTurn.threadId, "telegram:topic:topic-9:chat-1");
+  assert.equal(topicTurn.metadata.threadKey, "topic:chat-1:topic-9");
 });
 
 test("slack ingress adapter derives ids and metadata deterministically", () => {

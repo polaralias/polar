@@ -360,6 +360,108 @@ function appendPersonalityBlock(systemPrompt, personalityProfile) {
     return `${systemPrompt}\n\n## Personality\nFollow the style guidance below unless it conflicts with system/developer instructions.\n${personalityProfile.prompt}`;
 }
 
+const LANE_RECENT_MESSAGE_LIMIT = 15;
+const LANE_COMPACTION_MESSAGE_THRESHOLD = 30;
+const LANE_COMPACTION_TOKEN_THRESHOLD = 2500;
+const LANE_UNSUMMARIZED_TAIL_COUNT = 10;
+const MEMORY_RETRIEVAL_LIMIT = 8;
+
+function estimateMessageTokens(messages) {
+    return messages.reduce((total, message) => {
+        const text = typeof message?.text === "string" ? message.text : "";
+        return total + Math.ceil(text.length / 4);
+    }, 0);
+}
+
+function redactSecrets(text) {
+    if (typeof text !== "string" || text.length === 0) {
+        return "";
+    }
+    return text
+        .replace(/(password|passwd|token|secret|api[_-]?key|authorization)\s*[:=]\s*\S+/gi, "$1=[REDACTED]")
+        .replace(/bearer\s+[a-z0-9._\-]+/gi, "bearer [REDACTED]")
+        .replace(/[A-Za-z0-9+/]{32,}={0,2}/g, "[REDACTED_CREDENTIAL]");
+}
+
+function deriveLaneThreadKey(sessionId, inboundThreadKey, inboundThreadId) {
+    if (typeof inboundThreadKey === "string" && inboundThreadKey.length > 0) {
+        return inboundThreadKey;
+    }
+    if (typeof inboundThreadId === "string" && inboundThreadId.length > 0) {
+        if (inboundThreadId.startsWith("telegram:topic:")) {
+            const [, , topicId, chatId] = inboundThreadId.split(":");
+            if (topicId && chatId) {
+                return `topic:${chatId}:${topicId}`;
+            }
+        }
+        if (inboundThreadId.startsWith("telegram:reply:")) {
+            const [, , chatId, replyToId] = inboundThreadId.split(":");
+            if (chatId && replyToId) {
+                return `reply:${chatId}:${replyToId}`;
+            }
+        }
+    }
+    const sessionChatMatch = /^telegram:chat:(.+)$/.exec(sessionId);
+    if (sessionChatMatch) {
+        return `root:${sessionChatMatch[1]}`;
+    }
+    return "root:unknown";
+}
+
+function isMessageInLane(message, laneThreadKey) {
+    const messageMetadata = message?.metadata;
+    const messageThreadKey = typeof messageMetadata?.threadKey === "string" ? messageMetadata.threadKey : null;
+    if (messageThreadKey) {
+        return messageThreadKey === laneThreadKey;
+    }
+    return laneThreadKey === "root:unknown";
+}
+
+function buildThreadSummaryRecord(laneMessages) {
+    const olderMessages = laneMessages.slice(0, Math.max(0, laneMessages.length - LANE_UNSUMMARIZED_TAIL_COUNT));
+    const latestMessages = laneMessages.slice(-LANE_UNSUMMARIZED_TAIL_COUNT);
+    const userPoints = olderMessages
+        .filter((item) => item.role === "user")
+        .slice(-6)
+        .map((item) => `- ${redactSecrets(item.text).slice(0, 220)}`);
+    const assistantPoints = olderMessages
+        .filter((item) => item.role === "assistant")
+        .slice(-6)
+        .map((item) => `- ${redactSecrets(item.text).slice(0, 220)}`);
+
+    const summary = [
+        "Current goals / open questions:",
+        ...(userPoints.length > 0 ? userPoints : ["- (none captured)"]),
+        "Decisions made:",
+        ...(assistantPoints.length > 0 ? assistantPoints : ["- (none captured)"]),
+        "Important facts:",
+        "- Preserve lane-scoped context and unresolved asks.",
+        "Pending actions:",
+        "- Continue from unsummarized tail if user follows up.",
+    ].join("\n");
+
+    return {
+        summary,
+        unsummarizedTail: latestMessages,
+        summarizedCount: olderMessages.length,
+    };
+}
+
+function buildReplyContextBlock(messages, replyToMessageId) {
+    if (!replyToMessageId) {
+        return null;
+    }
+    const targetIndex = messages.findIndex((item) => item.messageId === replyToMessageId || item.metadata?.channelMessageId === replyToMessageId);
+    if (targetIndex < 0) {
+        return null;
+    }
+    const window = messages.slice(Math.max(0, targetIndex - 1), targetIndex + 2);
+    const rendered = window
+        .map((item) => `[${item.role}] ${redactSecrets(String(item.text ?? ""))}`)
+        .join("\n");
+    return `[QUOTED_REPLY_CONTEXT]\n${rendered}\n[/QUOTED_REPLY_CONTEXT]`;
+}
+
 /**
  * @typedef {Object} PolarEnvelope
  * @property {string} sessionId
@@ -380,6 +482,7 @@ export function createOrchestrator({
     approvalStore,
     skillRegistry,
     gateway, // ControlPlaneGateway for config
+    memoryGateway,
     personalityStore,
     now = Date.now,
     lineageStore,
@@ -748,6 +851,7 @@ export function createOrchestrator({
 
             let systemPrompt = profile.profileConfig?.systemPrompt || "You are a helpful Polar AI assistant. Be concise and friendly.";
             systemPrompt = appendPersonalityBlock(systemPrompt, effectivePersonality);
+            const laneThreadKey = deriveLaneThreadKey(polarSessionId, inboundThreadKey, inboundThreadId);
 
             const agentRegistry = await loadAgentRegistry();
             const multiAgentConfig = {
@@ -895,10 +999,121 @@ ${routingRecommendation || ""}`;
 
             const historyData = await chatManagementGateway.getSessionHistory({
                 sessionId: polarSessionId,
-                limit: profile.profileConfig?.contextWindow || 20
+                limit: 250
             });
+            const allHistoryItems = Array.isArray(historyData?.items) ? historyData.items : [];
+            const laneMessages = allHistoryItems.filter((item) => isMessageInLane(item, laneThreadKey));
 
-            let messages = historyData?.items ? historyData.items.map(m => ({ role: m.role, content: m.text })) : [];
+            let threadSummaryText = "";
+            if (memoryGateway && typeof memoryGateway.search === "function") {
+                try {
+                    const summarySearch = await memoryGateway.search({
+                        executionType: "handoff",
+                        sessionId: polarSessionId,
+                        userId: String(userId),
+                        scope: "session",
+                        query: `thread_summary ${laneThreadKey}`,
+                        limit: 5,
+                    });
+                    const records = Array.isArray(summarySearch?.records) ? summarySearch.records : [];
+                    const threadSummary = records.find((entry) => entry?.record?.type === "thread_summary" && entry?.metadata?.threadKey === laneThreadKey);
+                    if (threadSummary?.record?.summary && typeof threadSummary.record.summary === "string") {
+                        threadSummaryText = threadSummary.record.summary;
+                    }
+                } catch {
+                    // non-fatal recall failure
+                }
+            }
+
+            const recentLaneMessages = laneMessages.slice(-(profile.profileConfig?.contextWindow || LANE_RECENT_MESSAGE_LIMIT));
+            const estimatedTokens = estimateMessageTokens(laneMessages);
+            const shouldCompactLane = laneMessages.length > LANE_COMPACTION_MESSAGE_THRESHOLD || estimatedTokens > LANE_COMPACTION_TOKEN_THRESHOLD;
+
+            if (shouldCompactLane && memoryGateway && typeof memoryGateway.upsert === "function") {
+                const rollup = buildThreadSummaryRecord(laneMessages);
+                if (rollup.summarizedCount > 0) {
+                    try {
+                        await memoryGateway.upsert({
+                            executionType: "handoff",
+                            sessionId: polarSessionId,
+                            userId: String(userId),
+                            scope: "session",
+                            memoryId: `thread_summary:${polarSessionId}:${laneThreadKey}`,
+                            record: {
+                                type: "thread_summary",
+                                threadKey: laneThreadKey,
+                                summary: rollup.summary,
+                                unsummarizedTailCount: rollup.unsummarizedTail.length,
+                            },
+                            metadata: {
+                                threadKey: laneThreadKey,
+                                summaryVersion: 1,
+                                updatedAtMs: now(),
+                                messageRange: {
+                                    from: laneMessages[0]?.messageId,
+                                    to: laneMessages[Math.max(0, laneMessages.length - LANE_UNSUMMARIZED_TAIL_COUNT - 1)]?.messageId,
+                                },
+                            },
+                        });
+                        threadSummaryText = rollup.summary;
+                    } catch {
+                        // non-fatal summary persistence failure
+                    }
+                }
+            }
+
+            const retrievalHints = [];
+            if (memoryGateway && typeof memoryGateway.search === "function" && typeof text === "string" && text.trim().length > 0) {
+                try {
+                    const memoryResult = await memoryGateway.search({
+                        executionType: "handoff",
+                        sessionId: polarSessionId,
+                        userId: String(userId),
+                        scope: "session",
+                        query: text,
+                        limit: MEMORY_RETRIEVAL_LIMIT,
+                    });
+                    const records = Array.isArray(memoryResult?.records) ? memoryResult.records : [];
+                    for (const entry of records) {
+                        const entryThreadKey = entry?.metadata?.threadKey;
+                        if (typeof entryThreadKey === "string" && entryThreadKey.length > 0 && entryThreadKey !== laneThreadKey) {
+                            continue;
+                        }
+                        if (entry?.record?.type === "thread_summary" && entryThreadKey !== laneThreadKey) {
+                            continue;
+                        }
+                        const detail = entry?.record?.fact || entry?.record?.summary || entry?.record?.content || JSON.stringify(entry?.record ?? {});
+                        if (typeof detail === "string" && detail.trim().length > 0) {
+                            retrievalHints.push(`- ${redactSecrets(detail).slice(0, 220)}`);
+                        }
+                        if (retrievalHints.length >= 5) {
+                            break;
+                        }
+                    }
+                } catch {
+                    // non-fatal retrieval failure
+                }
+            }
+
+            const replyContextBlock = buildReplyContextBlock(
+                laneMessages,
+                metadata?.replyToMessageId,
+            );
+
+            if (threadSummaryText) {
+                systemPrompt += `\n\n[THREAD_SUMMARY threadKey=${laneThreadKey}]\n${threadSummaryText}\n[/THREAD_SUMMARY]`;
+            }
+            if (retrievalHints.length > 0) {
+                systemPrompt += `\n\n[RETRIEVED_MEMORIES]\n${retrievalHints.join("\n")}\n[/RETRIEVED_MEMORIES]`;
+            }
+
+            let messages = recentLaneMessages.map(m => ({ role: m.role, content: m.text }));
+            if (replyContextBlock) {
+                messages = [
+                    ...messages,
+                    { role: "system", content: replyContextBlock },
+                ];
+            }
 
             const result = await providerGateway.generate({
                 executionType: "handoff",
