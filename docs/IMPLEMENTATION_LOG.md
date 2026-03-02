@@ -1877,3 +1877,37 @@ Commands run and outcomes:
 
 ### Next
 - **Next prompt:** CM-06 persist clarification-needed pending state as typed pending entry and route short disambiguation replies through deterministic selection handling.
+
+## 2026-03-02 (UTC) - Prompt CM-05: Routing and delegation hardening follow-up (router gating + fallback profile enforcement)
+
+**Branch:** `main`  
+**Commit:** `this commit`  
+**Prompt reference:** `CM-05 routing + delegation guardrails`  
+**Specs referenced:**
+- `docs/specs/ROUTING_AND_DELEGATION_POLICY.md`
+- `docs/specs/FOCUS_CONTEXT_AND_PENDING.md`
+
+### Summary
+- Hardened Stage B router invocation to run only for routing-sensitive new requests (delegation/tool/pronoun-like asks), preventing unnecessary extra router model calls on straightforward turns.
+- Ensured fallback generic sub-agent is always present in normalized agent registry output, including when no persisted registry exists.
+- Updated delegation execution path to clamp unknown delegated `agentId`s to the default generic sub-agent instead of hard-failing, while preserving allowlist filtering of forwarded skills.
+- Fixed root `npm test` script globbing to execute deterministic workspace test files in this environment.
+
+### Scope and decisions
+- **In scope:** routing/delegation safety and deterministic behavior alignment for CM-05 acceptance tests.
+- **Out of scope:** introducing new pending-state persistence for clarification replies.
+- **Key decisions:**
+  - Router is now still the primary chooser for routing-sensitive new requests, but skipped for straightforward turns where deterministic flow should remain unaffected.
+  - Unknown delegated agent IDs are fail-safe clamped to `@generic_sub_agent` so execution remains allowlisted and secure.
+
+### Tests and validation
+Commands run and outcomes:
+- `node --test tests/runtime-core-orchestrator-workflow-validation.test.mjs` - ✅
+- `npm test` - ✅
+- `npm run check:boundaries` - ✅
+
+### Blockers
+- None.
+
+### Next
+- **Next prompt:** CM-06 persist clarification-needed pending state as typed pending entry and route short disambiguation replies through deterministic selection handling.
