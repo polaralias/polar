@@ -15,10 +15,16 @@ Implementation
   - strict JSON schema output
   - confidence threshold (default 0.65)
 - Enforce:
-  - only registered agent profiles can be delegated to
   - only installed tools can be called
+  - only delegate to installed agent profiles
+    - Introduce a default generic sub agent profile as fallback agent as part of this work  
 - If confidence below threshold:
   - ask one short clarifying question (two-option disambiguation when possible)
+- Sub agent spin up:
+  - utilise our allowed skills/tools pass through functionality
+  - Simple delegation for read tasks should not require approval
+  - Delegation involing complex workflows and plans should require approval
+  - Delegation for write and destructive tasks should require approval
 
 Tests
 - “write 10 versions of an email” routes to writer agent or structured multi-step workflow.
