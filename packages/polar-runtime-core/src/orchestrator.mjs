@@ -741,8 +741,19 @@ export function createOrchestrator({
             }
 
             if (text) {
-                const classification = classifyUserMessage({ text, sessionState });
-                sessionState = applyUserTurn({ sessionState, classification, rawText: text, now });
+                const classification = classifyUserMessage({
+                    text,
+                    sessionState,
+                    replyToMessageId: metadata?.replyToMessageId,
+                    laneThreadKey: inboundThreadKey,
+                });
+                sessionState = applyUserTurn({
+                    sessionState,
+                    classification,
+                    rawText: text,
+                    now,
+                    laneThreadKey: inboundThreadKey,
+                });
                 SESSION_THREADS.set(polarSessionId, sessionState);
 
                 // Check if repair is needed (ambiguous short follow-up with multiple open offers)
@@ -846,6 +857,20 @@ export function createOrchestrator({
                 } else if (classification.type === "error_inquiry") {
                     const ed = classification.errorDetail || {};
                     routingRecommendation = `[ROUTING_HINT] User is asking about a recent error. Thread: ${classification.targetThreadId}. Error: ${ed.capabilityId || 'unknown'} on ${ed.extensionId || 'unknown'}. Output: ${(ed.output || '').slice(0, 200)}. Explain what went wrong.`;
+                }
+
+                const focusAnchorSnippet = typeof classification.focusContext?.focusAnchorTextSnippet === "string"
+                    ? classification.focusContext.focusAnchorTextSnippet.slice(0, 180)
+                    : "";
+                if (focusAnchorSnippet || classification.focusContext?.focusAnchorInternalId || classification.focusContext?.focusAnchorChannelId) {
+                    const focusHints = [
+                        `focusAnchorInternalId=${classification.focusContext?.focusAnchorInternalId || "none"}`,
+                        `focusAnchorChannelId=${classification.focusContext?.focusAnchorChannelId || "none"}`,
+                    ];
+                    if (focusAnchorSnippet) {
+                        focusHints.push(`focusAnchorSnippet=${JSON.stringify(focusAnchorSnippet)}`);
+                    }
+                    routingRecommendation = `${routingRecommendation ? `${routingRecommendation}\n` : ""}[FOCUS_HINT] ${focusHints.join(" ")}`;
                 }
             }
 

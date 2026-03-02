@@ -1739,3 +1739,36 @@ Commands run and outcomes:
 
 ### Next
 - **Next prompt:** CM-02 pending-state focus resolver integration with explicit typed pending records + reply-anchor-first resolution tests.
+
+## 2026-03-02 (UTC) - Prompt CM-02: Fix focus resolution and pending state gating
+
+**Branch:** `main`  
+**Commit:** `this commit`  
+**Prompt reference:** `CM-02 focus context and pending gating`  
+**Specs referenced:**
+- `docs/specs/FOCUS_CONTEXT_AND_PENDING.md`
+
+### Summary
+- Added deterministic `resolveFocusContext` ordering in routing policy engine: reply-anchor matching first, then lane recency, then active-thread fallback.
+- Wired lane-aware classification and state-application from orchestrator, including replyTo metadata and lane thread key propagation.
+- Added pending mismatch gating so slot-fill only attaches when the inbound message matches expected type, and clears stale pending questions when mismatch occurs.
+- Added router focus hints (`focusAnchorInternalId`, `focusAnchorChannelId`, snippet) to routing recommendation context for LLM delegation/router accuracy.
+- Added regression tests for reply-anchor precedence, lane-recency “that” focus behavior, and pending mismatch clearing.
+
+### Scope and decisions
+- **In scope:** focus resolution behavior, pending gating and clearing, router hint enrichment, and targeted routing tests.
+- **Out of scope:** schema-level migration of pending states to new enum types; this change keeps current thread model while enforcing expected-type gating.
+- **Key decisions:** preserve existing classification categories while attaching focus metadata and a deterministic clear path (`clearPendingThreadId`) to avoid pending-state hijack.
+
+### Tests and validation
+Commands run and outcomes:
+- `node --test tests/runtime-core-orchestrator-routing.test.mjs` - ✅
+- `node --test tests/runtime-core-open-loops-repair.test.mjs tests/runtime-core-orchestrator-context-management.test.mjs` - ✅
+- `npm test` - ❌ (`Could not find '/workspace/polar/tests/**/*.test.mjs'` from current script glob)
+- `npm run check:boundaries` - ✅
+
+### Blockers
+- Repository `npm test` script currently fails due glob resolution in this environment (`node --test tests/**/*.test.mjs`).
+
+### Next
+- **Next prompt:** CM-03 formalize typed pending state taxonomy in persisted thread schema and migrate existing pendingQuestion/openOffer representations.

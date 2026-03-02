@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { classifyUserMessage, applyUserTurn, selectReplyAnchor } from "../packages/polar-runtime-core/src/routing-policy-engine.mjs";
+import { classifyUserMessage, applyUserTurn, selectReplyAnchor, resolveFocusContext } from "../packages/polar-runtime-core/src/routing-policy-engine.mjs";
 
 test("routing-policy-engine override beats everything", () => {
     const sessionState = {
@@ -106,4 +106,72 @@ test("routing-policy-engine selectReplyAnchor rules", () => {
     };
     const c6 = { type: "status_nudge", targetThreadId: "t2" };
     assert.equal(selectReplyAnchor({ sessionState: s6, classification: c6 }).useInlineReply, false);
+});
+
+
+test("focus resolver prioritizes reply anchor over lane recency", () => {
+    const sessionState = {
+        activeThreadId: "t2",
+        threads: [
+            { id: "t1", status: "waiting_for_user", laneThreadKey: "topic:1", pendingQuestion: { askedAtMessageId: "m-older", text: "Retry tool?" }, lastActivityTs: 10 },
+            { id: "t2", status: "in_progress", laneThreadKey: "topic:1", summary: "Draft email to Alex", lastActivityTs: 20 }
+        ]
+    };
+    const focus = resolveFocusContext({
+        sessionState,
+        laneThreadKey: "topic:1",
+        replyToMessageId: "m-older",
+    });
+    assert.equal(focus.focusThreadId, "t1");
+    assert.equal(focus.source, "reply_anchor");
+});
+
+test("pending slot applies only on expected type and clears on mismatch", () => {
+    const sessionState = {
+        activeThreadId: "t1",
+        threads: [
+            { id: "t1", status: "waiting_for_user", laneThreadKey: "topic:42", slots: {}, pendingQuestion: { key: "location", expectedType: "location", text: "Which city?" }, lastActivityTs: 100 }
+        ]
+    };
+
+    const fit = classifyUserMessage({ text: "Swansea", sessionState, laneThreadKey: "topic:42" });
+    assert.equal(fit.type, "answer_to_pending");
+
+    const mismatch = classifyUserMessage({ text: "do that via sub-agent", sessionState, laneThreadKey: "topic:42" });
+    assert.equal(mismatch.type, "new_request");
+    assert.equal(mismatch.clearPendingThreadId, "t1");
+
+    const next = applyUserTurn({ sessionState, classification: mismatch, rawText: "do that via sub-agent", laneThreadKey: "topic:42", now: 200 });
+    const thread = next.threads.find((entry) => entry.id === "t1");
+    assert.equal(thread.pendingQuestion, undefined);
+});
+
+test("focus context lane recency keeps 'that' on latest lane task", () => {
+    const sessionState = {
+        activeThreadId: "old",
+        threads: [
+            {
+                id: "old",
+                status: "waiting_for_user",
+                laneThreadKey: "topic:9",
+                pendingQuestion: { key: "confirm", expectedType: "yes_no", text: "Retry failed weather tool?", askedAtMessageId: "m-retry" },
+                lastActivityTs: 100,
+            },
+            {
+                id: "latest",
+                status: "in_progress",
+                laneThreadKey: "topic:9",
+                summary: "Send update email",
+                lastActivityTs: 200,
+            },
+        ],
+    };
+
+    const classification = classifyUserMessage({
+        text: "do that via sub-agent",
+        sessionState,
+        laneThreadKey: "topic:9",
+    });
+    assert.equal(classification.focusContext.focusThreadId, "latest");
+    assert.equal(classification.focusContext.focusAnchorTextSnippet, "Send update email");
 });

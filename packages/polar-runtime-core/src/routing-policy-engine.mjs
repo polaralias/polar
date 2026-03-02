@@ -846,7 +846,75 @@ export function handleRepairSelection(sessionState, selection, correlationId, re
  * @param {Object} args.sessionState The current threads in the session
  * @returns {{ type: 'override'|'answer_to_pending'|'status_nudge'|'new_request'|'filler', targetThreadId?: string, intent?: string, slotKey?: string, slotValue?: string }}
  */
-export function classifyUserMessage({ text = "", sessionState = { threads: [], activeThreadId: null }, now = Date.now() }) {
+function findPendingThreadForFocus({ sessionState, focusThreadId }) {
+  if (focusThreadId) {
+    const focused = sessionState.threads.find((thread) => thread.id === focusThreadId);
+    if (focused?.status === "waiting_for_user" && focused.pendingQuestion) {
+      return focused;
+    }
+  }
+  return [...sessionState.threads].reverse().find((thread) => thread.status === "waiting_for_user" && thread.pendingQuestion);
+}
+
+/**
+ * Deterministic focus resolution:
+ * 1) explicit reply anchor wins
+ * 2) then lane recency
+ * 3) fallback to active thread
+ */
+export function resolveFocusContext({
+  sessionState = { threads: [], activeThreadId: null },
+  replyToMessageId,
+  laneThreadKey,
+}) {
+  if (replyToMessageId) {
+    const replyAnchoredThread = sessionState.threads.find((thread) => {
+      const pending = thread.pendingQuestion;
+      const openOffer = thread.openOffer;
+      const error = thread.lastError;
+      return pending?.channelMessageId === replyToMessageId
+        || pending?.askedAtMessageId === replyToMessageId
+        || openOffer?.channelMessageId === replyToMessageId
+        || openOffer?.askedAtMessageId === replyToMessageId
+        || error?.channelMessageId === replyToMessageId
+        || error?.messageId === replyToMessageId;
+    });
+    if (replyAnchoredThread) {
+      return {
+        source: "reply_anchor",
+        focusThreadId: replyAnchoredThread.id,
+        focusAnchorChannelId: replyToMessageId,
+        focusAnchorInternalId: replyAnchoredThread.pendingQuestion?.askedAtMessageId || replyAnchoredThread.openOffer?.askedAtMessageId || replyAnchoredThread.lastError?.messageId,
+        focusAnchorTextSnippet: replyAnchoredThread.pendingQuestion?.text || replyAnchoredThread.openOffer?.target || replyAnchoredThread.summary || "",
+      };
+    }
+  }
+
+  if (laneThreadKey) {
+    const laneRecent = [...sessionState.threads]
+      .filter((thread) => thread.laneThreadKey === laneThreadKey)
+      .sort((left, right) => (right.lastActivityTs || 0) - (left.lastActivityTs || 0))[0];
+    if (laneRecent) {
+      return {
+        source: "lane_recency",
+        focusThreadId: laneRecent.id,
+        focusAnchorInternalId: laneRecent.pendingQuestion?.askedAtMessageId || laneRecent.openOffer?.askedAtMessageId || laneRecent.lastError?.messageId,
+        focusAnchorChannelId: laneRecent.pendingQuestion?.channelMessageId || laneRecent.openOffer?.channelMessageId || laneRecent.lastError?.channelMessageId,
+        focusAnchorTextSnippet: laneRecent.pendingQuestion?.text || laneRecent.openOffer?.target || laneRecent.summary || "",
+      };
+    }
+  }
+
+  return {
+    source: "active_thread",
+    focusThreadId: sessionState.activeThreadId || null,
+    focusAnchorInternalId: null,
+    focusAnchorChannelId: null,
+    focusAnchorTextSnippet: "",
+  };
+}
+
+export function classifyUserMessage({ text = "", sessionState = { threads: [], activeThreadId: null }, now = Date.now(), replyToMessageId, laneThreadKey }) {
   const normalized = text.toLowerCase().trim().replace(/[?!.]+$/, "");
 
   // Override verbs — if present in a reversal phrase, route to override not accept.
@@ -986,9 +1054,8 @@ export function classifyUserMessage({ text = "", sessionState = { threads: [], a
   }
 
   // 4) Answer to pending question
-  const pendingThread = [...sessionState.threads].reverse().find(t =>
-    t.status === 'waiting_for_user' && t.pendingQuestion
-  );
+  const focusContext = resolveFocusContext({ sessionState, replyToMessageId, laneThreadKey });
+  const pendingThread = findPendingThreadForFocus({ sessionState, focusThreadId: focusContext.focusThreadId });
 
   if (pendingThread) {
     const { expectedType } = pendingThread.pendingQuestion;
@@ -997,9 +1064,15 @@ export function classifyUserMessage({ text = "", sessionState = { threads: [], a
         type: "answer_to_pending",
         targetThreadId: pendingThread.id,
         slotKey: pendingThread.pendingQuestion.key,
-        slotValue: text
+        slotValue: text,
+        focusContext,
       };
     }
+    return {
+      type: "new_request",
+      clearPendingThreadId: pendingThread.id,
+      focusContext,
+    };
   }
 
   // 5) Filler (e.g. "thanks", "cool") - non-mutating
@@ -1009,7 +1082,7 @@ export function classifyUserMessage({ text = "", sessionState = { threads: [], a
   }
 
   // 6) New request
-  return { type: "new_request" };
+  return { type: "new_request", focusContext };
 }
 
 /**
@@ -1044,7 +1117,7 @@ function isFittedAnswer(text, expectedType) {
 /**
  * Mutates session state deterministically based on classification.
  */
-export function applyUserTurn({ sessionState = { threads: [], activeThreadId: null }, classification: classificationArg, rawText, now }) {
+export function applyUserTurn({ sessionState = { threads: [], activeThreadId: null }, classification: classificationArg, rawText, now, laneThreadKey }) {
   const ts = typeof now === 'function' ? now() : (now || Date.now());
 
   const nextState = {
@@ -1062,6 +1135,13 @@ export function applyUserTurn({ sessionState = { threads: [], activeThreadId: nu
 
   const classification = classificationArg || classifyUserMessage({ text: rawText, sessionState, now: ts });
 
+  if (classification.clearPendingThreadId) {
+    const pendingThread = nextState.threads.find((thread) => thread.id === classification.clearPendingThreadId);
+    if (pendingThread) {
+      delete pendingThread.pendingQuestion;
+    }
+  }
+
   if (classification.type === "new_request") {
     const newThread = {
       id: crypto.randomUUID(),
@@ -1070,7 +1150,8 @@ export function applyUserTurn({ sessionState = { threads: [], activeThreadId: nu
       status: "in_progress",
       summary: rawText.substring(0, 50) + (rawText.length > 50 ? "..." : ""),
       lastActivityTs: ts,
-      createdAt: ts
+      createdAt: ts,
+      ...(laneThreadKey ? { laneThreadKey } : {}),
     };
     nextState.threads.push(newThread);
     nextState.activeThreadId = newThread.id;
@@ -1081,6 +1162,9 @@ export function applyUserTurn({ sessionState = { threads: [], activeThreadId: nu
       thread.status = "in_progress";
       delete thread.pendingQuestion;
       thread.lastActivityTs = ts;
+      if (laneThreadKey) {
+        thread.laneThreadKey = laneThreadKey;
+      }
       nextState.activeThreadId = thread.id;
     }
   }
@@ -1095,6 +1179,9 @@ export function applyUserTurn({ sessionState = { threads: [], activeThreadId: nu
       }
       delete thread.pendingQuestion;
       thread.lastActivityTs = ts;
+      if (laneThreadKey) {
+        thread.laneThreadKey = laneThreadKey;
+      }
       nextState.activeThreadId = thread.id;
     }
   }
@@ -1102,6 +1189,9 @@ export function applyUserTurn({ sessionState = { threads: [], activeThreadId: nu
     const thread = nextState.threads.find(t => t.id === classification.targetThreadId);
     if (thread) {
       thread.lastActivityTs = ts;
+      if (laneThreadKey) {
+        thread.laneThreadKey = laneThreadKey;
+      }
       nextState.activeThreadId = thread.id;
     }
   }
@@ -1124,6 +1214,9 @@ export function applyUserTurn({ sessionState = { threads: [], activeThreadId: nu
         if (recent) recent.outcome = 'accepted';
       }
       thread.lastActivityTs = ts;
+      if (laneThreadKey) {
+        thread.laneThreadKey = laneThreadKey;
+      }
       nextState.activeThreadId = thread.id;
     }
   }
@@ -1139,6 +1232,9 @@ export function applyUserTurn({ sessionState = { threads: [], activeThreadId: nu
         delete thread.openOffer;
       }
       thread.lastActivityTs = ts;
+      if (laneThreadKey) {
+        thread.laneThreadKey = laneThreadKey;
+      }
       nextState.activeThreadId = thread.id;
     }
   }
