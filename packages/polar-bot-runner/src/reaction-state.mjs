@@ -1,17 +1,17 @@
 const REACTION_EMOJI_BY_STATE = Object.freeze({
   received: "👀",
   thinking: "✍",
-  waiting_user: "🤔",
-  done: "👌",
-  error: "👎",
+  waiting_user: "⏳",
+  done: "✅",
+  error: "❌",
 });
 
 const REACTION_CANDIDATE_EMOJIS_BY_STATE = Object.freeze({
   received: Object.freeze(["👀", "❤"]),
   thinking: Object.freeze(["✍", "👨‍💻"]),
-  waiting_user: Object.freeze(["🤔", "🙏"]),
-  done: Object.freeze(["👌", "👍"]),
-  error: Object.freeze(["👎", "😢"]),
+  waiting_user: Object.freeze(["⏳", "🤔"]),
+  done: Object.freeze(["✅", "👌"]),
+  error: Object.freeze(["❌", "👎"]),
 });
 
 const CONFIGURED_REACTION_EMOJIS = Object.freeze(

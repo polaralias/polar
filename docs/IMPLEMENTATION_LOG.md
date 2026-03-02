@@ -1911,3 +1911,35 @@ Commands run and outcomes:
 
 ### Next
 - **Next prompt:** CM-06 persist clarification-needed pending state as typed pending entry and route short disambiguation replies through deterministic selection handling.
+
+## 2026-03-02 (UTC) - Prompt CM-06: Emoji state machine verification (no regressions)
+
+**Branch:** `main`  
+**Commit:** `ac4264f`  
+**Prompt reference:** `CM-06 emoji state machine verification`  
+**Specs referenced:**
+- `docs/specs/EMOJI_SUPPORT_AND_STATE_MACHINE.md`
+
+### Summary
+- Realigned Telegram reaction state candidates with the emoji state-machine spec (`waiting_user` prefers ⏳, `done` prefers ✅, and `error` prefers ❌ with safe fallbacks).
+- Updated reaction-state regression tests to verify waiting_user fallback behavior against unsupported emojis and done-state transition expectations.
+- Added a regression test asserting chats are not globally reaction-disabled once any emoji reaction has succeeded (`hasAnySuccess` invariant).
+
+### Scope and decisions
+- **In scope:** Telegram reaction state machine constants and unit-test coverage for fallback, hasAnySuccess, and workflow callback transitions.
+- **Out of scope:** broader Telegram runner callback routing changes beyond reaction state transitions.
+- **Key decisions:**
+  - Kept per-chat unsupported emoji cache semantics unchanged and validated by tests.
+  - Retained callback-driven `waiting_user -> done` transition flow and timer-based clear behavior.
+
+### Tests and validation
+Commands run and outcomes:
+- `node --test tests/telegram-reaction-state.test.mjs` - ✅
+- `npm test` - ⚠️ (suite execution hangs in this environment before process exit despite all emitted subtests passing)
+- `npm run check:boundaries` - ✅
+
+### Blockers
+- `npm test` did not terminate cleanly in this environment (Node test runner process remained active after hundreds of passing subtests), so a full pass/fail exit code was not obtainable.
+
+### Next
+- **Next prompt:** CM-07 verify Telegram callback handlers cover all workflow decision paths with deterministic origin message resolution.
