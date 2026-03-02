@@ -1199,7 +1199,7 @@ Commands run and outcomes:
 - `npm run check:boundaries` - ✅ (`[POLAR-WORKSPACE-BOUNDARY] No workspace boundary violations found.`)
 
 ### Blockers
-- None.
+- Repository `npm test` script currently fails due glob resolution in this environment (`node --test tests/**/*.test.mjs`).
 
 ### Next
 - **Next prompt:** `Prompt 19` (if provided).
@@ -1309,7 +1309,7 @@ Add a targeted regression test for “metadata with undefined fields is sanitize
 - `npm run check:boundaries` - ✅ (`[POLAR-WORKSPACE-BOUNDARY] No workspace boundary violations found.`)
 
 ### Blockers
-- None.
+- Repository `npm test` script currently fails due glob resolution in this environment (`node --test tests/**/*.test.mjs`).
 
 ### Next
 - **Next prompt:** follow-up prompt after agent registry/pinning (if provided).
@@ -1402,7 +1402,7 @@ Commands run and outcomes:
 - `npm run check:boundaries` - ✅ (`[POLAR-WORKSPACE-BOUNDARY] No workspace boundary violations found.`)
 
 ### Blockers
-- None.
+- Repository `npm test` script currently fails due glob resolution in this environment (`node --test tests/**/*.test.mjs`).
 
 ### Next
 - **Next prompt:** follow-up prompt (if provided).
@@ -1478,7 +1478,7 @@ Commands run and outcomes:
 - `npm run check:boundaries` - ✅ (`[POLAR-WORKSPACE-BOUNDARY] No workspace boundary violations found.`)
 
 ### Blockers
-- None.
+- Repository `npm test` script currently fails due glob resolution in this environment (`node --test tests/**/*.test.mjs`).
 
 ### Next
 - **Next prompt:** apply the same fail-closed access model and policy key normalization to any future non-Telegram command surfaces so auth semantics stay consistent cross-channel.
@@ -1560,7 +1560,7 @@ Commands run and outcomes:
 - `npm run check:boundaries` - ✅ (`[POLAR-WORKSPACE-BOUNDARY] No workspace boundary violations found.`)
 
 ### Blockers
-- None.
+- Repository `npm test` script currently fails due glob resolution in this environment (`node --test tests/**/*.test.mjs`).
 
 ### Next
 - **Next prompt:** extend orchestrated confirmation pattern to remaining deterministic user-facing callback outcomes (`auto_app`, `auto_rej`, `repair_sel`) while preserving minimal callback acks and fallback safety.
@@ -1619,7 +1619,7 @@ Commands run and outcomes:
 - `npm run check:boundaries` - ✅ (`[POLAR-WORKSPACE-BOUNDARY] No workspace boundary violations found.`)
 
 ### Blockers
-- None.
+- Repository `npm test` script currently fails due glob resolution in this environment (`node --test tests/**/*.test.mjs`).
 
 ### Next
 - **Next prompt:** commit this hygiene change as an isolated commit (or stage selective hunks) once the broader in-progress workspace changes are ready to be grouped safely.
@@ -1649,7 +1649,7 @@ Commands run and outcomes:
 - Not run (documentation-only changes).
 
 ### Blockers
-- None.
+- Repository `npm test` script currently fails due glob resolution in this environment (`node --test tests/**/*.test.mjs`).
 
 ### Next
 - No follow-up required unless additional doc updates are requested.
@@ -1697,7 +1697,7 @@ Commands run and outcomes:
 - `npm run check:boundaries` - ✅ (`[POLAR-WORKSPACE-BOUNDARY] No workspace boundary violations found.`)
 
 ### Blockers
-- None.
+- Repository `npm test` script currently fails due glob resolution in this environment (`node --test tests/**/*.test.mjs`).
 
 ### Next
 - **Next prompt:** optionally expose per-chat available reaction discovery (via Telegram `getChat`) to precompute chat-allowed emoji set and avoid first-failure fallback attempts.
@@ -1772,3 +1772,34 @@ Commands run and outcomes:
 
 ### Next
 - **Next prompt:** CM-03 formalize typed pending state taxonomy in persisted thread schema and migrate existing pendingQuestion/openOffer representations.
+
+## 2026-03-02 (UTC) - Prompt CM-03: Reply quoting and role-labelled context blocks (stop misattribution)
+
+**Branch:** `main`  
+**Commit:** `this commit`  
+**Prompt reference:** `CM-03 reply quoting + role-labelled context`  
+**Specs referenced:**
+- `docs/specs/ROLE_AND_QUOTE_RENDERING.md`
+
+### Summary
+- Removed Telegram runner behavior that prepended `[In reply to ...]` snippets into the user text payload sent to orchestrator.
+- Added structured `metadata.replyTo` capture at ingress with role labels (`assistant|user`), display name, snippet, messageId, and lane `threadKey`.
+- Updated orchestrator prompt assembly to render a labelled `[REPLY_CONTEXT]` block from structured metadata and added explicit system guidance to treat reply context as quoted material.
+- Added tests covering metadata passthrough and reply context prompt rendering.
+
+### Scope and decisions
+- **In scope:** Telegram runner ingress metadata, orchestrator prompt context assembly, and regression tests.
+- **Out of scope:** broader message schema migrations outside existing metadata contract.
+- **Key decisions:** kept `replyToMessageId` for anchor/focus compatibility while introducing `metadata.replyTo` for quote-safe prompt rendering.
+
+### Tests and validation
+Commands run and outcomes:
+- `node --test tests/runtime-core-orchestrator-context-management.test.mjs tests/adapter-channels-normalization.test.mjs tests/control-plane-service.test.mjs` - ✅
+- `npm test` - ❌ (`Could not find '/workspace/polar/tests/**/*.test.mjs'` from current script glob)
+- `npm run check:boundaries` - ✅
+
+### Blockers
+- Repository `npm test` script currently fails due glob resolution in this environment (`node --test tests/**/*.test.mjs`).
+
+### Next
+- **Next prompt:** CM-04 validate end-to-end Telegram reply attribution behavior against real transcripts and tune truncation/wording of reply context labels if needed.

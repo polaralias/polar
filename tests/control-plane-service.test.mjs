@@ -369,6 +369,7 @@ test("control-plane keeps Telegram reply turns in one session and preserves thre
           source: "telegram",
           chatId: "chat-42",
           fromId: "user-7",
+          threadKey: "root:chat-42",
         },
       },
       {
@@ -383,6 +384,7 @@ test("control-plane keeps Telegram reply turns in one session and preserves thre
           chatId: "chat-42",
           fromId: "user-7",
           replyToMessageId: "m-1",
+          threadKey: "reply:chat-42:m-1",
         },
       },
     ],

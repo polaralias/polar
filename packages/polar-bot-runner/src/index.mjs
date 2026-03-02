@@ -149,6 +149,26 @@ function resolveTelegramMessageContext(ctx) {
     return undefined;
 }
 
+function buildReplyToMetadata(replyMessage, threadKey) {
+    if (!replyMessage || typeof replyMessage !== "object") {
+        return undefined;
+    }
+    const rawSnippet = replyMessage.text || replyMessage.caption || "";
+    const snippet = String(rawSnippet).trim().slice(0, 180);
+    const isBot = replyMessage.from?.is_bot === true;
+    const displayName = replyMessage.from?.first_name || replyMessage.from?.username || undefined;
+    return {
+        messageId: replyMessage.message_id,
+        snippet,
+        from: {
+            isBot,
+            ...(displayName ? { displayName } : {}),
+            role: isBot ? "assistant" : "user",
+        },
+        threadKey,
+    };
+}
+
 /**
  * Resolve normalized Telegram chat context from control-plane ingress contracts.
  * Session identity is always chat-scoped (`telegram:chat:<chatId>`); thread context
@@ -183,6 +203,12 @@ async function resolvePolarSessionContext(ctx) {
         }
         if (messageContext?.reply_to_message?.message_id) {
             telegramPayload.replyToMessageId = messageContext.reply_to_message.message_id;
+            const replyTo = buildReplyToMetadata(messageContext.reply_to_message, deriveThreadKey(messageContext));
+            if (replyTo) {
+                telegramPayload.metadata = {
+                    replyTo,
+                };
+            }
         }
 
         const envelope = await controlPlane.normalizeIngress({
@@ -353,17 +379,12 @@ async function processGroupedMessages(polarSessionId, items) {
 
         let userText = "";
         for (const { ctx: c } of items) {
-            let chunkText = c.message.text || "";
-            if (c.message.reply_to_message) {
-                const r = c.message.reply_to_message;
-                let snippet = r.text || r.caption || "a message";
-                if (snippet.length > 80) snippet = snippet.substring(0, 80) + "...";
-                const author = r.from?.first_name || (r.from?.is_bot ? "Bot/Sub-Agent" : "Someone");
-                chunkText = `[In reply to ${author}: "${snippet}"]\n${chunkText}`;
-            }
+            const chunkText = c.message.text || "";
             if (userText) userText += "\n\n";
             userText += chunkText;
         }
+
+        const replyTo = buildReplyToMetadata(ctx.message.reply_to_message, threadKey);
 
         await setReactionState(ctx, ctx.chat.id, telegramMessageId, 'thinking');
 
@@ -378,6 +399,7 @@ async function processGroupedMessages(polarSessionId, items) {
                     : {}),
                 threadKey,
                 replyToMessageId: ctx.message.reply_to_message?.message_id,
+                ...(replyTo ? { replyTo } : {}),
                 ...(ctx.message.message_thread_id !== undefined
                     ? { messageThreadId: ctx.message.message_thread_id }
                     : {}),

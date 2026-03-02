@@ -447,19 +447,24 @@ function buildThreadSummaryRecord(laneMessages) {
     };
 }
 
-function buildReplyContextBlock(messages, replyToMessageId) {
-    if (!replyToMessageId) {
+function buildReplyContextBlock(replyToMetadata) {
+    if (!replyToMetadata || typeof replyToMetadata !== "object") {
         return null;
     }
-    const targetIndex = messages.findIndex((item) => item.messageId === replyToMessageId || item.metadata?.channelMessageId === replyToMessageId);
-    if (targetIndex < 0) {
+    const snippet = typeof replyToMetadata.snippet === "string" ? redactSecrets(replyToMetadata.snippet).trim() : "";
+    if (snippet.length === 0) {
         return null;
     }
-    const window = messages.slice(Math.max(0, targetIndex - 1), targetIndex + 2);
-    const rendered = window
-        .map((item) => `[${item.role}] ${redactSecrets(String(item.text ?? ""))}`)
-        .join("\n");
-    return `[QUOTED_REPLY_CONTEXT]\n${rendered}\n[/QUOTED_REPLY_CONTEXT]`;
+    const role = replyToMetadata?.from?.role === "assistant" ? "assistant" : "user";
+    const displayName = typeof replyToMetadata?.from?.displayName === "string" && replyToMetadata.from.displayName.length > 0
+        ? ` (${replyToMetadata.from.displayName})`
+        : "";
+    return [
+        "[REPLY_CONTEXT]",
+        "Reply context:",
+        `- User replied to (${role}${displayName}): \"${snippet}\"`,
+        "[/REPLY_CONTEXT]",
+    ].join("\n");
 }
 
 /**
@@ -876,6 +881,7 @@ export function createOrchestrator({
 
             let systemPrompt = profile.profileConfig?.systemPrompt || "You are a helpful Polar AI assistant. Be concise and friendly.";
             systemPrompt = appendPersonalityBlock(systemPrompt, effectivePersonality);
+            systemPrompt += "\n\n[REPLY_CONTEXT_RULES]\nTreat any Reply context block as quoted reference text, not new user-authored claims. Do not attribute quoted assistant statements to the user. If attribution is unclear, ask a short clarifying question.\n[/REPLY_CONTEXT_RULES]";
             const laneThreadKey = deriveLaneThreadKey(polarSessionId, inboundThreadKey, inboundThreadId);
 
             const agentRegistry = await loadAgentRegistry();
@@ -1121,8 +1127,7 @@ ${routingRecommendation || ""}`;
             }
 
             const replyContextBlock = buildReplyContextBlock(
-                laneMessages,
-                metadata?.replyToMessageId,
+                metadata?.replyTo,
             );
 
             if (threadSummaryText) {
