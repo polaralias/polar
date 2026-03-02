@@ -15,6 +15,7 @@ import { validateForwardSkills, validateModelOverride, computeCapabilityScope } 
 import { classifyUserMessage, applyUserTurn, selectReplyAnchor, detectOfferInText, setOpenOffer, computeRepairDecision, handleRepairSelection } from './routing-policy-engine.mjs';
 import { evaluateCapabilityApprovalRequirement } from './extension-gateway.mjs';
 import { parseModelProposal, expandTemplate, validateSteps } from './workflow-engine.mjs';
+import { normalizeToolWorkflowError } from './tool-workflow-error-normalizer.mjs';
 
 const repairPhrasingSchema = createStrictObjectSchema({
     schemaId: 'orchestrator.repair.phrasing',
@@ -556,6 +557,27 @@ export function createOrchestrator({
         }
 
         await resolvedLineageStore.append(event);
+    }
+
+    function clearTerminalPendingState(sessionId, threadId) {
+        const state = SESSION_THREADS.get(sessionId);
+        if (!state || !threadId) {
+            return;
+        }
+        const thread = state.threads.find((candidate) => candidate.id === threadId);
+        if (!thread) {
+            return;
+        }
+        delete thread.pendingQuestion;
+        delete thread.openOffer;
+        if (Array.isArray(thread.recentOffers)) {
+            thread.recentOffers = thread.recentOffers.map((offer) =>
+                offer?.outcome === 'pending'
+                    ? { ...offer, outcome: 'rejected' }
+                    : offer
+            );
+        }
+        thread.lastActivityTs = now();
     }
 
     /**
@@ -1615,21 +1637,68 @@ ${routingRecommendation || ""}`;
                     if (destructiveRequirementKeys.has(stepKey) && !options.isAutoRun) {
                         metadata.approvalContext = { workflowId, runId };
                     }
-                    const output = await extensionGateway.execute({
-                        extensionId,
-                        extensionType,
-                        capabilityId,
-                        sessionId: polarSessionId,
-                        userId,
-                        input: parsedArgs,
-                        capabilityScope,
-                        metadata,
-                    });
-                    const stepStatus = output?.status || "completed";
-                    toolResults.push({ tool: capabilityId, status: stepStatus, output: output?.output || output?.error || "Done." });
+                    try {
+                        const output = await extensionGateway.execute({
+                            extensionId,
+                            extensionType,
+                            capabilityId,
+                            sessionId: polarSessionId,
+                            userId,
+                            input: parsedArgs,
+                            capabilityScope,
+                            metadata,
+                        });
+                        const stepStatus = output?.status || "completed";
+                        toolResults.push({ tool: capabilityId, status: stepStatus, output: output?.output || output?.error || "Done." });
 
-                    // Record lastError on owning thread if step failed
-                    if (stepStatus === 'failed' || stepStatus === 'error') {
+                        // Record lastError on owning thread if step failed
+                        if (stepStatus === 'failed' || stepStatus === 'error') {
+                            st = SESSION_THREADS.get(polarSessionId);
+                            if (st && targetThreadId) {
+                                const thread = st.threads.find(t => t.id === targetThreadId);
+                                if (thread) {
+                                    thread.lastError = {
+                                        runId, workflowId, threadId: targetThreadId,
+                                        extensionId, capabilityId,
+                                        output: toErrorSnippet(output?.error || output?.output, 'Unknown error'),
+                                        messageId: `msg_err_${crypto.randomUUID()}`, timestampMs: now()
+                                    };
+                                    thread.status = 'failed';
+                                    delete thread.inFlight;
+                                }
+                            }
+                            break;
+                        }
+                    } catch (error) {
+                        const normalized = normalizeToolWorkflowError({
+                            error,
+                            extensionId,
+                            capabilityId,
+                            workflowId,
+                            runId,
+                            threadId: targetThreadId,
+                        });
+                        toolResults.push({
+                            tool: capabilityId,
+                            status: 'error',
+                            output: normalized.userMessage,
+                            category: normalized.category,
+                            retryEligible: normalized.retryEligible,
+                        });
+                        if (normalized.clearPending) {
+                            clearTerminalPendingState(polarSessionId, targetThreadId);
+                        }
+                        await emitLineageEvent({
+                            eventType: 'workflow.execution.error_normalized',
+                            sessionId: polarSessionId,
+                            userId,
+                            workflowId,
+                            runId,
+                            threadId: targetThreadId,
+                            extensionId,
+                            capabilityId,
+                            metadata: normalized.auditMetadata,
+                        });
                         st = SESSION_THREADS.get(polarSessionId);
                         if (st && targetThreadId) {
                             const thread = st.threads.find(t => t.id === targetThreadId);
@@ -1637,13 +1706,14 @@ ${routingRecommendation || ""}`;
                                 thread.lastError = {
                                     runId, workflowId, threadId: targetThreadId,
                                     extensionId, capabilityId,
-                                    output: toErrorSnippet(output?.error || output?.output, 'Unknown error'),
+                                    output: normalized.userMessage,
                                     messageId: `msg_err_${crypto.randomUUID()}`, timestampMs: now()
                                 };
                                 thread.status = 'failed';
                                 delete thread.inFlight;
                             }
                         }
+                        break;
                     }
                 }
 
@@ -1681,16 +1751,20 @@ ${routingRecommendation || ""}`;
                     finalSystemPromptBase || "You are a helpful Polar AI assistant. Be concise and friendly.",
                     effectivePersonality,
                 );
-                const finalResult = await providerGateway.generate({
-                    executionType: "handoff",
-                    providerId: activeDelegation?.pinnedProvider || profile.profileConfig?.modelPolicy?.providerId || "openai",
-                    model: activeDelegation?.model_override || profile.profileConfig?.modelPolicy?.modelId || "gpt-4.1-mini",
-                    system: finalSystemPrompt,
-                    messages: historyData?.items ? historyData.items.map(m => ({ role: m.role, content: m.text })) : [],
-                    prompt: `Analyze these execution results and summarize for the user. Do NOT hide any failures listed in the header.\n\n${deterministicHeader}`
-                });
-
-                const responseText = finalResult?.text || "Execution complete.";
+                const normalizedFailures = toolResults.filter((result) => result.status === 'error' && typeof result.category === 'string');
+                const shouldUseDeterministicFailureText = normalizedFailures.length > 0;
+                const responseText = shouldUseDeterministicFailureText
+                    ? normalizedFailures
+                        .map((failure) => `- ${failure.output}`)
+                        .join('\n')
+                    : (await providerGateway.generate({
+                        executionType: "handoff",
+                        providerId: activeDelegation?.pinnedProvider || profile.profileConfig?.modelPolicy?.providerId || "openai",
+                        model: activeDelegation?.model_override || profile.profileConfig?.modelPolicy?.modelId || "gpt-4.1-mini",
+                        system: finalSystemPrompt,
+                        messages: historyData?.items ? historyData.items.map(m => ({ role: m.role, content: m.text })) : [],
+                        prompt: `Analyze these execution results and summarize for the user. Do NOT hide any failures listed in the header.\n\n${deterministicHeader}`
+                    }))?.text || "Execution complete.";
                 const cleanText = responseText.replace(/<polar_action>[\s\S]*?<\/polar_action>/, '').replace(/<thread_state>[\s\S]*?<\/thread_state>/, '').trim();
 
                 const assistantMessageId = `msg_ast_${crypto.randomUUID()}`;
@@ -1710,6 +1784,14 @@ ${routingRecommendation || ""}`;
                     }).useInlineReply
                 };
             } catch (err) {
+                const normalized = normalizeToolWorkflowError({
+                    error: err,
+                    extensionId: 'orchestrator',
+                    capabilityId: 'executeWorkflow',
+                    workflowId,
+                    runId,
+                    threadId: targetThreadId,
+                });
                 // Crash path: record lastError on the owning thread (using stored threadId)
                 let internalMessageId;
                 st = SESSION_THREADS.get(polarSessionId);
@@ -1719,7 +1801,7 @@ ${routingRecommendation || ""}`;
                         thread.lastError = {
                             runId, workflowId, threadId: targetThreadId,
                             extensionId: 'orchestrator', capabilityId: 'executeWorkflow',
-                            output: err.message?.slice(0, 300) || 'Unknown crash',
+                            output: normalized.userMessage,
                             messageId: `msg_err_${crypto.randomUUID()}`, timestampMs: now()
                         };
                         internalMessageId = thread.lastError.messageId;
@@ -1730,7 +1812,21 @@ ${routingRecommendation || ""}`;
                     // Keep failed thread active — don't let next message spawn a greeting
                     st.activeThreadId = targetThreadId;
                 }
-                return { status: 'error', text: `Crashed: ${err.message}`, internalMessageId };
+                if (normalized.clearPending) {
+                    clearTerminalPendingState(polarSessionId, targetThreadId);
+                }
+                await emitLineageEvent({
+                    eventType: 'workflow.execution.error_normalized',
+                    sessionId: polarSessionId,
+                    userId,
+                    workflowId,
+                    runId,
+                    threadId: targetThreadId,
+                    extensionId: 'orchestrator',
+                    capabilityId: 'executeWorkflow',
+                    metadata: normalized.auditMetadata,
+                });
+                return { status: 'error', text: normalized.userMessage, internalMessageId };
             } finally {
                 for (const grantId of transientGrantIds) {
                     approvalStore.revokeGrant(grantId);

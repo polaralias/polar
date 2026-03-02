@@ -539,3 +539,158 @@ test("orchestrator computes capability scope from skill-registry authority state
     assert.equal(extensionExecutions.length, 1);
   });
 });
+
+test("tool unavailable returns stable response and clears pending slot state", async () => {
+  await withUnrefedIntervals(async () => {
+    const providerCalls = [];
+    let callIndex = 0;
+    const orchestrator = createOrchestrator({
+      profileResolutionGateway: {
+        async resolve() {
+          return {
+            profileConfig: {
+              systemPrompt: "You are a test assistant.",
+              modelPolicy: { providerId: "test-provider", modelId: "test-model" },
+            },
+          };
+        },
+      },
+      chatManagementGateway: {
+        messages: [],
+        async appendMessage(message) {
+          this.messages.push(message);
+          return { status: "appended" };
+        },
+        async getSessionHistory({ sessionId, limit = 100 }) {
+          const items = this.messages
+            .filter((message) => message.sessionId === sessionId)
+            .map((message) => ({ role: message.role, text: message.text }));
+          return { items: items.slice(-limit) };
+        },
+      },
+      providerGateway: {
+        async generate(input) {
+          providerCalls.push(input);
+          callIndex += 1;
+          if (callIndex === 1) {
+            return {
+              text: '<thread_state>{"status":"waiting_for_user","pending_question":"Retry failed weather tool?","slot_key":"confirm","expected_type":"yes_no"}</thread_state>Confirm retry?',
+            };
+          }
+          if (callIndex === 2) {
+            return {
+              text: '<polar_action>{"template":"lookup_weather","args":{"location":"Swansea"}}</polar_action>Running now.',
+            };
+          }
+          return { text: "Thanks, noted." };
+        },
+      },
+      extensionGateway: {
+        getState() {
+          return {
+            extensionId: "weather",
+            lifecycleState: "enabled",
+            capabilities: [{ capabilityId: "lookup_weather", riskLevel: "read", sideEffects: "none" }],
+          };
+        },
+        listStates() {
+          return [];
+        },
+        async execute() {
+          throw new Error("Invalid extension.gateway.execute.request");
+        },
+      },
+      approvalStore: createApprovalStore(),
+      gateway: {
+        async getConfig() {
+          return { status: "not_found" };
+        },
+      },
+      now: Date.now,
+    });
+
+    await orchestrator.orchestrate({ sessionId: "session-pending", userId: "user-1", text: "hello", messageId: "m-1" });
+    const failedRun = await orchestrator.orchestrate({
+      sessionId: "session-pending",
+      userId: "user-1",
+      text: "run weather",
+      messageId: "m-2",
+    });
+
+    assert.equal(failedRun.status, "completed");
+    assert.match(failedRun.text, /isn't available in this deployment yet/);
+
+    await orchestrator.orchestrate({ sessionId: "session-pending", userId: "user-1", text: "yes", messageId: "m-3" });
+    const lastProviderCall = providerCalls.at(-1);
+    assert.ok(lastProviderCall?.system);
+    assert.equal(String(lastProviderCall.system).includes("explicit slot fill"), false);
+  });
+});
+
+test("internal contract bug during workflow append returns stable non-crashing error", async () => {
+  await withUnrefedIntervals(async () => {
+    const orchestrator = createOrchestrator({
+      profileResolutionGateway: {
+        async resolve() {
+          return {
+            profileConfig: {
+              systemPrompt: "You are a test assistant.",
+              modelPolicy: { providerId: "test-provider", modelId: "test-model" },
+            },
+          };
+        },
+      },
+      chatManagementGateway: {
+        async appendMessage(message) {
+          if (typeof message.text === "string" && message.text.startsWith("[TOOL RESULTS]")) {
+            throw new Error("Invalid chat.management.gateway.message.append.request");
+          }
+          return { status: "appended" };
+        },
+        async getSessionHistory() {
+          return { items: [] };
+        },
+      },
+      providerGateway: {
+        async generate() {
+          return {
+            text: '<polar_action>{"template":"lookup_weather","args":{"location":"Swansea"}}</polar_action>ok',
+          };
+        },
+      },
+      extensionGateway: {
+        getState() {
+          return {
+            extensionId: "weather",
+            lifecycleState: "enabled",
+            capabilities: [{ capabilityId: "lookup_weather", riskLevel: "read", sideEffects: "none" }],
+          };
+        },
+        listStates() {
+          return [];
+        },
+        async execute() {
+          return { status: "completed", output: "ok" };
+        },
+      },
+      approvalStore: createApprovalStore(),
+      gateway: {
+        async getConfig() {
+          return { status: "not_found" };
+        },
+      },
+      now: Date.now,
+    });
+
+    const result = await orchestrator.orchestrate({
+      sessionId: "session-contract",
+      userId: "user-contract",
+      text: "run weather",
+      messageId: "m-contract",
+    });
+
+    assert.equal(result.status, "error");
+    assert.match(result.text, /Something broke internally/);
+    assert.equal(result.text.includes("Crashed:"), false);
+  });
+});

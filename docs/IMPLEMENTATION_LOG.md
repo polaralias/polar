@@ -1803,3 +1803,39 @@ Commands run and outcomes:
 
 ### Next
 - **Next prompt:** CM-04 validate end-to-end Telegram reply attribution behavior against real transcripts and tune truncation/wording of reply context labels if needed.
+
+## 2026-03-02 (UTC) - Prompt CM-04: Tool/workflow failure normalisation (no loops, graceful degrade)
+
+**Branch:** `main`  
+**Commit:** `this commit`  
+**Prompt reference:** `CM-04 Tool/workflow failure normalisation`  
+**Specs referenced:**
+- `docs/specs/TOOL_FAILURE_NORMALISATION.md`
+- `docs/specs/WORKFLOW_EXECUTION_INTEGRITY.md`
+
+### Summary
+- Added runtime-core tool/workflow error normalisation with stable categories (`ToolUnavailable`, `ToolMisconfigured`, `ToolTransientError`, `ToolValidationError`, `InternalContractBug`) and auditing metadata payloads.
+- Integrated normalised error handling into orchestrator workflow execution to avoid crash loops, stop cascading step retries, and emit lineage events for debugging.
+- Added terminal pending-state cleanup for hard failure classes so stale retry/pending prompts no longer hijack follow-up turns.
+- Switched workflow failure user messaging to deterministic orchestrator output for normalised failures (avoids retry-offer spam from model phrasing).
+- Added tests covering unavailable-tool and append-contract-bug behaviour plus normaliser unit tests.
+
+### Scope and decisions
+- **In scope:** runtime-core workflow execution failure normalisation and orchestration output stability.
+- **Out of scope:** scheduler retry queue policy changes and channel-runner specific retry loops.
+- **Key decisions:**
+  - Treat unknown/unclassified workflow execution errors as `InternalContractBug` for safe fail-closed behaviour.
+  - Clear pending question/open-offer state only for terminal classes (`ToolUnavailable`, `ToolMisconfigured`, `InternalContractBug`) and map pending recent offers to rejected.
+  - Keep transient errors marked retry-eligible in metadata without auto-injecting user-facing “try again” language.
+
+### Tests and validation
+Commands run and outcomes:
+- `node --test tests/runtime-core-tool-workflow-error-normalizer.test.mjs tests/runtime-core-orchestrator-workflow-validation.test.mjs` - ✅
+- `npm test` - ❌ (`Could not find '/workspace/polar/tests/**/*.test.mjs'` from current script glob)
+- `npm run check:boundaries` - ✅
+
+### Blockers
+- Repository `npm test` script still fails in this environment due glob resolution (`node --test tests/**/*.test.mjs`).
+
+### Next
+- **Next prompt:** CM-05 workflow retry-intent gating and explicit user-confirmed transient retry execution path.
