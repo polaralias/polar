@@ -49,6 +49,10 @@ Proactive messaging should be:
 - rate-limited
 - quiet-hours aware
 
+## Failure handling
+- Tool failures such as `ToolUnavailable` and `InternalContractBug` must degrade gracefully (no crashes, no repeated retries) while returning a deterministic warning payload, and every occurrence must be logged through the audit sink so operators can trace the event without losing lane context.
+- Normalization must include capturing the request trace id, threadKey/lane, and failure type so post-mortem dashboards can correlate user-visible degradations with tool stability metrics.
+
 ## What is not acceptable
 - “We’re safe because the model will follow instructions.”
 - Any alternate execution path that bypasses the middleware chain.

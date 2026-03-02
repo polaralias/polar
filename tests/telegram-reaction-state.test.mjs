@@ -69,8 +69,8 @@ test("reaction lifecycle transitions waiting_user -> done -> clear using determi
     () => ({ chat: { id: 42 } }),
   );
   assert.equal(calls.length, 2);
-  assert.deepEqual(calls[0].payload, [{ type: "emoji", emoji: "⏳" }]);
-  assert.deepEqual(calls[1].payload, [{ type: "emoji", emoji: "✅" }]);
+  assert.deepEqual(calls[0].payload, [{ type: "emoji", emoji: "🤔" }]);
+  assert.deepEqual(calls[1].payload, [{ type: "emoji", emoji: "👌" }]);
 
   clock.advanceBy(999);
   assert.equal(calls.length, 2);
@@ -80,3 +80,29 @@ test("reaction lifecycle transitions waiting_user -> done -> clear using determi
   assert.deepEqual(calls[2].payload, []);
 });
 
+test("single unsupported emoji does not disable reactions when a fallback emoji succeeds", async () => {
+  const calls = [];
+  const controller = createTelegramReactionController();
+  const ctx = {
+    chat: { id: 42 },
+    telegram: {
+      async setMessageReaction(chatId, messageId, payload) {
+        const emoji = payload[0]?.emoji;
+        calls.push({ chatId, messageId, payload });
+        if (emoji === "🤔") {
+          throw new Error("400: Bad Request: REACTION_INVALID");
+        }
+      },
+    },
+  };
+
+  await controller.setReactionState(ctx, 42, 777, "waiting_user");
+  await controller.setReactionState(ctx, 42, 778, "waiting_user");
+  await controller.setReactionState(ctx, 42, 779, "done");
+
+  assert.equal(calls.length, 4);
+  assert.deepEqual(calls[0].payload, [{ type: "emoji", emoji: "🤔" }]);
+  assert.deepEqual(calls[1].payload, [{ type: "emoji", emoji: "🙏" }]);
+  assert.deepEqual(calls[2].payload, [{ type: "emoji", emoji: "🙏" }]);
+  assert.deepEqual(calls[3].payload, [{ type: "emoji", emoji: "👌" }]);
+});

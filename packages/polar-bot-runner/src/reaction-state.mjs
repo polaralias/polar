@@ -1,10 +1,26 @@
 const REACTION_EMOJI_BY_STATE = Object.freeze({
   received: "👀",
-  thinking: "✍️",
-  waiting_user: "⏳",
-  done: "✅",
-  error: "❌",
+  thinking: "✍",
+  waiting_user: "🤔",
+  done: "👌",
+  error: "👎",
 });
+
+const REACTION_CANDIDATE_EMOJIS_BY_STATE = Object.freeze({
+  received: Object.freeze(["👀", "❤"]),
+  thinking: Object.freeze(["✍", "👨‍💻"]),
+  waiting_user: Object.freeze(["🤔", "🙏"]),
+  done: Object.freeze(["👌", "👍"]),
+  error: Object.freeze(["👎", "😢"]),
+});
+
+const CONFIGURED_REACTION_EMOJIS = Object.freeze(
+  Array.from(
+    new Set(
+      Object.values(REACTION_CANDIDATE_EMOJIS_BY_STATE).flatMap((candidates) => candidates),
+    ),
+  ),
+);
 
 /**
  * @param {unknown} value
@@ -63,30 +79,64 @@ export function createTelegramReactionController(options = {}) {
   const reactionSupportByChat = new Map();
 
   /**
+   * @param {string|number} chatId
+   */
+  function getChatReactionSupport(chatId) {
+    let support = reactionSupportByChat.get(chatId);
+    if (!support) {
+      support = {
+        disabled: false,
+        hasAnySuccess: false,
+        unsupportedEmojis: new Set(),
+      };
+      reactionSupportByChat.set(chatId, support);
+    }
+    return support;
+  }
+
+  /**
    * @param {unknown} ctx
    * @param {string} emoji
    * @param {number} messageId
    * @param {string|number} chatId
    */
   async function safeReact(ctx, emoji, messageId, chatId) {
-    if (reactionSupportByChat.get(chatId) === false) {
+    const support = getChatReactionSupport(chatId);
+    if (support.disabled) {
+      return false;
+    }
+    if (support.unsupportedEmojis.has(emoji)) {
       return false;
     }
     try {
       await ctx.telegram.setMessageReaction(chatId, messageId, [
         { type: "emoji", emoji },
       ]);
-      reactionSupportByChat.set(chatId, true);
+      support.hasAnySuccess = true;
       return true;
     } catch (error) {
       const errorMessage = String(error?.message || "");
       if (errorMessage.includes("REACTION_INVALID")) {
-        if (reactionSupportByChat.get(chatId) !== false) {
+        const isNewlyUnsupported = !support.unsupportedEmojis.has(emoji);
+        support.unsupportedEmojis.add(emoji);
+        if (isNewlyUnsupported) {
           logger.warn?.(
-            `[REACTION_DISABLED] Chat ${chatId} does not support configured emoji reactions; disabling reactions for this chat.`,
+            `[REACTION_UNSUPPORTED] Chat ${chatId} does not support emoji ${emoji}; skipping this emoji for future reactions.`,
           );
         }
-        reactionSupportByChat.set(chatId, false);
+        if (
+          !support.hasAnySuccess &&
+          CONFIGURED_REACTION_EMOJIS.every((candidate) =>
+            support.unsupportedEmojis.has(candidate),
+          )
+        ) {
+          if (!support.disabled) {
+            logger.warn?.(
+              `[REACTION_DISABLED] Chat ${chatId} rejected all configured emoji reactions; disabling reactions for this chat.`,
+            );
+          }
+          support.disabled = true;
+        }
         return false;
       }
       logger.warn?.(
@@ -103,7 +153,8 @@ export function createTelegramReactionController(options = {}) {
    */
   async function clearReaction(ctx, chatId, inboundMessageId) {
     const reactionKey = createReactionKey(chatId, inboundMessageId);
-    if (reactionSupportByChat.get(chatId) === false) {
+    const support = getChatReactionSupport(chatId);
+    if (support.disabled) {
       reactionStateMap.delete(reactionKey);
       const timer = reactionClearTimers.get(reactionKey);
       if (timer) {
@@ -120,11 +171,13 @@ export function createTelegramReactionController(options = {}) {
     reactionClearRateLimit.set(reactionKey, nowMs);
     try {
       await ctx.telegram.setMessageReaction(chatId, inboundMessageId, []);
-      reactionSupportByChat.set(chatId, true);
+      support.hasAnySuccess = true;
     } catch (error) {
       const errorMessage = String(error?.message || "");
       if (errorMessage.includes("REACTION_INVALID")) {
-        reactionSupportByChat.set(chatId, false);
+        if (!support.hasAnySuccess) {
+          support.disabled = true;
+        }
         return;
       }
     } finally {
@@ -144,11 +197,12 @@ export function createTelegramReactionController(options = {}) {
    * @param {"received"|"thinking"|"waiting_user"|"done"|"error"} state
    */
   async function setReactionState(ctx, chatId, inboundMessageId, state) {
-    if (reactionSupportByChat.get(chatId) === false) {
+    const support = getChatReactionSupport(chatId);
+    if (support.disabled) {
       return;
     }
-    const emoji = REACTION_EMOJI_BY_STATE[state];
-    if (!emoji) {
+    const candidates = REACTION_CANDIDATE_EMOJIS_BY_STATE[state];
+    if (!candidates || candidates.length === 0) {
       return;
     }
     const reactionKey = createReactionKey(chatId, inboundMessageId);
@@ -156,7 +210,14 @@ export function createTelegramReactionController(options = {}) {
     if (existing?.state === state) {
       return;
     }
-    const applied = await safeReact(ctx, emoji, inboundMessageId, chatId);
+    let applied = false;
+    for (const emoji of candidates) {
+      // Try supported fallbacks before giving up to avoid disabling all reactions on a single bad emoji.
+      applied = await safeReact(ctx, emoji, inboundMessageId, chatId);
+      if (applied) {
+        break;
+      }
+    }
     if (!applied) {
       return;
     }
@@ -216,4 +277,3 @@ export function createTelegramReactionController(options = {}) {
     parseCallbackOriginMessageId,
   });
 }
-

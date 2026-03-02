@@ -42,6 +42,8 @@ Handlers return:
 - `{ handled: true, text: string, markdown?: boolean }`
 or throw a structured error that the runner catches and renders.
 
+Command confirmations (e.g. `/automations disable`, `/agents register`) are executed through `controlPlane.orchestrate` so they share the standard middleware/audit path, and their focus anchor is derived from the reply context blocks described in `docs/specs/FOCUS_CONTEXT_AND_PENDING.md`.
+
 ## Security model for operator/admin commands
 Implement a deterministic gate:
 - `isOperator(userId, chatId)` or config allowlist (preferred)

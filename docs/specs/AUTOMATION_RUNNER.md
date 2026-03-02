@@ -13,6 +13,8 @@ Related:
 - `docs/AUTOMATIONS.md` (product intent)
 - `docs/specs/DATA_MODEL.md` (tables)
 - `docs/specs/CONTROL_PLANE_API.md` (planned methods)
+- `docs/specs/CONTEXT_MANAGEMENT_SYSTEM.md` (context lane bookkeeping for proactive updates)
+- `docs/specs/ORCHESTRATOR_OUTPUT_RULE.md` (consistent assistant output phrasing and delivery cues)
 
 ## Definitions
 - Job: a persisted automation configuration (schedule + promptTemplate + limits)
@@ -78,6 +80,8 @@ If a job opts into inbox checks (`limits.inbox`):
 - body reads (`mail.read_body`) are sensitive and must be explicitly allowed
 - if body-read capability is missing, run must be blocked and recorded in run ledger
 - if connector is not configured, runner must fail safely (degraded output, no unsafe fallback)
+
+Proactive inbox or scheduled runs must respect lane scoping (threadKey/role lanes) so notifications remain tied to the user’s active topic; lane tracking follows the `docs/specs/CONTEXT_MANAGEMENT_SYSTEM.md` conventions and ensures delivery aligns with the reply context blocks that feed into `docs/specs/ORCHESTRATOR_OUTPUT_RULE.md`.
 
 ## Delivery model (Telegram MVP)
 Telegram runner owns the Telegram API. The automation runner must not embed bot tokens everywhere.

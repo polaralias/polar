@@ -108,3 +108,4 @@ Run:
 
 ## See also
 - `docs/specs/TELEGRAM_THREADING_AND_EMOJI.md` (threadKey buffering, anchor mapping, emoji lifecycle)
+- See also: `docs/specs/CONTEXT_MANAGEMENT_SYSTEM.md`, `docs/specs/FOCUS_CONTEXT_AND_PENDING.md`, `docs/specs/ROLE_AND_QUOTE_RENDERING.md`

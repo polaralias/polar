@@ -21,8 +21,8 @@ Polar is mid-refactor.
 - No cross-package `src/` imports. Apps import package exports only.
 
 ## High-level topology
-### Surfaces
-- Telegram bot runner: chat UX (threading, reactions, attachments) + delivery.
+-### Surfaces
+- Telegram bot runner: chat UX (threading, reactions, attachments) + delivery; it partitions each chat into `threadKey` lanes and keeps rolling summaries per lane so topic/context boundaries stay tidy.
 - Web UI: operator view for provider config, budgets, memory inspection, etc.
 
 ### Control plane

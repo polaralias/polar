@@ -1623,3 +1623,81 @@ Commands run and outcomes:
 
 ### Next
 - **Next prompt:** commit this hygiene change as an isolated commit (or stage selective hunks) once the broader in-progress workspace changes are ready to be grouped safely.
+
+## 2026-03-02 (UTC) - Prompt 24: link requested specs across docs
+
+**Branch:** `main`  
+**Commit:** `not committed`  
+**Prompt reference:** `Add cross-references specified in PATCH_NOTES.md (Telegram surface, architecture, chat commands, automation runner, security)`  
+**Specs referenced:**
+- `docs/specs/TELEGRAM_SURFACE.md`
+- `docs/specs/CHAT_COMMANDS.md`
+- `docs/specs/AUTOMATION_RUNNER.md`
+- `docs/specs/SECURITY.md`
+
+### Summary
+- Added the requested see-also links for the Telegram surface spec and noted threadKey lane scoping plus rolling summaries for the Telegram runner in architecture guidance.
+- Clarified that command confirmations traverse `controlPlane.orchestrate` and tie focus anchors to reply context blocks; linked automation runner guidance to context management and orchestrator output rules while calling out lane scoping for proactive messages.
+- Recorded the tool failure normalization expectation (ToolUnavailable/InternalContractBug) in `docs/specs/SECURITY.md`.
+
+### Scope and decisions
+- **In scope:** doc cross-reference updates and new compliance notes.
+- **Out of scope:** implementation changes or tests beyond verification.
+- **Key decisions:** reused existing sections for minimal disruption; no behavior changes were introduced.
+
+### Tests and validation
+- Not run (documentation-only changes).
+
+### Blockers
+- None.
+
+### Next
+- No follow-up required unless additional doc updates are requested.
+
+## 2026-03-01 (UTC) - Prompt 23: Telegram reaction emoji compatibility and per-emoji fallback
+
+**Branch:** `main`  
+**Commit:** `not committed`  
+**Prompt reference:** `The logs rendered [REACTION_DISABLED] for a single failing emoji; confirm Telegram bot-supported emojis and revise logic`  
+**Specs referenced:**
+- `docs/specs/TELEGRAM_SURFACE.md`
+- `docs/specs/TELEGRAM_THREADING_AND_EMOJI.md`
+
+### Summary
+- Updated Telegram reaction state handling to use bot-supported emoji defaults and per-state fallback candidates.
+- Reworked reaction capability tracking from coarse per-chat disable-on-first-failure to per-chat + per-emoji support memory.
+- Prevented a single `REACTION_INVALID` emoji from disabling all reactions when fallback emojis succeed.
+
+### Scope and decisions
+- **In scope:** `packages/polar-bot-runner/src/reaction-state.mjs` reaction send/clear behavior and reaction unit tests.
+- **Out of scope:** control-plane feedback mapping and Telegram callback flow changes.
+- **Key decisions:**
+  - Defaults now use bot-supported reaction emojis (`received=👀`, `thinking=✍`, `waiting_user=🤔`, `done=👌`, `error=👎`).
+  - Added fallback candidates per state and cached unsupported emojis per chat to avoid repeated invalid attempts.
+  - Only disable reactions for a chat after all configured candidate emojis are rejected and no successful emoji has ever been applied.
+
+### Files changed
+- `packages/polar-bot-runner/src/reaction-state.mjs`
+  - Added `REACTION_CANDIDATE_EMOJIS_BY_STATE` and configured emoji set.
+  - Added per-chat support record (`disabled`, `hasAnySuccess`, `unsupportedEmojis`).
+  - Updated `safeReact` to mark unsupported emojis and continue trying state fallbacks.
+  - Updated disable logic to trigger only when all configured candidate emojis fail.
+- `tests/telegram-reaction-state.test.mjs`
+  - Updated lifecycle expectations to new supported defaults (`🤔`, `👌`).
+  - Added regression test ensuring one invalid emoji does not disable other reactions.
+
+### External confirmation
+- Verified Telegram Bot API `ReactionTypeEmoji` whitelist from `core.telegram.org/bots/api` (73 supported emoji values as of 2026-03-01).
+
+### Tests and validation
+Commands run and outcomes:
+- `node --test tests/telegram-reaction-state.test.mjs` - ✅
+- `node --test tests/channels-thin-client-enforcement.test.mjs` - ✅
+- `npm test` - ✅ (428 passed, 0 failed)
+- `npm run check:boundaries` - ✅ (`[POLAR-WORKSPACE-BOUNDARY] No workspace boundary violations found.`)
+
+### Blockers
+- None.
+
+### Next
+- **Next prompt:** optionally expose per-chat available reaction discovery (via Telegram `getChat`) to precompute chat-allowed emoji set and avoid first-failure fallback attempts.
