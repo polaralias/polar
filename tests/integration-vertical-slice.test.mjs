@@ -156,3 +156,176 @@ test("integration vertical slice boots platform, orchestrates with mocked provid
     await rm(tempDirectory, { recursive: true, force: true });
   }
 });
+
+test("integration: lane-scoped context, focus-anchor routing, and normalized tool failures stay contained", async () => {
+  const tempDirectory = await mkdtemp(join(tmpdir(), "polar-context-routing-"));
+  const dbPath = join(tempDirectory, "context-routing.db");
+
+  const originalFetch = globalThis.fetch;
+  const fetchCalls = [];
+  globalThis.fetch = async (url, init) => {
+    const bodyText = typeof init?.body === "string" ? init.body : "{}";
+    const parsed = JSON.parse(bodyText);
+    fetchCalls.push({ url, parsed });
+
+    const inputText = JSON.stringify(parsed.input ?? []);
+    const isRouter = inputText.includes("You are a routing model. Output strict JSON only.");
+    const outputText = isRouter
+      ? JSON.stringify({
+          decision: "delegate",
+          target: { agentId: "@generic_sub_agent" },
+          confidence: 0.4,
+          rationale: "ambiguous pronoun",
+          references: {
+            refersTo: "focus_anchor",
+            refersToReason: "use focused lane anchor",
+          },
+        })
+      : "ack";
+
+    return {
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      async json() {
+        return {
+          output: [
+            {
+              type: "message",
+              role: "assistant",
+              content: [{ type: "output_text", text: outputText }],
+            },
+          ],
+          usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+        };
+      },
+    };
+  };
+
+  const nowMs = Date.UTC(2026, 2, 2, 10, 0, 0);
+  let tickMs = nowMs;
+  const platform = createPolarPlatform({ dbPath, now: () => ++tickMs });
+
+  try {
+    await platform.controlPlane.upsertConfig({
+      resourceType: "provider",
+      resourceId: "openai",
+      config: {
+        endpointMode: "responses",
+        baseUrl: "https://mock.provider.local/v1/responses",
+        apiKey: "test-key",
+      },
+    });
+
+    const sessionId = "telegram:chat:99";
+    const userId = "integration-user-ctx";
+    const laneA = "topic:99:1";
+    const laneB = "topic:99:2";
+
+    for (let index = 0; index < 32; index += 1) {
+      await platform.controlPlane.orchestrate({
+        sessionId,
+        userId,
+        messageId: `lane-a-${index}`,
+        text: `lane A message ${index}`,
+        metadata: { threadKey: laneA },
+      });
+    }
+
+    for (let index = 0; index < 3; index += 1) {
+      await platform.controlPlane.orchestrate({
+        sessionId,
+        userId,
+        messageId: `lane-b-${index}`,
+        text: `lane B message ${index}`,
+        metadata: { threadKey: laneB },
+      });
+    }
+
+    const laneASummary = await platform.controlPlane.getMemory({
+      executionType: "handoff",
+      scope: "session",
+      sessionId,
+      userId,
+      memoryId: `thread_summary:${sessionId}:${laneA}`,
+    });
+    assert.equal(laneASummary.status, "completed");
+    assert.equal(laneASummary.record.type, "thread_summary");
+    assert.equal(laneASummary.record.threadKey, laneA);
+
+    const beforeFinalCall = fetchCalls.length;
+    await platform.controlPlane.orchestrate({
+      sessionId,
+      userId,
+      messageId: "lane-a-final",
+      text: "lane A follow-up",
+      metadata: { threadKey: laneA },
+    });
+    const finalCall = fetchCalls.slice(beforeFinalCall).at(-1);
+    const finalInput = Array.isArray(finalCall.parsed.input) ? finalCall.parsed.input : [];
+    const finalInputText = JSON.stringify(finalInput);
+    const recencyText = JSON.stringify(finalInput.filter((entry) => entry.role !== "developer"));
+    assert.match(finalInputText, /\[THREAD_SUMMARY threadKey=topic:99:1\]/);
+    assert.match(recencyText, /lane A follow-up/);
+    assert.doesNotMatch(recencyText, /lane B message 2/);
+
+    await platform.controlPlane.orchestrate({
+      sessionId,
+      userId,
+      messageId: "focus-old",
+      text: "retry weather tool",
+      metadata: { threadKey: laneA },
+    });
+    await platform.controlPlane.orchestrate({
+      sessionId,
+      userId,
+      messageId: "focus-new",
+      text: "send project update email",
+      metadata: { threadKey: laneA },
+    });
+
+    const beforeRouter = fetchCalls.length;
+    const ambiguous = await platform.controlPlane.orchestrate({
+      sessionId,
+      userId,
+      messageId: "focus-ambiguous",
+      text: "do that",
+      metadata: { threadKey: laneA },
+    });
+    assert.equal(ambiguous.type, "clarification_needed");
+    assert.match(ambiguous.text, /Quick check: should I Continue with "[^"]+" or Delegate to a sub-agent\?/i);
+
+    const routerCall = fetchCalls
+      .slice(beforeRouter)
+      .find((entry) => JSON.stringify(entry.parsed.input ?? []).includes("routing model"));
+    assert.ok(routerCall);
+    const routerPayloadText = JSON.stringify(routerCall.parsed.input ?? []);
+    assert.match(routerPayloadText, /focusAnchorTextSnippet\\":\\"send project update email/);
+
+    const failedWorkflowTurn = await platform.controlPlane.orchestrate({
+      sessionId,
+      userId,
+      messageId: "wf-failure",
+      text: "Please search the web for orbital launches",
+      metadata: { threadKey: laneA },
+    });
+    assert.equal(typeof failedWorkflowTurn.text, "string");
+
+    const postFailure = await platform.controlPlane.orchestrate({
+      sessionId,
+      userId,
+      messageId: "post-failure",
+      text: "do that",
+      metadata: { threadKey: laneA },
+    });
+    assert.notEqual(postFailure.status, "error");
+  } finally {
+    closePolarPlatform(platform);
+    if (originalFetch === undefined) {
+      delete globalThis.fetch;
+    } else {
+      globalThis.fetch = originalFetch;
+    }
+    await rm(tempDirectory, { recursive: true, force: true });
+  }
+});

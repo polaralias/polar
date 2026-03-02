@@ -1943,3 +1943,35 @@ Commands run and outcomes:
 
 ### Next
 - **Next prompt:** CM-07 verify Telegram callback handlers cover all workflow decision paths with deterministic origin message resolution.
+
+## 2026-03-02 (UTC) - Prompt CM-07: Integration test for lane-scoped context and routing
+
+**Branch:** `main`  
+**Commit:** `not committed`  
+**Prompt reference:** `CM-07 integration lane context + routing`  
+**Specs referenced:**
+- `docs/specs/CONTEXT_MANAGEMENT_SYSTEM.md`
+- `docs/specs/ROUTING_AND_DELEGATION_POLICY.md`
+
+### Summary
+- Added a new integration-style platform test that boots against a temporary SQLite database and drives multi-lane traffic in one session.
+- Verified lane-scoped compaction and context assembly by asserting lane-specific thread summaries are persisted and used in request assembly, while lane recency excludes messages from the other lane.
+- Added router-path assertions for an ambiguous “do that” turn to ensure low-confidence routing produces clarification text tied to the current focus anchor and that the router payload references the latest lane focus snippet.
+- Added a workflow failure follow-up assertion proving the conversation does not get trapped in an error loop after normalized tool-failure handling.
+
+### Scope and decisions
+- **In scope:** one integration test in `tests/integration-vertical-slice.test.mjs` for lane context, focus-anchor routing behavior, and post-failure containment.
+- **Out of scope:** production logic changes in orchestrator/routing/context modules.
+- **Key decisions:**
+  - Implemented this as a full platform boot test (temp SQLite + mocked provider fetch) to exercise real control-plane/orchestrator wiring.
+  - Kept assertions stable by inspecting mocked provider request payloads and control-plane memory APIs instead of relying on internal in-memory thread maps.
+
+### Tests and validation
+Commands run and outcomes:
+- `node --test tests/integration-vertical-slice.test.mjs` - ✅
+
+### Blockers
+- None.
+
+### Next
+- **Next prompt:** CM-08 (TBD by planner) continue context/routing hardening coverage around callback/thread-origin edge paths.
