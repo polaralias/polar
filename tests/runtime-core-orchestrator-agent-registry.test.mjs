@@ -104,10 +104,10 @@ test("orchestrator includes registered agents in context and clamps delegated mo
   });
   assert.equal(proposed.status, "workflow_proposed");
 
-  const firstCall = providerCalls[0];
-  assert.match(firstCall.system, /Available pre-configured sub-agents/);
-  assert.match(firstCall.system, /@writer/);
-  assert.match(firstCall.system, /Writes docs/);
+  const mainCall = providerCalls.find((call) => typeof call.system === "string" && call.system.includes("Available pre-configured sub-agents"));
+  assert.ok(mainCall);
+  assert.match(mainCall.system, /@writer/);
+  assert.match(mainCall.system, /Writes docs/);
 
   const executed = await orchestrator.executeWorkflow(proposed.workflowId);
   assert.equal(executed.status, "completed");
@@ -135,4 +135,131 @@ test("orchestrator includes registered agents in context and clamps delegated mo
   assert.ok(summaryCall);
   assert.equal(summaryCall.providerId, "anthropic");
   assert.equal(summaryCall.model, "claude-sonnet-4-6");
+});
+
+
+test("orchestrator asks a short clarification question when router confidence is below threshold", async () => {
+  const appendedMessages = [];
+  let callIndex = 0;
+
+  const orchestrator = createOrchestrator({
+    profileResolutionGateway: {
+      async resolve() {
+        return {
+          status: "resolved",
+          profileConfig: {
+            systemPrompt: "You are the parent profile.",
+            modelPolicy: { providerId: "openai", modelId: "gpt-4.1-mini" },
+          },
+        };
+      },
+    },
+    chatManagementGateway: {
+      async appendMessage(message) {
+        appendedMessages.push(message);
+        return { status: "appended" };
+      },
+      async getSessionHistory() {
+        return { items: [] };
+      },
+    },
+    providerGateway: {
+      async generate() {
+        callIndex += 1;
+        if (callIndex === 1) {
+          return {
+            text: JSON.stringify({
+              decision: "delegate",
+              target: { agentId: "@writer" },
+              confidence: 0.42,
+              rationale: "ambiguous",
+              references: { refersTo: "focus_anchor", refersToReason: "ambiguous" },
+            }),
+          };
+        }
+        return { text: "This should not be called for low confidence routing." };
+      },
+    },
+    extensionGateway: {
+      getState() { return undefined; },
+      listStates() { return []; },
+      async execute() { return { status: "completed", output: "ok" }; },
+    },
+    approvalStore: createApprovalStore(),
+    now: Date.now,
+  });
+
+  const result = await orchestrator.orchestrate({
+    sessionId: "session-router-low-confidence",
+    userId: "user-router-low-confidence",
+    text: "do that via sub-agent",
+    messageId: "m-router-low-confidence",
+  });
+
+  assert.equal(result.type, "clarification_needed");
+  assert.match(result.text, /Quick check:/);
+  assert.equal(callIndex, 1);
+  const assistantMessage = appendedMessages.find((message) => message.role === "assistant");
+  assert.ok(assistantMessage);
+});
+
+test("orchestrator includes default generic fallback sub-agent in model context", async () => {
+  const providerCalls = [];
+
+  const orchestrator = createOrchestrator({
+    profileResolutionGateway: {
+      async resolve() {
+        return {
+          status: "resolved",
+          profileConfig: {
+            systemPrompt: "You are the parent profile.",
+            modelPolicy: { providerId: "openai", modelId: "gpt-4.1-mini" },
+          },
+        };
+      },
+    },
+    chatManagementGateway: {
+      async appendMessage() { return { status: "appended" }; },
+      async getSessionHistory() { return { items: [] }; },
+    },
+    providerGateway: {
+      async generate(input) {
+        providerCalls.push(input);
+        if (providerCalls.length === 1) {
+          return {
+            text: JSON.stringify({
+              decision: "respond",
+              confidence: 0.9,
+              rationale: "simple",
+              references: { refersTo: "latest", refersToReason: "simple" },
+            }),
+          };
+        }
+        return { text: "Got it." };
+      },
+    },
+    extensionGateway: {
+      getState() { return undefined; },
+      listStates() { return []; },
+      async execute() { return { status: "completed", output: "ok" }; },
+    },
+    approvalStore: createApprovalStore(),
+    gateway: {
+      readConfigRecord() {
+        return undefined;
+      },
+    },
+    now: Date.now,
+  });
+
+  await orchestrator.orchestrate({
+    sessionId: "session-default-generic",
+    userId: "user-default-generic",
+    text: "write 10 versions of this email",
+    messageId: "m-default-generic",
+  });
+
+  const mainCall = providerCalls[1];
+  assert.ok(mainCall);
+  assert.match(mainCall.system, /@generic_sub_agent/);
 });

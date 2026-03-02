@@ -97,7 +97,7 @@ Commands run and outcomes:
 ## 2026-03-01 (UTC) - Prompt 01: Add @polar/platform composition root
 
 **Branch:** `main`  
-**Commit:** `not committed`  
+**Commit:** `this commit`  
 **Prompt reference:** `Prompt 01` (from chat prompt pack / docs)  
 **Specs referenced:**  
 - `docs/specs/BOOTSTRAP.md`  
@@ -364,7 +364,7 @@ Commands run and outcomes:
 ## 2026-03-01 (UTC) - Prompt 06: Full PI removal
 
 **Branch:** `main`  
-**Commit:** `not committed`  
+**Commit:** `this commit`  
 **Prompt reference:** `Prompt 06` (from chat prompt pack / docs)  
 **Specs referenced:**  
 - `docs/specs/BOUNDARIES.md`
@@ -418,7 +418,7 @@ Commands run and outcomes:
 ## 2026-03-01 (UTC) - Prompt 07: SQLite feedback/events store (reactions)
 
 **Branch:** `main`  
-**Commit:** `not committed`  
+**Commit:** `this commit`  
 **Prompt reference:** `Prompt 07` (from chat prompt pack / docs)  
 **Specs referenced:**  
 - `docs/specs/DATA_MODEL.md`
@@ -489,7 +489,7 @@ Commands run and outcomes:
 ## 2026-03-01 (UTC) - Prompt 08: SQLite run ledger for automation and heartbeat
 
 **Branch:** `main`  
-**Commit:** `not committed`  
+**Commit:** `this commit`  
 **Prompt reference:** `Prompt 08` (from chat prompt pack / docs)  
 **Specs referenced:**  
 - `docs/specs/DATA_MODEL.md`
@@ -558,7 +558,7 @@ Commands run and outcomes:
 ## 2026-03-01 (UTC) - Prompt 09: Markdown exports (artifacts) from SQLite
 
 **Branch:** `main`  
-**Commit:** `not committed`  
+**Commit:** `this commit`  
 **Prompt reference:** `Prompt 09` (from chat prompt pack / docs)  
 **Specs referenced:**  
 - `docs/specs/ARTIFACT_EXPORTS.md`
@@ -612,7 +612,7 @@ Commands run and outcomes:
 ## 2026-03-01 (UTC) - Prompt 10: MVP automations (time-based reminders and routines)
 
 **Branch:** `main`  
-**Commit:** `not committed`  
+**Commit:** `this commit`  
 **Prompt reference:** `Prompt 10` (from chat prompt pack / docs)  
 **Specs referenced:**  
 - `docs/specs/AUTOMATION_RUNNER.md`
@@ -696,7 +696,7 @@ Commands run and outcomes:
 ## 2026-03-01 (UTC) - Prompt 11: Chat-configured automations (proposal + approval)
 
 **Branch:** `main`  
-**Commit:** `not committed`  
+**Commit:** `this commit`  
 **Prompt reference:** `Prompt 11` (from chat prompt pack / docs)  
 **Specs referenced:**  
 - `docs/AUTOMATIONS.md`
@@ -756,7 +756,7 @@ Commands run and outcomes:
 ## 2026-03-01 (UTC) - Prompt 12: Proactive inbox scaffolding (headers-only, gated)
 
 **Branch:** `main`  
-**Commit:** `not committed`  
+**Commit:** `this commit`  
 **Prompt reference:** `Prompt 12` (from chat prompt pack / docs)  
 **Specs referenced:**  
 - `docs/specs/PROACTIVE_INBOX.md`
@@ -836,7 +836,7 @@ Commands run and outcomes:
 ## 2026-03-01 (UTC) - Prompt 13: Integration test for bootstrap + orchestrate + feedback persistence
 
 **Branch:** `main`  
-**Commit:** `not committed`  
+**Commit:** `this commit`  
 **Prompt reference:** `Prompt 13` (from chat prompt pack / docs)  
 **Specs referenced:**  
 - `docs/specs/TESTING_STRATEGY.md`
@@ -891,7 +891,7 @@ Commands run and outcomes:
 ## 2026-03-01 (UTC) - Prompt 14: Telegram threading, reply anchors, reaction mapping, and emoji lifecycle hardening
 
 **Branch:** `main`  
-**Commit:** `not committed`  
+**Commit:** `this commit`  
 **Prompt reference:** `Prompt 14` (from chat prompt pack / docs)  
 **Specs referenced:**  
 - `docs/specs/TELEGRAM_SURFACE.md`
@@ -952,7 +952,7 @@ Commands run and outcomes:
 ## 2026-03-01 (UTC) - Prompt 15: Personality profiles (chat + UI + persistence + prompt injection)
 
 **Branch:** `main`  
-**Commit:** `not committed`  
+**Commit:** `this commit`  
 **Prompt reference:** `Prompt 15` (from chat prompt pack / docs)  
 **Specs referenced:**  
 - `docs/specs/PERSONALISATION.md`
@@ -1025,7 +1025,7 @@ Commands run and outcomes:
 ## 2026-03-01 (UTC) - Prompt 16: Deterministic chat commands framework (Telegram) + MVP commands
 
 **Branch:** `main`  
-**Commit:** `not committed`  
+**Commit:** `this commit`  
 **Prompt reference:** `Prompt 16` (from chat prompt pack / docs)  
 **Specs referenced:**  
 - `docs/specs/CHAT_COMMANDS.md`
@@ -1107,7 +1107,7 @@ Commands run and outcomes:
 ## 2026-03-01 (UTC) - Prompt 18: Deterministic chat commands framework (Telegram) implementing full CHAT_COMMANDS spec
 
 **Branch:** `main`  
-**Commit:** `not committed`  
+**Commit:** `this commit`  
 **Prompt reference:** `Prompt 18` (from chat prompt pack / docs)  
 **Specs referenced:**  
 - `docs/specs/CHAT_COMMANDS.md`
@@ -1208,7 +1208,7 @@ Commands run and outcomes:
 ## 2026-03-01 (UTC) - Prompt 18 Follow-up: Telegram metadata JSON validation + reaction fail-safe
 
 **Branch:** `main`  
-**Commit:** `not committed`
+**Commit:** `this commit`
 
 ### Summary
 - Fixed a runtime crash where orchestrator appendMessage failed strict contract validation when inbound metadata contained undefined fields (not JSON-safe), especially `metadata.threadId`.
@@ -1232,7 +1232,7 @@ Add a targeted regression test for “metadata with undefined fields is sanitize
 ## 2026-03-01 (UTC) - Prompt: Sub-agent profiles (agent registry), pinning, and chat config
 
 **Branch:** `main`  
-**Commit:** `not committed`  
+**Commit:** `this commit`  
 **Prompt reference:** `Sub-agent profiles (agent registry), pinning, and chat config`  
 **Specs referenced:**
 - `docs/specs/AGENT_PROFILES.md`
@@ -1318,7 +1318,7 @@ Add a targeted regression test for “metadata with undefined fields is sanitize
 ## 2026-03-01 (UTC) - Prompt 19: Close investigation gaps (memory/skills commands, ingress tests, reaction lifecycle tests, weekly schedules)
 
 **Branch:** `main`  
-**Commit:** `not committed`  
+**Commit:** `this commit`  
 **Prompt reference:** `Implement all outstanding functionality from INVESTIGATION_LOG.md`  
 **Specs referenced:**
 - `docs/specs/CHAT_COMMANDS.md`
@@ -1411,7 +1411,7 @@ Commands run and outcomes:
 ## 2026-03-01 (UTC) - Prompt 20: CHECK + IMPLEMENT: Admin gating with single-user bootstrap (private chat only)
 
 **Branch:** `main`  
-**Commit:** `not committed`  
+**Commit:** `this commit`  
 **Prompt reference:** `CHECK + IMPLEMENT: Admin gating with single-user bootstrap (private chat only)`  
 **Specs referenced:**
 - `docs/specs/ADMIN_BOOTSTRAP.md`
@@ -1486,7 +1486,7 @@ Commands run and outcomes:
 ## 2026-03-01 (UTC) - Prompt 21: CHECK + IMPLEMENT: Golden rule, all user-facing messages go through orchestrator
 
 **Branch:** `main`  
-**Commit:** `not committed`  
+**Commit:** `this commit`  
 **Prompt reference:** `CHECK + IMPLEMENT: Golden rule, all user-facing messages go through orchestrator`  
 **Specs referenced:**
 - `docs/specs/ORCHESTRATOR_OUTPUT_RULE.md`
@@ -1568,7 +1568,7 @@ Commands run and outcomes:
 ## 2026-03-01 (UTC) - Prompt 22: CHECK + IMPLEMENT: .gitignore hygiene for local DBs, artefacts, and secrets
 
 **Branch:** `main`  
-**Commit:** `not committed`  
+**Commit:** `this commit`  
 **Prompt reference:** `CHECK + IMPLEMENT: .gitignore hygiene for local DBs, artefacts, and secrets`  
 **Specs referenced:**
 - `docs/specs/DATA_MODEL.md`
@@ -1627,7 +1627,7 @@ Commands run and outcomes:
 ## 2026-03-02 (UTC) - Prompt 24: link requested specs across docs
 
 **Branch:** `main`  
-**Commit:** `not committed`  
+**Commit:** `this commit`  
 **Prompt reference:** `Add cross-references specified in PATCH_NOTES.md (Telegram surface, architecture, chat commands, automation runner, security)`  
 **Specs referenced:**
 - `docs/specs/TELEGRAM_SURFACE.md`
@@ -1657,7 +1657,7 @@ Commands run and outcomes:
 ## 2026-03-01 (UTC) - Prompt 23: Telegram reaction emoji compatibility and per-emoji fallback
 
 **Branch:** `main`  
-**Commit:** `not committed`  
+**Commit:** `this commit`  
 **Prompt reference:** `The logs rendered [REACTION_DISABLED] for a single failing emoji; confirm Telegram bot-supported emojis and revise logic`  
 **Specs referenced:**
 - `docs/specs/TELEGRAM_SURFACE.md`
@@ -1705,7 +1705,7 @@ Commands run and outcomes:
 ## 2026-03-02 (UTC) - Prompt CM-01: Implement thread-aware context management (rolling summaries + retrieval)
 
 **Branch:** `main`  
-**Commit:** `not committed`  
+**Commit:** `this commit`  
 **Prompt reference:** `CM-01 thread-aware context management`
 **Specs referenced:**
 - `docs/specs/CONTEXT_MANAGEMENT_SYSTEM.md`
@@ -1839,3 +1839,41 @@ Commands run and outcomes:
 
 ### Next
 - **Next prompt:** CM-05 workflow retry-intent gating and explicit user-confirmed transient retry execution path.
+
+## 2026-03-02 (UTC) - Prompt CM-05: Routing and delegation (heuristics guardrails + LLM router with confidence)
+
+**Branch:** `main`  
+**Commit:** `this commit`  
+**Prompt reference:** `CM-05 routing + delegation guardrails`  
+**Specs referenced:**
+- `docs/specs/ROUTING_AND_DELEGATION_POLICY.md`
+- `docs/specs/FOCUS_CONTEXT_AND_PENDING.md`
+
+### Summary
+- Added Stage A delegation guardrail signals in orchestrator for explicit and strong delegation asks (including “via sub-agent” and “write 10 versions”).
+- Added Stage B LLM router call with strict JSON parsing, confidence handling, and allowlist clamps for installed tools and registered agent profiles.
+- Added default generic fallback sub-agent profile (`@generic_sub_agent`) into normalized registry data.
+- Added low-confidence behavior that asks one short two-option clarification question instead of delegating blindly.
+- Tightened delegation execution to reject unregistered agent IDs while allowing the default fallback profile to inherit parent profile config when no explicit profile record exists.
+- Updated delegation approval gating so simple read-only delegation can proceed without forced manual approval while write/complex/destructive delegation still requires approval.
+- Added regression tests for low-confidence clarification behavior and default fallback sub-agent exposure in orchestrator prompt context.
+
+### Scope and decisions
+- **In scope:** routing/delegation policy enforcement in orchestrator, confidence threshold behavior, guardrails, fallback profile support, and tests.
+- **Out of scope:** introducing a new persisted pending-state enum for `clarification_needed`; this prompt uses message-level clarification responses.
+- **Key decisions:**
+  - Implemented the router as a dedicated small-model pass before the primary response generation for `new_request` turns.
+  - Fail-safe behavior on router parse/error is deterministic fallback guardrails plus normal orchestrator flow.
+  - Delegation allowlist is enforced both in router clamp and execution path.
+
+### Tests and validation
+Commands run and outcomes:
+- `node --test tests/runtime-core-orchestrator-agent-registry.test.mjs tests/runtime-core-orchestrator-routing.test.mjs` - ✅
+- `npm test` - ❌ (`Could not find '/workspace/polar/tests/**/*.test.mjs'` from current script glob)
+- `npm run check:boundaries` - ✅
+
+### Blockers
+- Repository `npm test` script still fails in this environment due glob resolution (`node --test tests/**/*.test.mjs`).
+
+### Next
+- **Next prompt:** CM-06 persist clarification-needed pending state as typed pending entry and route short disambiguation replies through deterministic selection handling.

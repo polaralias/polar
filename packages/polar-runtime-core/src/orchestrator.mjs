@@ -53,6 +53,17 @@ const delegationStateSchema = createStrictObjectSchema({
     }
 });
 
+const routerDecisionSchema = createStrictObjectSchema({
+    schemaId: 'orchestrator.router.decision',
+    fields: {
+        decision: enumField(["respond", "delegate", "tool", "workflow", "clarify"]),
+        target: jsonField({ required: false }),
+        confidence: jsonField(),
+        rationale: stringField({ minLength: 1 }),
+        references: jsonField({ required: false }),
+    }
+});
+
 /**
  * @param {string} rawText
  * @returns {string}
@@ -273,6 +284,9 @@ function toJsonSafeValue(value) {
 const AGENT_REGISTRY_RESOURCE_TYPE = "policy";
 const AGENT_REGISTRY_RESOURCE_ID = "agent-registry:default";
 const AGENT_ID_PATTERN = /^@[a-z0-9_-]{2,32}$/;
+const DEFAULT_GENERIC_AGENT_ID = "@generic_sub_agent";
+const DEFAULT_GENERIC_PROFILE_ID = "profile.generic_sub_agent";
+const ROUTER_CONFIDENCE_THRESHOLD = 0.65;
 
 /**
  * @param {unknown} value
@@ -339,10 +353,33 @@ function normalizeAgentRegistry(value) {
         agents.push(normalized);
         seen.add(agentId);
     }
+    if (!seen.has(DEFAULT_GENERIC_AGENT_ID)) {
+        agents.push({
+            agentId: DEFAULT_GENERIC_AGENT_ID,
+            profileId: DEFAULT_GENERIC_PROFILE_ID,
+            description: "General-purpose fallback sub-agent for delegated tasks.",
+            tags: ["general", "fallback"],
+        });
+    }
     return {
         version: 1,
         agents: Object.freeze(agents),
     };
+}
+
+function deriveDelegationApprovalPolicy(text = "") {
+    const normalized = text.toLowerCase();
+    const readIntent = /\b(read|summari[sz]e|review|inspect|analy[sz]e|compare|research)\b/.test(normalized);
+    const writeIntent = /\b(write|draft|create|compose|send|edit|update|delete|remove)\b/.test(normalized);
+    const destructiveIntent = /\b(delete|remove|destroy|wipe|drop)\b/.test(normalized);
+    const complexIntent = /\b(plan|workflow|step by step|multi-step|10 versions|10 different versions)\b/.test(normalized);
+    if (destructiveIntent || writeIntent || complexIntent) {
+        return { requiresApproval: true, reason: "write_or_complex_or_destructive" };
+    }
+    if (readIntent) {
+        return { requiresApproval: false, reason: "read_only" };
+    }
+    return { requiresApproval: true, reason: "default_safe" };
 }
 
 /**
@@ -588,12 +625,17 @@ export function createOrchestrator({
         let maxEffects = 'none';
         let maxEgress = 'none';
         let hasDelegation = false;
+        let delegationRequiresApproval = false;
         const requirements = [];
 
         for (const step of steps) {
             if (step.capabilityId === 'delegate_to_agent') {
                 hasDelegation = true;
-                requirements.push({ capabilityId: 'delegate_to_agent', extensionId: 'system', riskLevel: 'write', sideEffects: 'internal' });
+                const policy = deriveDelegationApprovalPolicy(String(step.args?.task_instructions || ''));
+                if (policy.requiresApproval) {
+                    delegationRequiresApproval = true;
+                    requirements.push({ capabilityId: 'delegate_to_agent', extensionId: 'system', riskLevel: 'write', sideEffects: 'internal' });
+                }
                 continue;
             }
             if (step.capabilityId === 'complete_task') continue;
@@ -643,6 +685,7 @@ export function createOrchestrator({
             sideEffects: maxEffects,
             dataEgress: maxEgress,
             hasDelegation,
+            delegationRequiresApproval,
             requirements
         };
     }
@@ -746,6 +789,7 @@ export function createOrchestrator({
 
             let sessionState = SESSION_THREADS.get(polarSessionId) || { threads: [], activeThreadId: null };
             let routingRecommendation = null;
+            let classification = null;
             let currentTurnAnchor = null;
             let currentAnchorMessageId = null;
             const profile = await profileResolutionGateway.resolve({
@@ -768,7 +812,7 @@ export function createOrchestrator({
             }
 
             if (text) {
-                const classification = classifyUserMessage({
+                classification = classifyUserMessage({
                     text,
                     sessionState,
                     replyToMessageId: metadata?.replyToMessageId,
@@ -901,12 +945,115 @@ export function createOrchestrator({
                 }
             }
 
+            const agentRegistry = await loadAgentRegistry();
+            const installedAgentIds = new Set(agentRegistry.agents.map((agent) => agent.agentId));
+            const installedToolPairs = (extensionGateway.listStates() || [])
+                .filter((state) => !state?.lifecycleState || state.lifecycleState === "installed")
+                .flatMap((state) => (state?.capabilities || []).map((capability) => ({
+                    extensionId: state.extensionId,
+                    capabilityId: capability.capabilityId,
+                })));
+
+            const lowerText = String(text || "").toLowerCase();
+            const stageADelegationSignal = /\b(do that via sub-agent|via sub-agent|delegate this|delegate to)\b/.test(lowerText)
+                || /\bwrite\s+10\b/.test(lowerText)
+                || /\b10\s+(versions|version|variants|variant)\b/.test(lowerText);
+
+            let routerDecision = null;
+            if (classification?.type === "new_request") {
+                try {
+                    const routerResponse = await providerGateway.generate({
+                        executionType: "handoff",
+                        providerId,
+                        model,
+                        system: "You are a routing model. Output strict JSON only.",
+                        prompt:
+                            `Route this message using JSON schema only: ${JSON.stringify({
+                                text,
+                                focusContext: classification.focusContext || null,
+                                availableAgents: [...installedAgentIds],
+                                availableTools: installedToolPairs,
+                                confidenceThreshold: ROUTER_CONFIDENCE_THRESHOLD,
+                            })}`,
+                    });
+                    const parsed = parseJsonWithSchema(routerResponse?.text || "{}", routerDecisionSchema);
+                    const confidence = typeof parsed.confidence === "number" ? parsed.confidence : Number(parsed.confidence);
+                    if (Number.isFinite(confidence)) {
+                        routerDecision = { ...parsed, confidence };
+                    }
+                } catch {
+                    routerDecision = null;
+                }
+            }
+
+            if (stageADelegationSignal && (!routerDecision || routerDecision.decision !== "delegate")) {
+                routerDecision = {
+                    decision: "delegate",
+                    target: { agentId: DEFAULT_GENERIC_AGENT_ID },
+                    confidence: 0.68,
+                    rationale: "Stage A guardrail detected explicit/strong delegation signal.",
+                };
+            }
+
+            if (routerDecision?.decision === "delegate") {
+                const requestedAgentId = routerDecision?.target?.agentId;
+                if (!installedAgentIds.has(requestedAgentId)) {
+                    routerDecision.target = { agentId: DEFAULT_GENERIC_AGENT_ID };
+                }
+            }
+            if (routerDecision?.decision === "tool") {
+                const extensionId = routerDecision?.target?.extensionId;
+                const capabilityId = routerDecision?.target?.capabilityId;
+                const installed = installedToolPairs.some(
+                    (entry) => entry.extensionId === extensionId && entry.capabilityId === capabilityId,
+                );
+                if (!installed) {
+                    routerDecision = {
+                        decision: "clarify",
+                        confidence: 1,
+                        rationale: "Requested tool is not installed.",
+                    };
+                }
+            }
+
+            if (routerDecision && routerDecision.confidence < ROUTER_CONFIDENCE_THRESHOLD) {
+                const focusSnippet = classification.focusContext?.focusAnchorTextSnippet;
+                const optionA = focusSnippet ? `Continue with "${focusSnippet.slice(0, 36)}"` : "Continue inline here";
+                const optionB = "Delegate to a sub-agent";
+                const clarificationQuestion = `Quick check: should I ${optionA} or ${optionB}?`;
+                const assistantMessageId = `msg_a_${crypto.randomUUID()}`;
+                if (!suppressResponsePersist) {
+                    await chatManagementGateway.appendMessage({
+                        sessionId: polarSessionId,
+                        userId: "assistant",
+                        messageId: assistantMessageId,
+                        role: "assistant",
+                        text: clarificationQuestion,
+                        timestampMs: now(),
+                        ...(inboundThreadId !== undefined ? { threadId: inboundThreadId } : {}),
+                        ...(inboundMetadata !== undefined ? { metadata: inboundMetadata } : {}),
+                    });
+                }
+                return {
+                    status: "ok",
+                    type: "clarification_needed",
+                    text: clarificationQuestion,
+                    assistantMessageId,
+                    useInlineReply: false,
+                };
+            }
+
+            if (routerDecision?.decision === "delegate") {
+                const delegatedAgentId = routerDecision?.target?.agentId || DEFAULT_GENERIC_AGENT_ID;
+                const approvalPolicy = deriveDelegationApprovalPolicy(text);
+                routingRecommendation = `${routingRecommendation ? `${routingRecommendation}\n` : ""}[ROUTER_DECISION] Delegate this request to ${delegatedAgentId}. Confidence=${routerDecision.confidence}. ${approvalPolicy.requiresApproval ? "This requires approval before execution." : "Simple read delegation may execute without manual approval."}`;
+            }
+
             let systemPrompt = profile.profileConfig?.systemPrompt || "You are a helpful Polar AI assistant. Be concise and friendly.";
             systemPrompt = appendPersonalityBlock(systemPrompt, effectivePersonality);
             systemPrompt += "\n\n[REPLY_CONTEXT_RULES]\nTreat any Reply context block as quoted reference text, not new user-authored claims. Do not attribute quoted assistant statements to the user. If attribution is unclear, ask a short clarifying question.\n[/REPLY_CONTEXT_RULES]";
             const laneThreadKey = deriveLaneThreadKey(polarSessionId, inboundThreadKey, inboundThreadId);
 
-            const agentRegistry = await loadAgentRegistry();
             const multiAgentConfig = {
                 allowlistedModels: [
                     "gpt-4.1-mini", "gpt-4.1-nano", "claude-sonnet-4-6", "claude-haiku-4-5",
@@ -1264,7 +1411,7 @@ ${routingRecommendation || ""}`;
                     const principal = { userId, sessionId: polarSessionId };
                     const pendingRequirements = checkGrants(risk.requirements, principal);
 
-                    const requiresManualApproval = pendingRequirements.length > 0 || risk.hasDelegation;
+                    const requiresManualApproval = pendingRequirements.length > 0 || risk.delegationRequiresApproval;
                     const workflowId = crypto.randomUUID();
                     const ownerThreadId = sessionState.activeThreadId;
                     PENDING_WORKFLOWS.set(workflowId, {
@@ -1499,10 +1646,16 @@ ${routingRecommendation || ""}`;
                             defaultForwardSkills = normalizeStringArray(agentProfile.defaultForwardSkills);
                             const delegatedProfileRecord = await readConfigRecord("profile", agentProfile.profileId);
                             if (!delegatedProfileRecord || !delegatedProfileRecord.config || typeof delegatedProfileRecord.config !== "object") {
-                                toolResults.push({ tool: capabilityId, status: "error", output: `Delegation blocked: profile not found (${agentProfile.profileId}).` });
-                                continue;
+                                if (agentProfile.agentId !== DEFAULT_GENERIC_AGENT_ID) {
+                                    toolResults.push({ tool: capabilityId, status: "error", output: `Delegation blocked: profile not found (${agentProfile.profileId}).` });
+                                    continue;
+                                }
+                            } else {
+                                delegatedProfileConfig = delegatedProfileRecord.config;
                             }
-                            delegatedProfileConfig = delegatedProfileRecord.config;
+                        } else {
+                            toolResults.push({ tool: capabilityId, status: "error", output: "Delegation blocked: unregistered agent profile." });
+                            continue;
                         }
 
                         const delegatedAllowedSkills = normalizeStringArray(delegatedProfileConfig.allowedSkills);
