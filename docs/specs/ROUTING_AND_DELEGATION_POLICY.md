@@ -1,4 +1,4 @@
-# Routing and delegation policy (heuristics + LLM router with confidence)
+# Routing and delegation policy (Hybrid v2: deterministic policy + LLM weighted decisions)
 
 ## Goal
 Route requests reliably between:
@@ -6,86 +6,177 @@ Route requests reliably between:
 - tool call
 - workflow proposal
 - sub-agent delegation
+- clarification question
 
-without delegating the wrong task or ignoring obvious multi-step requests (e.g. “write 10 email variants”).
+while increasing model-driven decision quality without sacrificing safety or traceability.
+
+---
+
+## Core principle
+Use a **hybrid weighted router**:
+- LLM contributes semantic reasoning and ambiguity handling.
+- Deterministic policy contributes guardrails, risk controls, and hard safety vetoes.
+
+This is not fixed 50/50 globally. Weighting is dynamic by risk and confidence.
 
 ---
 
 ## Inputs to routing
-Routing must be based on a **FocusContext** (see Focus Context spec):
+Routing must be based on a **FocusContext** and typed runtime state:
 - focus anchor message + snippet
 - threadKey lane recency window
-- any active pending state (only if applicable)
+- active pending state (slot, clarification, workflow control)
+- temporal attention summary (last ~30 minutes + unresolved items)
+- installed agents/tools and capability scope
 
 ---
 
-## Two-stage router
-### Stage A: deterministic guardrails
-Fast checks to avoid stupid mistakes:
-- If a workflow is awaiting user input (pending workflow_waiting) and inbound matches expected selection -> handle selection directly.
-- If inbound is a pure slot-fill (pending slot_request and matches type) -> handle as continuation (no delegation).
-- If tool is known unavailable -> do not route to it.
+## Three-tier routing pipeline
+### Tier 1: deterministic prefilter
+Fast deterministic checks that run first:
+- If a typed pending state is active and inbound matches expected selection/slot type, resolve directly.
+- If a tool/agent is unavailable or disallowed, remove it from candidate set.
+- If request is clearly low-risk and unambiguous, allow direct inline path without router call.
+- If request implies destructive/high-risk action, mark `requiresApproval=true` before model involvement.
 
-### Stage B: LLM router (main chooser)
-Call a small router prompt that outputs strict JSON:
+Output:
+- `candidateModes` (`respond|tool|workflow|delegate|clarify`)
+- `policyFlags` (`highRisk`, `requiresApproval`, `missingCapability`, `pendingMatch`, etc.)
+- `heuristicScores` per candidate (0.0-1.0)
 
-Fields:
-- decision: `respond` | `delegate` | `tool` | `workflow` | `clarify`
-- target:
-  - for delegate: `agentId`
-  - for tool: `extensionId` and `capabilityId`
-- confidence: 0.0–1.0
-- rationale: short string
-- references:
-  - `refersTo`: `focus_anchor` | `pending` | `latest`
+### Tier 2: LLM router
+Call a small router prompt with strict JSON output.
+
+Required fields:
+- `decision`: `respond` | `delegate` | `tool` | `workflow` | `clarify`
+- `target`:
+  - delegate: `agentId`
+  - tool: `extensionId`, `capabilityId`
+- `confidence`: 0.0-1.0
+- `rationale`: short
+- `references`:
+  - `refersTo`: `focus_anchor` | `pending` | `latest` | `temporal_attention`
   - `refersToReason`: short
+- `scores`:
+  - `focusResolutionScore`: 0.0-1.0
+  - `routingScore`: 0.0-1.0
 
-Enforcement:
-- Only allow delegate to registered agent profiles.
-  - Introduce a default generic sub agent profile as fallback agent as part of this work
-- Only allow tool calls for installed tools.
-- If confidence below threshold (e.g. 0.65):
-  - either respond inline or ask a clarifying question
-  - do not delegate blindly
-- Enforce:
-  - only installed tools can be called
-- If confidence below threshold:
-  - ask one short clarifying question (two-option disambiguation when possible)
-- Sub agent spin up:
-  - Utilise our allowed skills/tools pass through functionality
-  - Simple delegation for read tasks should not require approval
-  - Delegation involing complex workflows and plans should require approval
-  - Delegation for write and destructive tasks should require approval
----
+Router constraints:
+- Router can only choose from Tier-1 candidate modes.
+- Router never grants approvals or expands capability scope.
 
-## Delegation triggers (examples)
-Strong delegate signals:
-- user asks for many variants (“10 versions”, “write a proposal”, “draft a plan”)
-- multi-step tasks (“research and compare”, “make a workflow”)
-- “do this via sub-agent” explicitly
+### Tier 3: deterministic post-policy executor
+Arbitrate heuristic + LLM output, then enforce hard constraints.
 
-Strong inline signals:
-- short question, no external data, single answer
+Hard constraints (absolute vetoes):
+- only registered agent IDs may be delegated to (unknown IDs clamp to fallback agent)
+- only installed and allowed tools can be called
+- capability scope and forwarded skills are clamped
+- risk/approval rules are deterministic and centralized
+- thread/lane isolation is deterministic
+
+Arbitration:
+- compute fused score per candidate from heuristic and LLM scores
+- weighting adapts by risk/confidence:
+  - high confidence + low risk: LLM-leading
+  - low confidence or high risk: deterministic-leading
+- if disagreement margin exceeds threshold, emit `clarify` with short two-option disambiguation
 
 ---
 
-## Prevent “stale task delegation”
-If user asks “do that via sub-agent”:
-- It must refer to FocusAnchor, not pending tool retry offers unless expected type matched.
-- If focus is ambiguous, ask one short question (“Do you mean the weather check or the email draft?”).
+## Weighted arbitration contract
+### Inputs
+- `heuristicScores[candidate]`
+- `llmScores[candidate]`
+- `llmConfidence`
+- `riskClass` (`low|medium|high|destructive`)
+
+### Suggested default policy
+- `low risk`: 0.40 heuristic / 0.60 LLM
+- `medium risk`: 0.50 heuristic / 0.50 LLM
+- `high risk`: 0.65 heuristic / 0.35 LLM
+- `destructive`: deterministic policy controls route; LLM may assist rationale only
+
+### Clarify trigger
+Force clarification when any is true:
+- fused top-2 score gap < `decisionMarginThreshold`
+- LLM confidence < `routerConfidenceThreshold`
+- heuristic and LLM top decisions conflict in high-risk class
+
+---
+
+## Delegation policy
+### Strong delegation signals
+- user asks for many variants ("10 versions", "write a proposal", "draft a plan")
+- multi-step tasks ("research and compare", "make a workflow")
+- explicit delegation request ("do this via sub-agent")
+
+### Strong inline signals
+- short direct question with no external action and no multi-step intent
+
+### Approval semantics (deterministic only)
+- read-only delegation may auto-run
+- write, complex, workflow-level, or destructive delegation requires approval
+- model cannot override approval requirement
+
+---
+
+## Typed pending state machine
+Introduce typed pending records to avoid repeated model guessing:
+- `slot_request`
+- `clarification_needed`
+- `workflow_waiting`
+- `workflow_cancellable`
+- `delegation_candidate`
+
+Rules:
+- short follow-ups ("yes", "that one", "do it") resolve against typed pending state first
+- pending records are lane-scoped and TTL-bound
+- terminal tool/workflow failures clear incompatible pending states in that lane
+
+---
+
+## Prevent stale task delegation
+If user says "do that via sub-agent":
+- prefer FocusAnchor and temporal attention unresolved item, not stale retry offers
+- if ambiguous, ask one short disambiguation question with two options
+
+---
+
+## Telemetry and replay tuning
+Record on every routing turn:
+- `heuristic_decision`
+- `llm_decision`
+- `fused_decision`
+- `heuristic_scores`
+- `llm_scores`
+- `llm_confidence`
+- `risk_class`
+- `policy_vetoes`
+- `final_outcome`
+
+Operational requirements:
+- maintain replayable routing fixtures from production transcripts (redacted)
+- run offline replay to tune thresholds/weights before changing defaults
+- promote weight changes only with regression pass on routing acceptance suite
 
 ---
 
 ## Acceptance criteria
-- “write 10 different versions” triggers delegation to writer agent (or at least a multi-step plan) consistently.
-- “do that via sub-agent” delegates the correct most-recent task.
-- Delegation and tool calls are safe and clamped to allowlists.
+- "write 10 different versions" consistently routes to workflow/delegation path.
+- "do that via sub-agent" attaches to correct recent focus and does not select stale pending by mistake.
+- low-confidence or high-disagreement turns produce concise clarification questions.
+- high-risk/destructive routing remains deterministic-policy gated.
+- telemetry supports offline replay and measurable routing improvements.
 
 ---
 
 ## Tests
-- Router honours focus anchor over stale pending.
-- Confidence threshold prevents unsafe delegation.
+- prefilter resolves pending `clarification_needed` and `slot_request` without router call
+- fused arbitration honors risk-weight policy and disagreement clarify triggers
+- hard policy vetoes clamp invalid tool/agent decisions
+- delegation approval requirement cannot be bypassed by router output
+- replay suite validates no regression on known ambiguous transcripts
 
 ---
 

@@ -2078,3 +2078,91 @@ Commands run and outcomes:
 
 ### Next
 - **Next prompt:** Consider persisting `SESSION_THREADS` to durable memory/thread-state records so focus/pending context survives process restarts with deterministic continuity.
+
+## 2026-03-02 (UTC) - Prompt Ad-hoc: Auto-run workflow proposals with cancel-only chat control
+
+**Branch:** `main`  
+**Commit:** `not committed`  
+**Prompt reference:** `Reintroduce in-chat flow as auto-approve + cancel control`  
+**Specs referenced:**
+- `docs/specs/TELEGRAM_SURFACE.md`
+- `docs/specs/TELEGRAM_THREADING_AND_EMOJI.md`
+- `docs/specs/ROUTING_AND_DELEGATION_POLICY.md`
+
+### Summary
+- Switched workflow proposal UX in chat surfaces from approve/reject gating to immediate execution with a single cancel control.
+- Telegram runner now auto-executes `workflow_proposed` turns, renders a `🛑 Cancel` inline button, and routes cancel callbacks to a new `controlPlane.cancelWorkflow(...)` API.
+- Added orchestrator cancellation support for pending and in-flight workflows with deterministic stop semantics (best-effort ctrl-c style: halts before next step), plus a `cancelled` terminal status and lineage event.
+- Web UI chat now mirrors the same flow: auto-runs workflow proposals and offers a single cancel action via API.
+- Extended web API allowlist with `cancelWorkflow` and updated thin-client enforcement assertions accordingly.
+
+### Scope and decisions
+- **In scope:** Telegram workflow callback UX, web chat workflow UX, control-plane cancellation API surface, orchestrator run-cancel behavior, and enforcement test updates.
+- **Out of scope:** deep preemption of currently running external tool calls (cancellation is cooperative between steps, not forced process kill inside a single extension call).
+- **Key decisions:**
+  - Kept legacy `wf_app`/`wf_rej` callback handlers for backwards compatibility with already-rendered historical messages.
+  - New primary path uses cancel-only controls (`wf_can`) with immediate execution.
+  - Cancellation returns explicit statuses: `cancelled` (pending canceled) or `cancellation_requested` (in-flight cancel requested).
+
+### Tests and validation
+Commands run and outcomes:
+- `node --test tests/channels-thin-client-enforcement.test.mjs` - ✅
+- `node --test tests/telegram-reaction-state.test.mjs` - ✅
+- `node --test tests/runtime-core-orchestrator-workflow-validation.test.mjs` - ✅
+
+### Blockers
+- None.
+
+### Next
+- **Next prompt:** Add a dedicated integration test proving in-flight cancellation halts multi-step workflows after current step and emits `workflow.execution.cancelled` lineage with stable thread linkage.
+
+## 2026-03-03 (UTC) - Prompt Ad-hoc: Hybrid v2 routing/context spec refresh (increased LLM + deterministic arbitration)
+
+**Branch:** `main`  
+**Commit:** `not committed`  
+**Prompt reference:** `Spec update for increased hybrid approach across routing + context`  
+**Specs referenced:**
+- `docs/specs/ROUTING_AND_DELEGATION_POLICY.md`
+- `docs/specs/CONTEXT_MANAGEMENT_SYSTEM.md`
+
+### Summary
+- Rewrote routing spec to define a Hybrid v2 three-tier pipeline: deterministic prefilter, LLM router, deterministic post-policy executor.
+- Added confidence/risk-weighted arbitration model (adaptive weighting, not fixed global 50/50) with explicit clarify triggers.
+- Added typed pending/delegation state machine requirements for deterministic handling of short follow-ups.
+- Rewrote context spec to include a deterministic temporal attention layer (last ~30 minutes + unresolved items) as structured context.
+- Added telemetry and replay requirements to support safe tuning of thresholds/weights.
+
+### Scope and decisions
+- **In scope:** specification updates only (policy/architecture direction for future implementation).
+- **Out of scope:** runtime code changes, migrations, and test harness implementation.
+- **Key decisions:**
+  - Increase LLM influence in focus/routing/workflow shaping while preserving deterministic hard vetoes.
+  - Keep approvals/capability/thread isolation as deterministic non-negotiable controls.
+  - Require replay-based tuning before promoting routing weight/threshold changes.
+
+### Files changed
+- `docs/specs/ROUTING_AND_DELEGATION_POLICY.md` - replaced with Hybrid v2 routing/delegation policy and arbitration contract.
+- `docs/specs/CONTEXT_MANAGEMENT_SYSTEM.md` - replaced with Hybrid v2 context management policy including temporal attention and typed pending state integration.
+- `docs/IMPLEMENTATION_LOG.md` - appended this entry.
+
+### Data model / migrations (if applicable)
+- **Tables created/changed:** none (spec-only)
+- **Migration notes:** future implementation may add `temporal_attention` and expanded `thread_state` typed records.
+- **Risk:** low (documentation-only in this prompt)
+
+### Security and safety checks
+- **Allowlist changes:** none in code (spec clarifies non-negotiable deterministic vetoes)
+- **Capabilities/middleware affected:** none in code
+- **Sensitive operations:** none
+
+### Tests and validation
+Commands run and outcomes:
+- `npm test` - not run (docs-only change)
+- `npm run check:boundaries` - not run (docs-only change)
+
+### Blockers
+- None.
+
+### Next
+- **Next prompt:** Implement Hybrid v2 router arbitration + typed pending state in orchestrator/runtime.
+- **Suggested starting point:** `packages/polar-runtime-core/src/orchestrator.mjs`, `packages/polar-runtime-core/src/routing-policy-engine.mjs`, and integration replay tests.

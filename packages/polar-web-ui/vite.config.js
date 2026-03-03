@@ -33,7 +33,7 @@ const ALLOWED_ACTIONS = new Set([
     'getModelRegistry', 'upsertModelRegistry', 'setModelRegistryDefault',
     'getAgentRegistry', 'listAgentProfiles', 'getAgentProfile', 'registerAgentProfile', 'unregisterAgentProfile',
     'pinProfileForScope', 'unpinProfileForScope', 'getEffectivePinnedProfile',
-    'orchestrate', 'updateMessageChannelId', 'executeWorkflow', 'rejectWorkflow', 'handleRepairSelection'
+    'orchestrate', 'updateMessageChannelId', 'executeWorkflow', 'rejectWorkflow', 'cancelWorkflow', 'handleRepairSelection'
 ]);
 
 /**

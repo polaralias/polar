@@ -572,6 +572,8 @@ export function createOrchestrator({
     lineageStore,
 }) {
     const PENDING_WORKFLOWS = new Map();
+    const IN_FLIGHT_WORKFLOWS = new Map();
+    const WORKFLOW_CANCEL_REQUESTS = new Map();
     const WORKFLOW_TTL_MS = 30 * 60 * 1000;
     const WORKFLOW_MAX_SIZE = 100;
     const PENDING_AUTOMATION_PROPOSALS = new Map();
@@ -586,6 +588,11 @@ export function createOrchestrator({
         for (const [id, entry] of PENDING_WORKFLOWS) {
             if (currentTime - entry.createdAt > WORKFLOW_TTL_MS) {
                 PENDING_WORKFLOWS.delete(id);
+            }
+        }
+        for (const [id, entry] of WORKFLOW_CANCEL_REQUESTS) {
+            if (currentTime - entry.requestedAt > WORKFLOW_TTL_MS) {
+                WORKFLOW_CANCEL_REQUESTS.delete(id);
             }
         }
         for (const [id, entry] of PENDING_AUTOMATION_PROPOSALS) {
@@ -1578,6 +1585,12 @@ ${routingRecommendation || ""}`;
             // Resolve the target thread — use stored threadId, never rely on activeThreadId drift
             const runId = `run_${crypto.randomUUID()}`;
             const transientGrantIds = [];
+            IN_FLIGHT_WORKFLOWS.set(workflowId, {
+                runId,
+                sessionId: polarSessionId,
+                threadId: ownerThreadId,
+                startedAt: now(),
+            });
 
             // If this was a manual approval, issue grants for the requirements.
             // Write-tier grants may be reusable; destructive grants are run-scoped and revoked in finally.
@@ -1626,6 +1639,7 @@ ${routingRecommendation || ""}`;
 
             let st = SESSION_THREADS.get(polarSessionId);
             const targetThreadId = ownerThreadId || st?.activeThreadId;
+            const isCancellationRequested = () => WORKFLOW_CANCEL_REQUESTS.has(workflowId);
             const toErrorSnippet = (value, fallback = 'Unknown error') => {
                 if (typeof value === 'string') return value.slice(0, 300);
                 if (value === undefined || value === null) return fallback;
@@ -1724,8 +1738,13 @@ ${routingRecommendation || ""}`;
                 }
 
                 const toolResults = [];
+                let wasCancelled = isCancellationRequested();
 
                 for (const step of workflowSteps) {
+                    if (wasCancelled || isCancellationRequested()) {
+                        wasCancelled = true;
+                        break;
+                    }
                     const { capabilityId, extensionId, args: parsedArgs = {}, extensionType = "mcp" } = step;
 
                     if (capabilityId === "delegate_to_agent") {
@@ -1984,7 +2003,9 @@ ${routingRecommendation || ""}`;
                     const thread = st.threads.find(t => t.id === targetThreadId);
                     if (thread) {
                         delete thread.inFlight;
-                        if (anyFailed && !thread.lastError) {
+                        if (wasCancelled) {
+                            thread.status = 'done';
+                        } else if (anyFailed && !thread.lastError) {
                             const failedStep = toolResults.find(r => r.status === 'failed' || r.status === 'error');
                             thread.lastError = {
                                 runId, workflowId, threadId: targetThreadId,
@@ -1999,6 +2020,35 @@ ${routingRecommendation || ""}`;
                         }
                         thread.lastActivityTs = now();
                     }
+                }
+                if (wasCancelled) {
+                    await emitLineageEvent({
+                        eventType: "workflow.execution.cancelled",
+                        sessionId: polarSessionId,
+                        userId,
+                        workflowId,
+                        runId,
+                        threadId: targetThreadId,
+                        timestampMs: now(),
+                    });
+                    const assistantMessageId = `msg_ast_${crypto.randomUUID()}`;
+                    const cancelText = "Workflow cancelled by user.";
+                    await chatManagementGateway.appendMessage({
+                        sessionId: polarSessionId, userId: "assistant", role: "assistant",
+                        text: cancelText, messageId: assistantMessageId, timestampMs: now()
+                    });
+                    const sessionStateForReply = SESSION_THREADS.get(polarSessionId) || { threads: [], activeThreadId: null };
+                    return {
+                        status: 'cancelled',
+                        text: cancelText,
+                        assistantMessageId,
+                        workflowId,
+                        runId,
+                        useInlineReply: selectReplyAnchor({
+                            sessionState: sessionStateForReply,
+                            classification: { type: 'status_nudge', targetThreadId: targetThreadId }
+                        }).useInlineReply
+                    };
                 }
 
                 const deterministicHeader = "### 🛠️ Execution Results\n" + toolResults.map(r => (r.status === "failed" || r.status === "error" ? "❌ " : "✅ ") + `**${r.tool}**: ${typeof r.output === 'string' ? r.output.slice(0, 100) : 'Done.'}`).join("\n") + "\n\n";
@@ -2100,6 +2150,8 @@ ${routingRecommendation || ""}`;
                 });
                 return { status: 'error', text: normalized.userMessage, internalMessageId };
             } finally {
+                IN_FLIGHT_WORKFLOWS.delete(workflowId);
+                WORKFLOW_CANCEL_REQUESTS.delete(workflowId);
                 for (const grantId of transientGrantIds) {
                     approvalStore.revokeGrant(grantId);
                 }
@@ -2148,7 +2200,33 @@ ${routingRecommendation || ""}`;
                 }
             }
             PENDING_WORKFLOWS.delete(workflowId);
+            WORKFLOW_CANCEL_REQUESTS.delete(workflowId);
             return { status: 'rejected' };
+        },
+
+        async cancelWorkflow(workflowId) {
+            const pending = PENDING_WORKFLOWS.get(workflowId);
+            if (pending) {
+                PENDING_WORKFLOWS.delete(workflowId);
+                const st = SESSION_THREADS.get(pending.polarSessionId);
+                if (st && pending.threadId) {
+                    const thread = st.threads.find((candidate) => candidate.id === pending.threadId);
+                    if (thread) {
+                        delete thread.awaitingApproval;
+                        delete thread.inFlight;
+                        thread.status = "done";
+                        thread.lastActivityTs = now();
+                    }
+                }
+                return { status: "cancelled", phase: "pending", workflowId };
+            }
+
+            if (IN_FLIGHT_WORKFLOWS.has(workflowId)) {
+                WORKFLOW_CANCEL_REQUESTS.set(workflowId, { requestedAt: now() });
+                return { status: "cancellation_requested", phase: "in_flight", workflowId };
+            }
+
+            return { status: "not_found", workflowId };
         },
 
         /**

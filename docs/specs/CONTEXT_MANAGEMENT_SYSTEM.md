@@ -1,13 +1,14 @@
-# Context management system (thread-aware, low-cost, “Poke-style”)
+# Context management system (Hybrid v2: lane memory + temporal attention + typed state)
 
 ## Goal
-Make conversations feel coherent over time without exploding token usage by building context from multiple layers:
-- **Recency buffer**: last N messages in the relevant lane (threadKey).
-- **Rolling summaries**: compacted summaries per lane (threadKey) and optionally per chat (session).
-- **Long-term memory**: durable facts/preferences/outcomes.
-- **Retrieval**: pull only relevant memory and thread summaries for the user’s current intent.
+Make conversations coherent over time while keeping token cost bounded by composing context from:
+- lane recency
+- rolling summaries
+- long-term memory retrieval
+- temporal attention (recent-time recap)
+- typed pending state
 
-This system improves coherence and cost, but it does **not** replace deterministic Telegram thread routing and reply anchoring.
+This improves coherence and decision quality, but does not replace deterministic thread routing.
 
 ---
 
@@ -17,108 +18,170 @@ Chat-scoped:
 - `sessionId = telegram:chat:<chatId>`
 
 ### ThreadKey (lane)
-Must be stable and deterministic (topic > reply > root):
+Stable deterministic lane identity (topic > reply > root):
 - `topic:<chatId>:<message_thread_id>`
 - `reply:<chatId>:<reply_to_message_id>`
 - `root:<chatId>`
 
 ### FocusAnchor
-The message that the user is most likely referring to:
-1) Telegram reply target (if message is a reply)
-2) Most recent assistant message in same threadKey
-3) Pending slot request only if the new message matches expected slot type
+Primary reference target for ambiguous follow-ups:
+1. explicit reply target
+2. most recent assistant anchor in same lane
+3. matching pending-state anchor (typed)
+
+### TemporalAttention
+A structured, deterministic recap for recent continuity:
+- target window: last ~30 minutes in current lane/session
+- unresolved asks and pending actions
+- recent outcomes/failures and current active workflow/delegation status
 
 ---
 
-## Context layers (assembled in this order)
-1) **System/developer policy** (security, tools, constraints)
-2) **Personality** (effective personality resolved by precedence rules)
-3) **Thread summary** (lane summary for threadKey)
-4) **Retrieved memories** (facts/preferences/outcomes relevant to focus)
-5) **Recent messages** (last N messages in same threadKey)
-6) **Quoted reply context** (explicitly labelled, not mixed into user text)
-7) **User message**
+## Context assembly order
+1. system/developer policy
+2. personality profile
+3. lane summary (`thread_summary`)
+4. session summary (`session_summary`)
+5. temporal attention block (`temporal_attention`)
+6. retrieved memories (lane-first)
+7. recent lane messages
+8. quoted reply context block
+9. current user message
 
 Rules:
-- Only include messages from the same `threadKey` in the recency window.
-- Prefer a small, high-signal context to a large dump.
+- recency message window remains lane-scoped
+- temporal attention is structured fields, not a raw transcript dump
+- prefer high-signal compact blocks over long history
 
 ---
 
 ## Storage model
-SQLite is the source of truth.
+SQLite remains source of truth.
 
-### Recommended: store summaries as memory records
-Avoid new tables unless you need them. Use existing memory provider with typed records.
+### Memory record types
+- `thread_summary` (session scope, keyed by sessionId + threadKey)
+- `session_summary` (session scope, keyed by sessionId)
+- `temporal_attention` (session scope, keyed by sessionId + threadKey)
+- `thread_state` (typed pending state and focus anchors)
 
-Memory record types:
-- `thread_summary` (scope=session, keyed by sessionId + threadKey)
-- `session_summary` (scope=session, keyed by sessionId)
-- `thread_state` (optional; pending slot state, last anchor ids, etc)
-
-Metadata must include:
-- `threadKey`
+Required metadata:
+- `threadKey` (where applicable)
 - `summaryVersion`
 - `updatedAtMs`
-- `messageRange` (optional: from/to message IDs)
+- `messageRange` (optional)
+- `windowStartMs`/`windowEndMs` for temporal attention
 
-Long-term memories remain as you already store them (facts/preferences/events).
+Never persist secrets/credentials in summaries or temporal attention blocks.
 
 ---
 
-## Compaction and summarisation
-### When to compact
-Trigger compaction when any of these thresholds are exceeded for a threadKey:
-- `recentMessagesCount > 30` OR
-- `estimatedTokens(recentMessages) > 2,500` OR
-- `timeSinceLastSummaryUpdate > 24h` (optional)
+## Temporal attention layer
+### Purpose
+Improve short-horizon reasoning (for "that", "continue", "do it") without inflating token usage.
 
-### What to compact
-- Keep the **most recent K messages** in lane untouched (e.g. last 10).
-- Summarise the older messages into the `thread_summary`.
+### Build contract
+Deterministically produce a compact JSON-like block containing:
+- `window`: `{ startAtMs, endAtMs }`
+- `focusCandidates`: top 1-3 candidate anchors with short labels
+- `unresolved`: pending slots, clarifications, approvals, cancellations
+- `recentActions`: last meaningful tool/workflow/delegation outcomes
+- `riskHints`: whether unresolved items imply write/destructive approvals
+
+### Selection policy
+- default source: current lane
+- include session-level unresolved items only when high-confidence relevance exists
+- stale items (expired TTL) are excluded
+
+---
+
+## Compaction and summarization
+### Lane compaction trigger
+- `recentMessagesCount > 30` OR
+- `estimatedTokens(recentMessages) > 2500`
+
+### Session compaction trigger
+- `sessionMessagesCount > 30` OR
+- `estimatedTokens(sessionMessages) > 3000`
+
+### Temporal attention refresh trigger
+- every new turn touching unresolved state
+- or when now - `updatedAtMs` exceeds configured freshness target (for example 5 minutes)
 
 ### Summary format
-Use a structured summary to reduce ambiguity:
-
-- Current goals / open questions
-- Decisions made
-- Important facts (user preferences, constraints)
-- Recent outcomes (what was tried, what failed)
-- Pending actions (explicitly marked)
-
-Never store tool secrets or credentials.
+Include structured sections:
+- goals/open questions
+- decisions/outcomes
+- constraints/facts
+- pending actions
 
 ---
 
-## Retrieval (RAG) policy
-Start simple:
-- Use SQLite FTS or text search against memory JSON to fetch top matches by keyword.
-- Later: add embeddings if needed.
+## Retrieval policy
+Start simple with SQLite FTS / text search.
 
-Retrieve:
-- memories matching user’s query terms
-- thread summaries for related threadKeys only if user explicitly references them or confidence is high
+Retrieve in this order:
+1. lane records (`thread_summary`, lane facts)
+2. temporal attention for active lane
+3. session summary
+4. cross-lane records only when explicitly referenced or high-confidence match
 
-Avoid:
-- retrieving across all threads by default (cost + confusion)
+Avoid retrieving all-thread memories by default.
 
 ---
 
-## Redis
-Redis is optional and should be treated as a cache/coordination layer, not a primary store.
-Use Redis only when:
-- you run multiple workers and need distributed locks for compaction/runs
-- you want caching for repeated retrieval queries
+## Typed pending state integration
+Pending state is first-class context, not free-form prose.
 
-SQLite remains the source of truth.
+Recommended typed states:
+- `slot_request`
+- `clarification_needed`
+- `workflow_waiting`
+- `workflow_cancellable`
+- `delegation_candidate`
+
+Rules:
+- if inbound matches pending type, resolve deterministically before broad retrieval
+- pending state is lane-scoped and TTL-bound
+- terminal normalized failures clear incompatible pending state in same lane
+
+---
+
+## LLM and deterministic responsibilities
+LLM-leaning responsibilities:
+- focus candidate ranking assistance
+- routing mode proposal
+- workflow shaping
+- post-tool interpretation/synthesis
+
+Deterministic responsibilities (absolute):
+- thread/lane derivation and isolation
+- pending-state resolution contract
+- capability and approval enforcement
+- installed tool/agent existence checks
+- policy vetoes and execution gating
+
+---
+
+## Observability and replay
+Capture per-turn context telemetry:
+- selected lane and focus anchor
+- temporal attention payload hash/version
+- retrieved memory IDs
+- pending state consumed/updated
+- routed decision path and outcome
+
+Replay requirements:
+- preserve redacted transcript fixtures with expected focus/routing outputs
+- validate context assembly and routing stability before threshold/weight changes
 
 ---
 
 ## Acceptance criteria
-- The orchestrator assembles context using threadKey scoping.
-- Rolling summaries reduce token usage as sessions grow.
-- The assistant can “pick up where it left off” within a threadKey without requiring all history in-context.
-- Pending states do not hijack unrelated tasks.
+- assistant can continue correctly on short follow-ups using temporal attention + typed pending state
+- lane recency isolation is preserved (no cross-thread bleed)
+- session continuity improves without raw whole-chat injection
+- context remains compact while unresolved items are retained accurately
+- replay suite catches regressions in focus/routing continuity
 
 ---
 

@@ -184,36 +184,44 @@ export async function renderChat(container) {
                 wfHtml += `<li><code>${s.capabilityId}</code> (from ${s.extensionId})</li>`;
             });
             wfHtml += `</ul><div style="margin-top: 12px; display:flex; gap:8px;">
-                <button id="wf-approve-btn-${workflowId}" class="action-btn outline" style="font-size: 12px; padding: 6px 12px; color: var(--primary-glow); border-color: var(--primary-glow)">Execute</button>
-                <button id="wf-reject-btn-${workflowId}" class="action-btn outline" style="font-size: 12px; padding: 6px 12px; color: var(--danger); border-color: var(--danger)">Reject</button>
+                <button id="wf-cancel-btn-${workflowId}" class="action-btn outline" style="font-size: 12px; padding: 6px 12px; color: var(--danger); border-color: var(--danger)">Cancel</button>
             </div>`;
 
             const wfDiv = addBubble('assistant', wfHtml);
+            const cancelButton = wfDiv.querySelector(`#wf-cancel-btn-${workflowId}`);
+            const execIndicator = addBubble('assistant', '<span class="pulsing">⚡ Executing workflow...</span>');
 
-            wfDiv.querySelector(`#wf-approve-btn-${workflowId}`).addEventListener('click', async () => {
-                wfDiv.querySelectorAll('button').forEach(b => b.remove());
-                addBubble('system', 'Executing Workflow Tools...');
+            const onFinish = () => {
+                execIndicator.remove();
+                if (cancelButton) {
+                    cancelButton.remove();
+                }
+            };
 
-                const execIndicator = addBubble('assistant', '<span class="pulsing">⚡ Executing & Summarizing...</span>');
+            cancelButton?.addEventListener('click', async () => {
+                cancelButton.disabled = true;
                 try {
-                    const execResult = await fetchApi('executeWorkflow', { workflowId });
-                    execIndicator.remove();
-                    await processOrchestratorResponse(execResult);
+                    const cancelResult = await fetchApi('cancelWorkflow', { workflowId });
+                    const cancelled =
+                        cancelResult?.status === 'cancelled' ||
+                        cancelResult?.status === 'cancellation_requested';
+                    addBubble(
+                        'system',
+                        cancelled ? '🛑 Cancellation requested.' : '⚠️ Workflow was already complete.'
+                    );
                 } catch (e) {
-                    execIndicator.remove();
-                    addBubble('system', '<span style="color:var(--danger)">Error: ' + e.message + '</span>');
+                    addBubble('system', '<span style="color:var(--danger)">Cancel failed: ' + e.message + '</span>');
                 }
             });
 
-            wfDiv.querySelector(`#wf-reject-btn-${workflowId}`).addEventListener('click', async () => {
-                wfDiv.querySelectorAll('button').forEach(b => b.remove());
-                addBubble('system', 'Workflow Rejected.');
-                try {
-                    await fetchApi('rejectWorkflow', { workflowId });
-                } catch (e) {
-                    console.error("Failed to reject workflow", e);
-                }
-            });
+            try {
+                const execResult = await fetchApi('executeWorkflow', { workflowId });
+                onFinish();
+                await processOrchestratorResponse(execResult);
+            } catch (e) {
+                onFinish();
+                addBubble('system', '<span style="color:var(--danger)">Error: ' + e.message + '</span>');
+            }
         }
     }
 

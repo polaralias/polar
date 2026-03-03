@@ -485,6 +485,7 @@ async function processGroupedMessages(polarSessionId, items) {
                     : {}),
             }
         });
+        let terminalStatus = result.status;
 
         const useInlineReply = result.useInlineReply === true;
         const anchorId = result.anchorMessageId;
@@ -517,15 +518,14 @@ async function processGroupedMessages(polarSessionId, items) {
                 formattedSteps += `  Ext: \`${step.extensionId}\`\n`;
             });
 
-            // Send Workflow block with Approve/Reject buttons
-            const stepsMsg = await ctx.reply(formattedSteps, {
+            // Auto-execute workflows and offer a cancel control while execution is in-flight.
+            const stepsMsg = await ctx.reply(`${formattedSteps}\n🟡 Auto-running now.`, {
                 parse_mode: 'Markdown',
                 ...replyOptions,
                 reply_markup: {
                     inline_keyboard: [
                         [
-                            { text: "✅ Approve", callback_data: `wf_app:${result.workflowId}:${telegramMessageId}` },
-                            { text: "❌ Reject", callback_data: `wf_rej:${result.workflowId}:${telegramMessageId}` }
+                            { text: "🛑 Cancel", callback_data: `wf_can:${result.workflowId}:${telegramMessageId}` }
                         ]
                     ]
                 }
@@ -533,6 +533,14 @@ async function processGroupedMessages(polarSessionId, items) {
             if (result.assistantMessageId && !primaryReplyMessage?.message_id) {
                 await controlPlane.updateMessageChannelId(polarSessionId, result.assistantMessageId, stepsMsg.message_id);
             }
+            const workflowResult = await executeWorkflowAndReply({
+                ctx,
+                workflowId: result.workflowId,
+                sessionId: polarSessionId,
+                replyOptions,
+                cancelControlMessage: stepsMsg,
+            });
+            terminalStatus = workflowResult?.status || terminalStatus;
         } else if (result.status === 'automation_proposed') {
             let primaryReplyMessage;
             if (result.text) {
@@ -604,11 +612,11 @@ async function processGroupedMessages(polarSessionId, items) {
             await ctx.reply(result.text || "Wait, I didn't generate any text.", replyOptions);
         }
 
-        if (result.status === 'completed') {
+        if (terminalStatus === 'completed' || terminalStatus === 'cancelled') {
             await setReactionState(ctx, ctx.chat.id, telegramMessageId, 'done');
-        } else if (result.status === 'workflow_proposed' || result.status === 'repair_question' || result.status === 'automation_proposed') {
+        } else if (terminalStatus === 'workflow_proposed' || terminalStatus === 'repair_question' || terminalStatus === 'automation_proposed') {
             await setReactionState(ctx, ctx.chat.id, telegramMessageId, 'waiting_user');
-        } else if (result.status === 'error') {
+        } else if (terminalStatus === 'error') {
             await setReactionState(ctx, ctx.chat.id, telegramMessageId, 'error');
         } else {
             await setReactionState(ctx, ctx.chat.id, telegramMessageId, 'done');
@@ -617,6 +625,61 @@ async function processGroupedMessages(polarSessionId, items) {
     } catch (err) {
         console.error("Error processing text:", err);
         await setReactionState(ctx, ctx.chat.id, telegramMessageId, 'error');
+    }
+}
+
+async function executeWorkflowAndReply({
+    ctx,
+    workflowId,
+    sessionId,
+    replyOptions,
+    cancelControlMessage,
+}) {
+    try {
+        const result = await controlPlane.executeWorkflow(workflowId);
+        if (cancelControlMessage?.message_id) {
+            await ctx.telegram.editMessageReplyMarkup(
+                cancelControlMessage.chat.id,
+                cancelControlMessage.message_id,
+                undefined,
+                { inline_keyboard: [] }
+            ).catch(() => undefined);
+        }
+        if (result.status === 'completed') {
+            const replyText = result.text || "✅ Workflow executed.";
+            const msg = await ctx.reply(replyText, replyOptions);
+            if (result.assistantMessageId) {
+                await controlPlane.updateMessageChannelId(sessionId, result.assistantMessageId, msg.message_id);
+            }
+            return result;
+        }
+        if (result.status === 'cancelled') {
+            const msg = await ctx.reply(`🛑 ${result.text || "Workflow cancelled."}`, replyOptions);
+            if (result.assistantMessageId) {
+                await controlPlane.updateMessageChannelId(sessionId, result.assistantMessageId, msg.message_id);
+            }
+            return result;
+        }
+        if (result.status === 'error') {
+            const errMsg = await ctx.reply("❌ " + (result.text || "Workflow execution failed."), replyOptions);
+            if (result.internalMessageId) {
+                await controlPlane.updateMessageChannelId(sessionId, result.internalMessageId, errMsg.message_id);
+            }
+            return result;
+        }
+        await ctx.reply("⚠️ Workflow execution returned an unexpected status.", replyOptions);
+        return result;
+    } catch (execErr) {
+        if (cancelControlMessage?.message_id) {
+            await ctx.telegram.editMessageReplyMarkup(
+                cancelControlMessage.chat.id,
+                cancelControlMessage.message_id,
+                undefined,
+                { inline_keyboard: [] }
+            ).catch(() => undefined);
+        }
+        await ctx.reply("❌ Workflow execution crashed: " + execErr.message, replyOptions);
+        return { status: "error", text: execErr.message };
     }
 }
 
@@ -797,37 +860,36 @@ bot.on('callback_query', async (ctx) => {
         await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
 
         try {
-            const result = await controlPlane.executeWorkflow(workflowId);
             const sessionId = (await resolvePolarSessionContext(ctx).catch(() => ({
                 sessionId: `telegram:chat:${ctx.callbackQuery?.message?.chat?.id ?? ctx.message?.chat?.id ?? "unknown"}`,
                 threadId: undefined,
                 replyToMessageId: undefined
             }))).sessionId;
-
-            if (result.status === 'completed') {
-                if (result.text) {
-                    const msg = await ctx.reply(result.text, callbackReplyOptions);
-                    if (result.assistantMessageId) {
-                        await controlPlane.updateMessageChannelId(sessionId, result.assistantMessageId, msg.message_id);
-                    }
-                } else {
-                    const msg = await ctx.reply("✅ Workflow executed.", callbackReplyOptions);
-                    if (result.assistantMessageId) {
-                        await controlPlane.updateMessageChannelId(sessionId, result.assistantMessageId, msg.message_id);
-                    }
-                }
-            } else if (result.status === 'error') {
-                const errMsg = await ctx.reply("❌ " + (result.text || "Workflow execution failed."), callbackReplyOptions);
-                if (result.internalMessageId) {
-                    await controlPlane.updateMessageChannelId(sessionId, result.internalMessageId, errMsg.message_id);
-                }
-            }
+            await executeWorkflowAndReply({
+                ctx,
+                workflowId,
+                sessionId,
+                replyOptions: callbackReplyOptions,
+            });
             await transitionWaitingReactionToDone(ctx, callbackData);
         } catch (execErr) {
             console.error(execErr);
             await ctx.reply("❌ Workflow execution crashed: " + execErr.message, callbackReplyOptions);
             await transitionWaitingReactionToDone(ctx, callbackData);
         }
+
+    } else if (callbackData.startsWith('wf_can:')) {
+        const parts = callbackData.split(':');
+        const workflowId = parts[1];
+        await ctx.answerCbQuery("Cancelling workflow...");
+        await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
+        const cancelResult = await controlPlane.cancelWorkflow(workflowId);
+        if (cancelResult.status === "cancelled" || cancelResult.status === "cancellation_requested") {
+            await ctx.reply("🛑 Cancellation requested. Stopping workflow.", callbackReplyOptions);
+        } else {
+            await ctx.reply("⚠️ Workflow was not found or already finished.", callbackReplyOptions);
+        }
+        await transitionWaitingReactionToDone(ctx, callbackData);
 
     } else if (callbackData.startsWith('wf_rej:')) {
         const parts = callbackData.split(':');

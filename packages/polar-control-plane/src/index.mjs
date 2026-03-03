@@ -2522,6 +2522,14 @@ export function createControlPlaneService(config = {}) {
     },
 
     /**
+     * @param {string | { workflowId: string }} request
+     */
+    async cancelWorkflow(request) {
+      const workflowId = typeof request === "string" ? request : request.workflowId;
+      return orchestrator.cancelWorkflow(workflowId);
+    },
+
+    /**
      * @param {string | { proposalId: string }} request
      */
     async consumeAutomationProposal(request) {

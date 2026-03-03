@@ -18,7 +18,7 @@ test("web chat is a thin client: uses backend orchestration endpoints only", () 
 
   assert.match(chatSource, /fetchApi\('orchestrate'/);
   assert.match(chatSource, /fetchApi\('executeWorkflow'/);
-  assert.match(chatSource, /fetchApi\('rejectWorkflow'/);
+  assert.match(chatSource, /fetchApi\('cancelWorkflow'/);
   assert.match(chatSource, /fetchApi\('handleRepairSelection'/);
 
   assert.doesNotMatch(chatSource, /fetchApi\('generateOutput'/);
@@ -27,7 +27,7 @@ test("web chat is a thin client: uses backend orchestration endpoints only", () 
 
   assert.match(
     viteSource,
-    /'orchestrate'[\s\S]*'executeWorkflow'[\s\S]*'rejectWorkflow'[\s\S]*'handleRepairSelection'/,
+    /'orchestrate'[\s\S]*'executeWorkflow'[\s\S]*'cancelWorkflow'[\s\S]*'handleRepairSelection'/,
   );
 });
 
@@ -35,10 +35,10 @@ test("telegram runner renders workflow proposal controls and processes approval 
   const runnerSource = readFile(telegramRunnerPath);
 
   assert.match(runnerSource, /result\.status === 'workflow_proposed'/);
-  assert.match(runnerSource, /callback_data: `wf_app:\$\{result\.workflowId\}:\$\{telegramMessageId\}`/);
-  assert.match(runnerSource, /callback_data: `wf_rej:\$\{result\.workflowId\}:\$\{telegramMessageId\}`/);
+  assert.match(runnerSource, /callback_data: `wf_can:\$\{result\.workflowId\}:\$\{telegramMessageId\}`/);
+  assert.match(runnerSource, /executeWorkflowAndReply\(\{/);
   assert.match(runnerSource, /controlPlane\.executeWorkflow\(workflowId\)/);
-  assert.match(runnerSource, /controlPlane\.rejectWorkflow\(workflowId\)/);
+  assert.match(runnerSource, /controlPlane\.cancelWorkflow\(workflowId\)/);
 });
 
 test("telegram runner renders automation proposal controls and processes approval callbacks", () => {
