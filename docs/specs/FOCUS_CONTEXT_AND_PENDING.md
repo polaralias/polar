@@ -1,89 +1,105 @@
-# Focus context and pending state resolution
+# Focus context and pending state resolution (Hybrid v2)
 
 ## Goal
-Prevent “wrong that” routing (e.g. delegating the previous weather flow instead of the most recent email task) by making focus resolution deterministic and safe.
+Prevent wrong-reference routing (for example, delegating an older task when user says "do that") by resolving focus deterministically before broad routing.
 
-This runs **before** routing/delegation/tool selection.
+This stage runs before final route execution and before high-impact tool/delegation actions.
 
 ---
 
 ## Inputs
 - `sessionId`
-- `threadKey`
-- inbound message:
-  - user text
-  - telegram message id
+- inbound `threadKey`
+- inbound message envelope:
+  - text
+  - channel message id
   - optional `reply_to_message_id`
   - optional topic id (`message_thread_id`)
-- session history (recent, lane-scoped)
-- pending state (if any)
+- lane/session history (recent)
+- typed pending state
+- temporal attention record for lane (if present)
 
 ---
 
 ## Pending state types
-Pending state must be explicit and typed, e.g.:
-- `slot_request`: expecting a value of a specific kind (location/date/time/yes-no/etc)
-- `workflow_waiting`: awaiting button press (approve/reject/repair selection)
-- `tool_retry_offer`: assistant offered to retry a tool call
-- `delegation_offer`: assistant proposed handing off to a sub-agent
-- `clarification_needed`: assistant asked a clarifying question
+Pending state must be explicit and typed:
+- `slot_request`
+- `clarification_needed`
+- `workflow_waiting`
+- `workflow_cancellable`
+- `delegation_candidate`
 
-Each pending state must include:
-- `expectedType`: e.g. `location`, `time`, `boolean`, `selection:A|B`, etc
+Each record must include:
+- `expectedType` (for example: `location`, `date_time`, `boolean`, `selection:A|B`)
 - `createdAtMs`
-- `expiresAtMs` (optional)
-- `anchorMessageId` (internal and/or channel id)
+- `expiresAtMs` (required for clarify/delegation candidates)
+- `anchorMessageId` (internal and/or channel)
 - `threadKey`
+- `stateVersion`
 
 ---
 
 ## Deterministic focus resolver
-Resolve a FocusContext in this order:
+Resolve `FocusContext` in this order.
 
-### Step 1: reply anchor wins
-If inbound message is a Telegram reply:
-- FocusAnchor = that replied-to message
-- Include a 1-message before + 1-message after window around it (if available) for context.
+### Step 1: explicit reply anchor
+If inbound is a Telegram reply:
+- FocusAnchor = replied-to message.
+- Include compact local anchor context (1 message before + 1 after when available).
 
-### Step 2: otherwise lane recency
+### Step 2: lane recency
 Else:
-- FocusAnchor = most recent assistant message in the same threadKey
-- Include last N lane messages (N small, e.g. 10–20) in context assembly.
+- FocusAnchor = most recent assistant anchor in same `threadKey`.
+- Include last N lane messages (small window, for example 10-20).
 
-### Step 3: pending state only applies if message matches expected type
-Pending state may influence routing only if all are true:
-- pending.threadKey == inbound.threadKey
-- pending is not expired
-- inbound text matches pending.expectedType (strict)
-Examples:
-- expectedType=location, inbound="Swansea" -> matches
-- expectedType=boolean, inbound="yeah go for it" -> matches
-- expectedType=selection, inbound="A" -> matches
+### Step 3: typed pending match
+Typed pending can influence focus only if all are true:
+- `pending.threadKey == inbound.threadKey`
+- pending not expired
+- inbound matches `pending.expectedType`
 
 If inbound does not match expected type:
-- drop/expire pending state for that lane
-- do not let pending hijack routing
+- clear/expire incompatible pending record for lane
+- do not let pending hijack focus/routing
 
-### Step 4: build “what does that refer to” hint
-If inbound contains pronouns (“that”, “it”, “do it”, “again”), provide the router a hint:
-- `focusAnchorInternalId`
-- `focusAnchorChannelId` (if mapped)
-- `focusAnchorTextSnippet` (short)
-This improves LLM router accuracy without letting it invent anchors.
+### Step 4: temporal attention refinement
+If pronouns/low-information text appear ("that", "it", "do it", "again"):
+- use deterministic temporal attention candidates from last ~30 minutes
+- expose top candidate anchors as hints:
+  - `focusAnchorInternalId`
+  - `focusAnchorChannelId`
+  - `focusAnchorTextSnippet`
+  - `focusSource` (`reply_anchor|lane_recency|pending|temporal_attention`)
+
+### Step 5: ambiguity outcome
+If top focus candidates are too close by decision margin:
+- return `clarification_needed` candidate
+- do not execute tool/delegation decisions yet
+
+---
+
+## Contract with router/arbitration
+Focus resolver output is authoritative input to routing arbitration:
+- router may rank semantic fit between provided candidates
+- router may not invent anchors outside provided candidate set
+- deterministic policy still chooses final safe action on high-risk conflicts
 
 ---
 
 ## Acceptance criteria
-- “do that via sub-agent” references the correct recent task, not an older pending tool retry.
-- Slot-fill flows work when user provides the requested value.
-- Pending states do not persist forever; they expire or are cleared on mismatch.
+- "do that via sub-agent" resolves to most recent relevant focus, not stale pending.
+- slot fills apply only when expected type matches.
+- short replies ("yes", "that one") resolve via typed pending first.
+- incompatible/expired pending records are cleared and cannot persist indefinitely.
 
 ---
 
 ## Tests
-- Reply message anchors focus to replied-to content.
-- Pending slot applies only when expected type matches.
-- Pending clears when new message is a different task.
+- reply-to anchor wins over lane recency.
+- typed pending match succeeds only on expected type.
+- pending mismatch clears stale pending and continues as new request.
+- temporal attention candidate list is used for pronoun-like turns.
+- ambiguity margin triggers `clarification_needed`.
 
 ---
 

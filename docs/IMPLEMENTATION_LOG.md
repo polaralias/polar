@@ -2166,3 +2166,55 @@ Commands run and outcomes:
 ### Next
 - **Next prompt:** Implement Hybrid v2 router arbitration + typed pending state in orchestrator/runtime.
 - **Suggested starting point:** `packages/polar-runtime-core/src/orchestrator.mjs`, `packages/polar-runtime-core/src/routing-policy-engine.mjs`, and integration replay tests.
+
+## 2026-03-03 (UTC) - Prompt Ad-hoc: Hybrid v2 follow-up alignment for focus/workflow/output specs
+
+**Branch:** `main`  
+**Commit:** `not committed`  
+**Prompt reference:** `Follow-up spec alignment after Hybrid v2 routing/context refresh`  
+**Specs referenced:**
+- `docs/specs/FOCUS_CONTEXT_AND_PENDING.md`
+- `docs/specs/WORKFLOW_EXECUTION_INTEGRITY.md`
+- `docs/specs/ORCHESTRATOR_OUTPUT_RULE.md`
+
+### Summary
+- Rewrote focus/pending spec to align with typed pending states and temporal attention-assisted focus resolution.
+- Rewrote workflow integrity spec to codify Hybrid v2 split: LLM proposes/shapes, deterministic policy executes/enforces.
+- Updated orchestrator output rule to reflect Hybrid v2 clarification and normalized-failure response requirements.
+- Kept deterministic approvals/capability gates as non-negotiable in all aligned docs.
+
+### Scope and decisions
+- **In scope:** spec alignment only for focus, workflow integrity, and output-path behavior.
+- **Out of scope:** runtime implementation and tests.
+- **Key decisions:**
+  - Focus resolver remains deterministic with typed pending + candidate-bound model assistance.
+  - Workflow approvals and execution gates remain deterministic regardless of model confidence.
+  - User-facing outputs stay orchestrator-mediated to avoid two-voice behavior.
+
+### Files changed
+- `docs/specs/FOCUS_CONTEXT_AND_PENDING.md` - replaced with Hybrid v2 focus resolver and typed pending contract.
+- `docs/specs/WORKFLOW_EXECUTION_INTEGRITY.md` - replaced with Hybrid v2 execution integrity and policy enforcement split.
+- `docs/specs/ORCHESTRATOR_OUTPUT_RULE.md` - refreshed to align output/ack behavior with Hybrid v2.
+- `docs/IMPLEMENTATION_LOG.md` - appended this follow-up entry.
+
+### Data model / migrations (if applicable)
+- **Tables created/changed:** none (spec-only)
+- **Migration notes:** future implementation likely extends `thread_state` and may add `temporal_attention` memory record.
+- **Risk:** low (documentation-only)
+
+### Security and safety checks
+- **Allowlist changes:** none in code
+- **Capabilities/middleware affected:** none in code
+- **Sensitive operations:** none
+
+### Tests and validation
+Commands run and outcomes:
+- `npm test` - not run (docs-only change)
+- `npm run check:boundaries` - not run (docs-only change)
+
+### Blockers
+- None.
+
+### Next
+- **Next prompt:** Implement Hybrid v2 arbitration + typed pending persistence + temporal attention payload in runtime.
+- **Suggested starting point:** `packages/polar-runtime-core/src/orchestrator.mjs` and `packages/polar-runtime-core/src/routing-policy-engine.mjs`.

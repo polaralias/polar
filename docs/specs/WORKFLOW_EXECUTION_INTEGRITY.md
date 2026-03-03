@@ -1,26 +1,100 @@
-# Workflow execution integrity (append/contract safety)
+# Workflow execution integrity (Hybrid v2: proposal-by-LLM, execution-by-policy)
 
 ## Problem
-A crash like:
-- `Invalid chat.management.gateway.message.append.request`
-during workflow execution indicates the system attempted to append a message with a shape that violates the chat management contract.
+Workflow failures or invalid append payloads must never break conversation continuity.
 
-This is an internal bug, but it must be fail-safe and must not derail the conversation.
+A crash like `Invalid chat.management.gateway.message.append.request` indicates an internal contract bug and must fail safe.
+
+---
 
 ## Goals
-- Validate message append requests before they hit the gateway.
-- Ensure workflows and sub-agent execution share the same safe append path as normal turns.
-- On failure: normalise to InternalContractBug and produce a user-facing error via orchestrator.
+- Keep workflow proposal/model reasoning strong while execution remains deterministic and policy-gated.
+- Validate append and execution contracts before side effects.
+- Ensure tool/delegation/workflow runs share one enforcement pipeline.
+- Normalize execution failures to typed categories and recover conversation state safely.
 
-## Requirements
-- All message appends include:
-  - sessionId, userId, messageId, role, text, timestampMs
-- MessageId uniqueness rules must hold within a session.
-- Workflow execution must bind channel ids for assistant messages (as normal turns do).
+---
+
+## Execution split
+### LLM responsibilities
+- propose workflow intent/template
+- shape step decomposition/order
+- summarize outcomes for user
+
+### Deterministic responsibilities (absolute)
+- validate workflow template/args and step schema
+- enforce capability scope, tool/agent allowlists, and grants/approvals
+- gate destructive/write actions
+- execute steps and cancellation semantics
+- append chat messages through validated gateway contract only
+
+Model output cannot bypass approval or capability checks.
+
+---
+
+## Append and contract requirements
+All append operations must include valid contract fields:
+- `sessionId`, `userId`, `messageId`, `role`, `text`, `timestampMs`
+- optional metadata must be JSON-safe
+
+Additional integrity rules:
+- messageId uniqueness holds within session
+- workflow/status messages follow same append validator as normal turns
+- assistant outputs with channel delivery must maintain channel-id bindings
+
+---
+
+## Failure normalization and state safety
+Workflow failures must normalize into typed categories (for example):
+- `ToolUnavailable`
+- `ToolMisconfigured`
+- `ToolTransientError`
+- `ToolValidationError`
+- `InternalContractBug`
+
+Rules:
+- no crash loop on normalized failure
+- terminal classes clear incompatible pending state in same lane
+- lineage/audit events are always emitted with run/workflow/thread IDs
+- user receives deterministic safe error text if synthesis is unavailable
+
+---
+
+## Cancellation integrity
+Cancellation is cooperative and deterministic:
+- pending workflows: cancel immediately
+- in-flight workflows: mark cancellation requested and stop before next step
+- final state must be explicit (`cancelled` or `cancellation_requested`)
+- cancellation events include stable thread linkage in lineage
+
+---
+
+## Approval integrity
+Approval semantics are deterministic and centralized:
+- read-only workflows/delegation may auto-run per policy
+- write/complex/destructive workflows require grants/approval
+- LLM cannot self-approve or escalate risk class
+
+---
+
+## Telemetry requirements
+Capture per execution:
+- `workflowId`, `runId`, `threadId`, `riskClass`
+- proposed vs executed steps (after policy clamps)
+- approval/grant decisions
+- normalized error category (if any)
+- final status and user-visible outcome type
+
+---
 
 ## Tests
-- Unit test for executeWorkflow that appends assistant message(s) with valid contract shape.
-- Test that invalid append is caught and normalised rather than crashing.
+- executeWorkflow appends assistant/system messages with valid contract shape.
+- invalid append payload normalizes to `InternalContractBug` and does not crash orchestrator.
+- tool/delegation policy clamps are enforced at execution boundary.
+- cancellation halts multi-step run before next step and emits cancellation lineage event.
+- approval-required workflow cannot execute without deterministic approval path.
+
+---
 
 ## Agent checklist
 - Check AGENTS.md first.
