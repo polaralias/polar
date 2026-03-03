@@ -61,6 +61,7 @@ const routerDecisionSchema = createStrictObjectSchema({
         confidence: jsonField(),
         rationale: stringField({ minLength: 1 }),
         references: jsonField({ required: false }),
+        scores: jsonField({ required: false }),
     }
 });
 
@@ -287,6 +288,204 @@ const AGENT_ID_PATTERN = /^@[a-z0-9_-]{2,32}$/;
 const DEFAULT_GENERIC_AGENT_ID = "@generic_sub_agent";
 const DEFAULT_GENERIC_PROFILE_ID = "profile.generic_sub_agent";
 const ROUTER_CONFIDENCE_THRESHOLD = 0.65;
+const ROUTER_DECISION_MARGIN_THRESHOLD = 0.12;
+const TEMPORAL_ATTENTION_WINDOW_MS = 30 * 60 * 1000;
+const TEMPORAL_ATTENTION_RECENT_ACTION_LIMIT = 5;
+
+const ROUTING_DECISIONS = /** @type {const} */ (["respond", "delegate", "tool", "workflow", "clarify"]);
+
+/**
+ * @param {string} text
+ * @returns {"low"|"medium"|"high"|"destructive"}
+ */
+function classifyRoutingRisk(text = "") {
+    const normalized = String(text || "").toLowerCase();
+    const destructiveIntent = /\b(delete|remove|destroy|wipe|drop)\b/.test(normalized);
+    if (destructiveIntent) {
+        return "destructive";
+    }
+    const highRiskIntent = /\b(write|draft|create|compose|send|edit|update|workflow|plan|multi-step|delegate)\b/.test(normalized);
+    if (highRiskIntent) {
+        return "high";
+    }
+    const mediumRiskIntent = /\b(tool|search|look up|again|that|it)\b/.test(normalized);
+    if (mediumRiskIntent) {
+        return "medium";
+    }
+    return "low";
+}
+
+/**
+ * @param {Record<string, number>} scores
+ * @returns {{ topDecision: string, topScore: number, secondScore: number, margin: number }}
+ */
+function extractTopDecision(scores) {
+    const ranked = Object.entries(scores)
+        .sort((left, right) => right[1] - left[1]);
+    const [topDecision = "respond", topScore = 0] = ranked[0] || [];
+    const secondScore = ranked[1]?.[1] ?? 0;
+    return {
+        topDecision,
+        topScore,
+        secondScore,
+        margin: topScore - secondScore,
+    };
+}
+
+/**
+ * @param {{ text: string, classification: Record<string, unknown>|null, stageADelegationSignal: boolean, availableToolsCount: number, policyFlags: Record<string, unknown> }} input
+ * @returns {Record<string, number>}
+ */
+function deriveHeuristicRoutingScores(input) {
+    const { text, classification, stageADelegationSignal, availableToolsCount, policyFlags } = input;
+    const normalized = String(text || "").toLowerCase();
+    const scores = {
+        respond: 0.45,
+        delegate: 0.2,
+        tool: 0.2,
+        workflow: 0.2,
+        clarify: 0.15,
+    };
+
+    if (classification?.type === "answer_to_pending" || classification?.type === "accept_offer") {
+        scores.respond += 0.4;
+    }
+    if (classification?.type === "override" || classification?.type === "status_nudge") {
+        scores.respond += 0.2;
+    }
+    if (stageADelegationSignal) {
+        scores.delegate += 0.7;
+        scores.workflow += 0.25;
+    }
+    if (/\b(workflow|plan|step by step|multi-step)\b/.test(normalized)) {
+        scores.workflow += 0.55;
+    }
+    if (/\b(tool|search|look up|weather)\b/.test(normalized) && availableToolsCount > 0) {
+        scores.tool += 0.55;
+    }
+    if (/\b(that|it|again)\b/.test(normalized)) {
+        scores.clarify += 0.35;
+    }
+    if (policyFlags?.highRisk === true) {
+        scores.workflow += 0.2;
+        scores.delegate += 0.15;
+        scores.respond -= 0.15;
+    }
+    for (const key of Object.keys(scores)) {
+        scores[key] = Math.max(0, Math.min(1, scores[key]));
+    }
+    return scores;
+}
+
+/**
+ * @param {Record<string, unknown>|null} routerDecision
+ * @returns {{ scores: Record<string, number>, decision: string|null, confidence: number }}
+ */
+function deriveLlmRoutingScores(routerDecision) {
+    const scores = {
+        respond: 0,
+        delegate: 0,
+        tool: 0,
+        workflow: 0,
+        clarify: 0,
+    };
+    if (!routerDecision) {
+        return { scores, decision: null, confidence: 0 };
+    }
+    const confidence = Number.isFinite(routerDecision.confidence) ? Number(routerDecision.confidence) : 0;
+    for (const decision of ROUTING_DECISIONS) {
+        scores[decision] = 0.05;
+    }
+    const decision = typeof routerDecision.decision === "string" ? routerDecision.decision : null;
+    if (decision && Object.prototype.hasOwnProperty.call(scores, decision)) {
+        scores[decision] = Math.max(scores[decision], Math.max(0, Math.min(1, confidence)));
+    }
+    const llmScores = routerDecision?.scores;
+    if (llmScores && typeof llmScores === "object") {
+        for (const decision of ROUTING_DECISIONS) {
+            const raw = Number(llmScores?.[decision]);
+            if (Number.isFinite(raw)) {
+                scores[decision] = Math.max(scores[decision], Math.max(0, Math.min(1, raw)));
+            }
+        }
+    }
+    return { scores, decision, confidence: Math.max(0, Math.min(1, confidence)) };
+}
+
+/**
+ * @param {{ riskClass: "low"|"medium"|"high"|"destructive", hasRouterDecision: boolean }} input
+ * @returns {{ heuristicWeight: number, llmWeight: number }}
+ */
+function deriveRoutingWeights(input) {
+    if (!input.hasRouterDecision) {
+        return { heuristicWeight: 1, llmWeight: 0 };
+    }
+    if (input.riskClass === "destructive") {
+        return { heuristicWeight: 1, llmWeight: 0 };
+    }
+    if (input.riskClass === "high") {
+        return { heuristicWeight: 0.65, llmWeight: 0.35 };
+    }
+    if (input.riskClass === "medium") {
+        return { heuristicWeight: 0.5, llmWeight: 0.5 };
+    }
+    return { heuristicWeight: 0.4, llmWeight: 0.6 };
+}
+
+/**
+ * @param {{ text: string, laneThreadKey: string, laneMessages: Record<string, unknown>[], sessionState: Record<string, unknown>, nowMs: number }} input
+ * @returns {{ summary: string, windowStartMs: number, windowEndMs: number, focusCandidates: readonly string[], unresolved: readonly string[] }}
+ */
+function buildTemporalAttentionRecord(input) {
+    const { text, laneThreadKey, laneMessages, sessionState, nowMs } = input;
+    const windowStartMs = nowMs - TEMPORAL_ATTENTION_WINDOW_MS;
+    const windowEndMs = nowMs;
+    const recentLaneMessages = laneMessages
+        .filter((entry) => typeof entry?.timestampMs === "number" ? entry.timestampMs >= windowStartMs : true)
+        .slice(-TEMPORAL_ATTENTION_RECENT_ACTION_LIMIT);
+    const recentActions = recentLaneMessages
+        .filter((entry) => typeof entry?.text === "string" && entry.text.trim().length > 0)
+        .map((entry) => `${entry.role || "unknown"}: ${redactSecrets(String(entry.text)).slice(0, 120)}`);
+    const laneThreads = Array.isArray(sessionState?.threads)
+        ? sessionState.threads.filter((thread) => thread?.laneThreadKey === laneThreadKey)
+        : [];
+    const unresolved = laneThreads
+        .filter((thread) => thread?.pendingQuestion || thread?.awaitingApproval || thread?.inFlight || thread?.openOffer)
+        .sort((left, right) => (right?.lastActivityTs || 0) - (left?.lastActivityTs || 0))
+        .slice(0, 4)
+        .map((thread) => {
+            if (thread?.pendingQuestion?.text) return `pending_question: ${thread.pendingQuestion.text}`;
+            if (thread?.awaitingApproval?.workflowId) return `workflow_waiting: ${thread.awaitingApproval.workflowId}`;
+            if (thread?.inFlight?.workflowId) return `workflow_cancellable: ${thread.inFlight.workflowId}`;
+            if (thread?.openOffer?.target) return `delegation_candidate: ${thread.openOffer.target}`;
+            return `thread: ${thread?.id || "unknown"}`;
+        });
+    const focusCandidates = laneThreads
+        .sort((left, right) => (right?.lastActivityTs || 0) - (left?.lastActivityTs || 0))
+        .slice(0, 3)
+        .map((thread) => thread?.summary || thread?.pendingQuestion?.text || thread?.openOffer?.target || thread?.id)
+        .filter((entry) => typeof entry === "string" && entry.length > 0);
+    const summary = [
+        `windowStartMs=${windowStartMs}`,
+        `windowEndMs=${windowEndMs}`,
+        `laneThreadKey=${laneThreadKey}`,
+        `query=${redactSecrets(String(text || "")).slice(0, 120)}`,
+        "focusCandidates:",
+        ...(focusCandidates.length > 0 ? focusCandidates.map((entry) => `- ${entry}`) : ["- (none)"]),
+        "unresolved:",
+        ...(unresolved.length > 0 ? unresolved.map((entry) => `- ${entry}`) : ["- (none)"]),
+        "recentActions:",
+        ...(recentActions.length > 0 ? recentActions.map((entry) => `- ${entry}`) : ["- (none)"]),
+    ].join("\n");
+
+    return Object.freeze({
+        summary,
+        windowStartMs,
+        windowEndMs,
+        focusCandidates: Object.freeze(focusCandidates),
+        unresolved: Object.freeze(unresolved),
+    });
+}
 
 /**
  * @param {unknown} value
@@ -583,6 +782,8 @@ export function createOrchestrator({
     const THREAD_TTL_MS = 60 * 60 * 1000;
     const PENDING_REPAIRS = new Map();
     const REPAIR_TTL_MS = 5 * 60 * 1000;
+    const PENDING_ROUTING_STATES = new Map();
+    const ROUTING_STATE_TTL_MS = 10 * 60 * 1000;
     const cleanupInterval = setInterval(() => {
         const currentTime = now();
         for (const [id, entry] of PENDING_WORKFLOWS) {
@@ -609,6 +810,11 @@ export function createOrchestrator({
         for (const [id, entry] of PENDING_REPAIRS) {
             if (currentTime - entry.createdAt > REPAIR_TTL_MS) {
                 PENDING_REPAIRS.delete(id);
+            }
+        }
+        for (const [id, entry] of PENDING_ROUTING_STATES) {
+            if (currentTime > (entry.expiresAtMs || 0)) {
+                PENDING_ROUTING_STATES.delete(id);
             }
         }
     }, 5 * 60 * 1000);
@@ -642,6 +848,25 @@ export function createOrchestrator({
         }
 
         await resolvedLineageStore.append(event);
+    }
+
+    function buildRoutingStateKey(sessionId, laneThreadKey) {
+        return `${sessionId}::${laneThreadKey}`;
+    }
+
+    /**
+     * @param {{ text: string }} input
+     * @returns {"delegate"|"respond"|null}
+     */
+    function parseRoutingSelectionIntent(input) {
+        const normalized = String(input.text || "").toLowerCase().trim();
+        if (!normalized) return null;
+        if (/^(a|option a)$/.test(normalized)) return "respond";
+        if (/^(b|option b)$/.test(normalized)) return "delegate";
+        if (/\b(delegate|sub-agent|sub agent)\b/.test(normalized)) return "delegate";
+        if (/\b(continue|inline|here|this one|current)\b/.test(normalized)) return "respond";
+        if (/^(yes|yep|yeah|sure|ok|okay|do it)$/.test(normalized)) return "respond";
+        return null;
     }
 
     function clearTerminalPendingState(sessionId, threadId) {
@@ -834,12 +1059,42 @@ export function createOrchestrator({
                 metadata?.suppressAutomationWrites === true || isPreviewMode;
             const suppressResponsePersist =
                 suppressUserMessagePersist || suppressMemoryWrite || suppressTaskWrites;
+            const laneThreadKey = deriveLaneThreadKey(polarSessionId, inboundThreadKey, inboundThreadId);
 
             let sessionState = SESSION_THREADS.get(polarSessionId) || { threads: [], activeThreadId: null };
             let routingRecommendation = null;
             let classification = null;
             let currentTurnAnchor = null;
             let currentAnchorMessageId = null;
+            let forcedRoutingDecision = null;
+            const routingStateKey = buildRoutingStateKey(polarSessionId, laneThreadKey);
+            const pendingRoutingState = PENDING_ROUTING_STATES.get(routingStateKey);
+            if (pendingRoutingState && now() <= (pendingRoutingState.expiresAtMs || 0) && text) {
+                let selectionIntent = parseRoutingSelectionIntent({ text });
+                if (
+                    selectionIntent === "respond" &&
+                    pendingRoutingState.type === "delegation_candidate" &&
+                    /^(yes|yep|yeah|sure|ok|okay|do it)$/i.test(String(text || "").trim())
+                ) {
+                    selectionIntent = "delegate";
+                }
+                if (selectionIntent) {
+                    forcedRoutingDecision = selectionIntent;
+                    PENDING_ROUTING_STATES.delete(routingStateKey);
+                    await emitLineageEvent({
+                        eventType: "routing.pending_state.consumed",
+                        sessionId: polarSessionId,
+                        userId,
+                        laneThreadKey,
+                        stateType: pendingRoutingState.type,
+                        selectionIntent,
+                        createdAtMs: pendingRoutingState.createdAtMs,
+                        timestampMs: now(),
+                    });
+                }
+            } else if (pendingRoutingState) {
+                PENDING_ROUTING_STATES.delete(routingStateKey);
+            }
             const profile = await profileResolutionGateway.resolve({
                 sessionId: polarSessionId,
                 userId: String(userId),
@@ -871,7 +1126,7 @@ export function createOrchestrator({
                     classification,
                     rawText: text,
                     now,
-                    laneThreadKey: inboundThreadKey,
+                    laneThreadKey,
                 });
                 SESSION_THREADS.set(polarSessionId, sessionState);
 
@@ -1009,6 +1264,13 @@ export function createOrchestrator({
 
             const shouldRunRouter = classification?.type === "new_request"
                 && (stageADelegationSignal || /\b(sub-agent|delegate|workflow|tool|do that|that)\b/.test(lowerText));
+            const temporalAttentionHint = buildTemporalAttentionRecord({
+                text,
+                laneThreadKey,
+                laneMessages: [],
+                sessionState,
+                nowMs: now(),
+            });
 
             let routerDecision = null;
             if (shouldRunRouter) {
@@ -1022,6 +1284,11 @@ export function createOrchestrator({
                             `Route this message using JSON schema only: ${JSON.stringify({
                                 text,
                                 focusContext: classification.focusContext || null,
+                                temporalAttention: {
+                                    summary: temporalAttentionHint.summary,
+                                    unresolved: temporalAttentionHint.unresolved,
+                                    focusCandidates: temporalAttentionHint.focusCandidates,
+                                },
                                 availableAgents: [...installedAgentIds],
                                 availableTools: installedToolPairs,
                                 confidenceThreshold: ROUTER_CONFIDENCE_THRESHOLD,
@@ -1067,12 +1334,88 @@ export function createOrchestrator({
                 }
             }
 
-            if (routerDecision && routerDecision.confidence < ROUTER_CONFIDENCE_THRESHOLD) {
+            const riskClass = classifyRoutingRisk(text);
+            const policyFlags = Object.freeze({
+                highRisk: riskClass === "high" || riskClass === "destructive",
+                requiresApproval: riskClass !== "low",
+                missingCapability: installedToolPairs.length === 0,
+                pendingMatch: classification?.type === "answer_to_pending",
+            });
+            const heuristicScores = deriveHeuristicRoutingScores({
+                text,
+                classification,
+                stageADelegationSignal,
+                availableToolsCount: installedToolPairs.length,
+                policyFlags,
+            });
+            const llmRouting = deriveLlmRoutingScores(routerDecision);
+            const weights = deriveRoutingWeights({ riskClass, hasRouterDecision: Boolean(routerDecision) });
+            const fusedScores = {};
+            for (const decision of ROUTING_DECISIONS) {
+                fusedScores[decision] =
+                    heuristicScores[decision] * weights.heuristicWeight +
+                    llmRouting.scores[decision] * weights.llmWeight;
+            }
+            const heuristicTop = extractTopDecision(heuristicScores);
+            const fusedTop = extractTopDecision(fusedScores);
+            let finalRoutingDecision = forcedRoutingDecision || fusedTop.topDecision;
+            const hasValidRouterDecision = Boolean(routerDecision && llmRouting.decision);
+            const hasAmbiguousReferenceText = /\b(that|it|again)\b/.test(lowerText);
+            const shouldClarifyByConflict =
+                hasValidRouterDecision &&
+                (
+                    fusedTop.margin < ROUTER_DECISION_MARGIN_THRESHOLD ||
+                    (llmRouting.decision && heuristicTop.topDecision !== llmRouting.decision && policyFlags.highRisk)
+                );
+            if (!forcedRoutingDecision && shouldClarifyByConflict) {
+                finalRoutingDecision = "clarify";
+            }
+            if (
+                !forcedRoutingDecision &&
+                hasValidRouterDecision &&
+                Number.isFinite(routerDecision.confidence) &&
+                routerDecision.confidence < ROUTER_CONFIDENCE_THRESHOLD
+            ) {
+                finalRoutingDecision = "clarify";
+            }
+            if (!forcedRoutingDecision && !hasValidRouterDecision && hasAmbiguousReferenceText && classification?.type === "new_request") {
+                finalRoutingDecision = "clarify";
+            }
+
+            await emitLineageEvent({
+                eventType: "routing.arbitration",
+                sessionId: polarSessionId,
+                userId,
+                laneThreadKey,
+                riskClass,
+                heuristicDecision: heuristicTop.topDecision,
+                llmDecision: llmRouting.decision || "none",
+                fusedDecision: finalRoutingDecision,
+                heuristicScores,
+                llmScores: llmRouting.scores,
+                fusedScores,
+                llmConfidence: llmRouting.confidence,
+                decisionMargin: fusedTop.margin,
+                forcedByPending: forcedRoutingDecision !== null,
+                timestampMs: now(),
+            });
+
+            if (finalRoutingDecision === "clarify") {
                 const focusSnippet = classification.focusContext?.focusAnchorTextSnippet;
                 const optionA = focusSnippet ? `Continue with "${focusSnippet.slice(0, 36)}"` : "Continue inline here";
                 const optionB = "Delegate to a sub-agent";
                 const clarificationQuestion = `Quick check: should I ${optionA} or ${optionB}?`;
                 const assistantMessageId = `msg_a_${crypto.randomUUID()}`;
+                PENDING_ROUTING_STATES.set(routingStateKey, Object.freeze({
+                    type: "clarification_needed",
+                    createdAtMs: now(),
+                    expiresAtMs: now() + ROUTING_STATE_TTL_MS,
+                    laneThreadKey,
+                    options: Object.freeze([
+                        Object.freeze({ id: "A", decision: "respond", label: optionA }),
+                        Object.freeze({ id: "B", decision: "delegate", label: optionB }),
+                    ]),
+                }));
                 if (!suppressResponsePersist) {
                     await chatManagementGateway.appendMessage({
                         sessionId: polarSessionId,
@@ -1094,16 +1437,25 @@ export function createOrchestrator({
                 };
             }
 
-            if (routerDecision?.decision === "delegate") {
+            if (finalRoutingDecision === "delegate") {
                 const delegatedAgentId = routerDecision?.target?.agentId || DEFAULT_GENERIC_AGENT_ID;
                 const approvalPolicy = deriveDelegationApprovalPolicy(text);
-                routingRecommendation = `${routingRecommendation ? `${routingRecommendation}\n` : ""}[ROUTER_DECISION] Delegate this request to ${delegatedAgentId}. Confidence=${routerDecision.confidence}. ${approvalPolicy.requiresApproval ? "This requires approval before execution." : "Simple read delegation may execute without manual approval."}`;
+                const decisionConfidence = Number.isFinite(routerDecision?.confidence)
+                    ? routerDecision.confidence
+                    : Math.max(0.5, fusedTop.topScore);
+                routingRecommendation = `${routingRecommendation ? `${routingRecommendation}\n` : ""}[ROUTER_DECISION] Delegate this request to ${delegatedAgentId}. Confidence=${decisionConfidence}. ${approvalPolicy.requiresApproval ? "This requires approval before execution." : "Simple read delegation may execute without manual approval."}`;
+                PENDING_ROUTING_STATES.set(routingStateKey, Object.freeze({
+                    type: "delegation_candidate",
+                    createdAtMs: now(),
+                    expiresAtMs: now() + ROUTING_STATE_TTL_MS,
+                    laneThreadKey,
+                    targetAgentId: delegatedAgentId,
+                }));
             }
 
             let systemPrompt = profile.profileConfig?.systemPrompt || "You are a helpful Polar AI assistant. Be concise and friendly.";
             systemPrompt = appendPersonalityBlock(systemPrompt, effectivePersonality);
             systemPrompt += "\n\n[REPLY_CONTEXT_RULES]\nTreat any Reply context block as quoted reference text, not new user-authored claims. Do not attribute quoted assistant statements to the user. If attribution is unclear, ask a short clarifying question.\n[/REPLY_CONTEXT_RULES]";
-            const laneThreadKey = deriveLaneThreadKey(polarSessionId, inboundThreadKey, inboundThreadId);
 
             const multiAgentConfig = {
                 allowlistedModels: [
@@ -1257,6 +1609,7 @@ ${routingRecommendation || ""}`;
 
             let threadSummaryText = "";
             let sessionSummaryText = "";
+            let temporalAttentionText = "";
             if (memoryGateway && typeof memoryGateway.search === "function") {
                 try {
                     const summarySearch = await memoryGateway.search({
@@ -1288,6 +1641,25 @@ ${routingRecommendation || ""}`;
                     const sessionSummary = sessionRecords.find((entry) => entry?.record?.type === "session_summary");
                     if (sessionSummary?.record?.summary && typeof sessionSummary.record.summary === "string") {
                         sessionSummaryText = sessionSummary.record.summary;
+                    }
+                } catch {
+                    // non-fatal recall failure
+                }
+                try {
+                    const temporalSearch = await memoryGateway.search({
+                        executionType: "handoff",
+                        sessionId: polarSessionId,
+                        userId: String(userId),
+                        scope: "session",
+                        query: `temporal_attention ${laneThreadKey}`,
+                        limit: 3,
+                    });
+                    const temporalRecords = Array.isArray(temporalSearch?.records) ? temporalSearch.records : [];
+                    const temporalAttention = temporalRecords.find((entry) =>
+                        entry?.record?.type === "temporal_attention" && entry?.metadata?.threadKey === laneThreadKey,
+                    );
+                    if (temporalAttention?.record?.summary && typeof temporalAttention.record.summary === "string") {
+                        temporalAttentionText = temporalAttention.record.summary;
                     }
                 } catch {
                     // non-fatal recall failure
@@ -1365,6 +1737,41 @@ ${routingRecommendation || ""}`;
                     }
                 }
             }
+            const temporalAttention = buildTemporalAttentionRecord({
+                text,
+                laneThreadKey,
+                laneMessages,
+                sessionState,
+                nowMs: now(),
+            });
+            temporalAttentionText = temporalAttention.summary;
+            if (memoryGateway && typeof memoryGateway.upsert === "function") {
+                try {
+                    await memoryGateway.upsert({
+                        executionType: "handoff",
+                        sessionId: polarSessionId,
+                        userId: String(userId),
+                        scope: "session",
+                        memoryId: `temporal_attention:${polarSessionId}:${laneThreadKey}`,
+                        record: {
+                            type: "temporal_attention",
+                            threadKey: laneThreadKey,
+                            summary: temporalAttention.summary,
+                            focusCandidates: temporalAttention.focusCandidates,
+                            unresolved: temporalAttention.unresolved,
+                        },
+                        metadata: {
+                            threadKey: laneThreadKey,
+                            summaryVersion: 1,
+                            updatedAtMs: now(),
+                            windowStartMs: temporalAttention.windowStartMs,
+                            windowEndMs: temporalAttention.windowEndMs,
+                        },
+                    });
+                } catch {
+                    // non-fatal temporal attention persistence failure
+                }
+            }
 
             const retrievalHints = [];
             if (memoryGateway && typeof memoryGateway.search === "function" && typeof text === "string" && text.trim().length > 0) {
@@ -1408,6 +1815,9 @@ ${routingRecommendation || ""}`;
             }
             if (sessionSummaryText) {
                 systemPrompt += `\n\n[SESSION_SUMMARY]\n${sessionSummaryText}\n[/SESSION_SUMMARY]`;
+            }
+            if (temporalAttentionText) {
+                systemPrompt += `\n\n[TEMPORAL_ATTENTION threadKey=${laneThreadKey}]\n${temporalAttentionText}\n[/TEMPORAL_ATTENTION]`;
             }
             if (retrievalHints.length > 0) {
                 systemPrompt += `\n\n[RETRIEVED_MEMORIES]\n${retrievalHints.join("\n")}\n[/RETRIEVED_MEMORIES]`;

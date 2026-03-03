@@ -2218,3 +2218,61 @@ Commands run and outcomes:
 ### Next
 - **Next prompt:** Implement Hybrid v2 arbitration + typed pending persistence + temporal attention payload in runtime.
 - **Suggested starting point:** `packages/polar-runtime-core/src/orchestrator.mjs` and `packages/polar-runtime-core/src/routing-policy-engine.mjs`.
+
+## 2026-03-03 (UTC) - Prompt Ad-hoc: Implement Hybrid v2 routing/context functionality (weighted arbitration + temporal attention + typed pending clarification)
+
+**Branch:** `main`  
+**Commit:** `not committed`  
+**Prompt reference:** `Implement all Hybrid v2 routing/context functionality from updated specs`  
+**Specs referenced:**
+- `docs/specs/ROUTING_AND_DELEGATION_POLICY.md`
+- `docs/specs/CONTEXT_MANAGEMENT_SYSTEM.md`
+- `docs/specs/FOCUS_CONTEXT_AND_PENDING.md`
+- `docs/specs/WORKFLOW_EXECUTION_INTEGRITY.md`
+- `docs/specs/ORCHESTRATOR_OUTPUT_RULE.md`
+
+### Summary
+- Implemented weighted hybrid routing arbitration in orchestrator using deterministic heuristic scores + LLM router scores with risk-class adaptive weights.
+- Added deterministic typed pending routing state handling for `clarification_needed` and `delegation_candidate`, including lane-scoped persistence and deterministic short-follow-up consumption (`A/B`, delegate/continue cues).
+- Added routing arbitration telemetry lineage emission with `{heuristic_decision, llm_decision, fused_decision, scores, confidence, riskClass}` payloads.
+- Implemented temporal attention context generation (last ~30 minute window, unresolved items, focus candidates, recent actions), persisted as memory records, and injected into model system context.
+- Extended/updated tests to cover temporal attention persistence/injection and deterministic clarification follow-up consumption behavior.
+
+### Scope and decisions
+- **In scope:** runtime-core orchestrator behavior and tests for Hybrid v2 routing/context functionality.
+- **Out of scope:** full durable DB-backed typed pending-state table migration and full replay harness implementation (telemetry hooks added; dedicated replay framework deferred).
+- **Key decisions:**
+  - Clarification forcing was constrained to valid-router ambiguity/low-confidence or ambiguous pronoun-like turns to avoid regressing normal workflow proposal paths.
+  - Deterministic hard checks remain authoritative for approvals/capability/tool-agent availability; LLM influence is weighted, not absolute.
+  - Temporal attention is generated deterministically each turn and persisted as `temporal_attention:<sessionId>:<threadKey>` memory records for low-cost continuity.
+
+### Files changed
+- `packages/polar-runtime-core/src/orchestrator.mjs` - added hybrid routing scoring/arbitration, typed pending routing state map/TTL, routing lineage telemetry, temporal attention generation/persistence/injection.
+- `tests/runtime-core-orchestrator-context-management.test.mjs` - asserted temporal attention upsert and `[TEMPORAL_ATTENTION ...]` injection.
+- `tests/runtime-core-orchestrator-hybrid-routing.test.mjs` - new regression test for clarification state persistence and deterministic follow-up consumption.
+- `docs/IMPLEMENTATION_LOG.md` - appended this implementation entry.
+
+### Data model / migrations (if applicable)
+- **Tables created/changed:** none
+- **Migration notes:** no DB schema migration in this prompt; temporal attention persisted via existing memory upsert API record type.
+- **Risk:** medium (core orchestration path changed; mitigated by full test suite pass)
+
+### Security and safety checks
+- **Allowlist changes:** none
+- **Capabilities/middleware affected:** deterministic policy remains final gate; no direct provider/tool bypass introduced.
+- **Sensitive operations:** none added; approvals/capability scope checks unchanged as authority path.
+
+### Tests and validation
+Commands run and outcomes:
+- `node --test tests/runtime-core-orchestrator-context-management.test.mjs tests/runtime-core-orchestrator-agent-registry.test.mjs tests/runtime-core-orchestrator-hybrid-routing.test.mjs` - ✅
+- `node --test tests/integration-vertical-slice.test.mjs` - ✅
+- `node --test tests/runtime-core-orchestrator-thread-ownership.test.mjs tests/runtime-core-orchestrator-workflow-validation.test.mjs` - ✅
+- `npm test` - ✅ (445 passed, 0 failed)
+- `npm run check:boundaries` - ✅
+
+### Blockers
+- None.
+
+### Next
+- **Next prompt:** Persist typed pending routing state (`clarification_needed`/`delegation_candidate`) into durable memory/thread_state records and add replay harness for routing telemetry tuning.
+- **Suggested starting point:** `packages/polar-runtime-core/src/orchestrator.mjs`, `packages/polar-runtime-core/src/memory-provider-sqlite.mjs`, and new replay fixtures under `tests/`.

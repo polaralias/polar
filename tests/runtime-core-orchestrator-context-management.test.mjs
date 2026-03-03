@@ -105,10 +105,13 @@ test("summary compaction writes thread_summary for oversized lane history", asyn
   });
 
   assert.equal(memoryUpserts.length > 0, true);
-  assert.equal(memoryUpserts[0].record.type, "thread_summary");
-  assert.equal(memoryUpserts[0].metadata.threadKey, "root:42");
-  assert.equal(memoryUpserts[0].record.unsummarizedTailCount, 10);
+  assert.equal(memoryUpserts.some((entry) => entry.record?.type === "thread_summary"), true);
+  assert.equal(memoryUpserts.some((entry) => entry.record?.type === "temporal_attention"), true);
+  const threadSummaryUpsert = memoryUpserts.find((entry) => entry.record?.type === "thread_summary");
+  assert.equal(threadSummaryUpsert.metadata.threadKey, "root:42");
+  assert.equal(threadSummaryUpsert.record.unsummarizedTailCount, 10);
   assert.match(providerCalls.at(-1).system, /\[THREAD_SUMMARY threadKey=root:42\]/);
+  assert.match(providerCalls.at(-1).system, /\[TEMPORAL_ATTENTION threadKey=root:42\]/);
 });
 
 test("retrieval prefers lane-relevant memories", async () => {
@@ -139,7 +142,7 @@ test("reply metadata is rendered as a labelled reply context block", async () =>
   await orchestrator.orchestrate({
     sessionId: "telegram:chat:42",
     userId: "u",
-    text: "can you do that again?",
+    text: "can you restate the rollout plan?",
     messageId: "m-3",
     metadata: {
       threadKey: "root:42",
@@ -157,5 +160,5 @@ test("reply metadata is rendered as a labelled reply context block", async () =>
   assert.ok(replyContextEntry);
   assert.match(replyContextEntry.content, /User replied to \(assistant \(Polar\)\): "I already explained the rollout plan yesterday\./);
   assert.match(providerCall.system, /Treat any Reply context block as quoted reference text/);
-  assert.equal(providerCall.prompt, "can you do that again?");
+  assert.equal(providerCall.prompt, "can you restate the rollout plan?");
 });
