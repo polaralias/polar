@@ -12,7 +12,7 @@ import {
     isRuntimeDevMode
 } from './durable-lineage-store.mjs';
 import { validateForwardSkills, validateModelOverride, computeCapabilityScope } from './capability-scope.mjs';
-import { classifyUserMessage, applyUserTurn, selectReplyAnchor, detectOfferInText, setOpenOffer, computeRepairDecision, handleRepairSelection } from './routing-policy-engine.mjs';
+import { classifyUserMessage, applyUserTurn, selectReplyAnchor, detectOfferInText, setOpenOffer, computeRepairDecision, handleRepairSelection, enforceRoutingProposalPolicy } from './routing-policy-engine.mjs';
 import { evaluateCapabilityApprovalRequirement } from './extension-gateway.mjs';
 import { parseModelProposal, expandTemplate, validateSteps } from './workflow-engine.mjs';
 import { normalizeToolWorkflowError } from './tool-workflow-error-normalizer.mjs';
@@ -405,8 +405,11 @@ function deriveHeuristicRoutingScores(input) {
     if (/\b(workflow|plan|step by step|multi-step|research and compare|deep dive|proposal|10 versions|10 different versions)\b/.test(normalized)) {
         scores.workflow += 0.55;
     }
-    if (/\b(tool|search|look up|weather|email|inbox|calendar|web)\b/.test(normalized) && availableToolsCount > 0) {
-        scores.tool += 0.55;
+    if (/\b(tool|search|look up|weather|email|inbox|calendar|web)\b/.test(normalized)) {
+        scores.tool += availableToolsCount > 0 ? 0.55 : 0.35;
+        if (availableToolsCount === 0) {
+            scores.clarify += 0.2;
+        }
     }
     if (specialistCue) {
         scores.delegate += 0.35;
@@ -1789,7 +1792,12 @@ export function createOrchestrator({
             const shouldRunRouter =
                 classification?.type === "new_request" &&
                 !lowRiskUnambiguousInline &&
-                (hasDelegateCue || hasWorkflowCue || hasToolCue || hasAmbiguousReferenceText);
+                (
+                    hasDelegateCue ||
+                    hasWorkflowCue ||
+                    hasAmbiguousReferenceText ||
+                    installedToolPairs.length > 0
+                );
             const temporalAttentionHint = buildTemporalAttentionRecord({
                 text,
                 laneThreadKey,
@@ -1799,7 +1807,12 @@ export function createOrchestrator({
             });
 
             let routerDecision = null;
+            let routerInvoked = false;
+            let fallbackReason = null;
+            let proposalValid = false;
+            let policyVetoes = [];
             if (shouldRunRouter) {
+                routerInvoked = true;
                 try {
                     const routerResponse = await providerGateway.generate({
                         executionType: "handoff",
@@ -1827,32 +1840,28 @@ export function createOrchestrator({
                         const confidence = normalizeConfidence(routerValidation.value.confidence);
                         if (confidence !== null) {
                             routerDecision = { ...routerValidation.value, confidence };
+                            proposalValid = true;
+                        } else {
+                            fallbackReason = "invalid_confidence";
                         }
+                    } else {
+                        fallbackReason = "schema_invalid";
                     }
                 } catch {
                     routerDecision = null;
+                    fallbackReason = "router_unavailable";
                 }
             }
-
-            if (routerDecision?.decision === "delegate") {
-                const requestedAgentId = routerDecision?.target?.agentId;
-                if (!installedAgentIds.has(requestedAgentId)) {
-                    routerDecision.target = { agentId: DEFAULT_GENERIC_AGENT_ID };
-                }
-            }
-            if (routerDecision?.decision === "tool") {
-                const extensionId = routerDecision?.target?.extensionId;
-                const capabilityId = routerDecision?.target?.capabilityId;
-                const installed = installedToolPairs.some(
-                    (entry) => entry.extensionId === extensionId && entry.capabilityId === capabilityId,
-                );
-                if (!installed) {
-                    routerDecision = {
-                        decision: "clarify",
-                        confidence: 1,
-                        rationale: "Requested tool is not installed.",
-                    };
-                }
+            const policyEnforcement = enforceRoutingProposalPolicy({
+                proposal: routerDecision,
+                installedAgentIds,
+                installedToolPairs,
+                riskClass,
+            });
+            routerDecision = policyEnforcement.value;
+            policyVetoes = [...policyEnforcement.policyVetoes];
+            if (!fallbackReason && policyEnforcement.fallbackReason) {
+                fallbackReason = policyEnforcement.fallbackReason;
             }
 
             const policyFlags = Object.freeze({
@@ -1899,6 +1908,9 @@ export function createOrchestrator({
             }
             if (!forcedRoutingDecision && !hasValidRouterDecision && hasAmbiguousReferenceText && classification?.type === "new_request") {
                 finalRoutingDecision = "clarify";
+                if (!fallbackReason) {
+                    fallbackReason = "ambiguous_reference";
+                }
             }
             const routerAffirmedDecision = hasValidRouterDecision && llmRouting.decision === finalRoutingDecision;
 
@@ -1918,6 +1930,11 @@ export function createOrchestrator({
                 proposalType: "routing",
                 proposalValid: hasValidRouterDecision,
                 clampReasons: hasValidRouterDecision ? [] : ["schema_invalid_or_unavailable"],
+                proposal_valid: proposalValid,
+                router_invoked: routerInvoked,
+                router_affirmed_decision: routerAffirmedDecision,
+                policy_vetoes: policyVetoes,
+                fallback_reason: fallbackReason,
                 decisionMargin: fusedTop.margin,
                 forcedByPending: forcedRoutingDecision !== null,
                 timestampMs: now(),

@@ -259,3 +259,132 @@ test("hybrid router asks deterministic clarification when workflow decision lack
   assert.match(result.text, /which workflow should I run/i);
   assert.equal(callIndex, 1);
 });
+
+test("hybrid router falls back safely on malformed router output and records fallback telemetry", async () => {
+  const lineageEvents = [];
+
+  const orchestrator = createOrchestrator({
+    profileResolutionGateway: {
+      async resolve() {
+        return {
+          status: "resolved",
+          profileConfig: {
+            systemPrompt: "You are a parent profile.",
+            modelPolicy: { providerId: "openai", modelId: "gpt-4.1-mini" },
+          },
+        };
+      },
+    },
+    chatManagementGateway: {
+      async appendMessage() {
+        return { status: "appended" };
+      },
+      async getSessionHistory() {
+        return { items: [] };
+      },
+    },
+    providerGateway: {
+      async generate() {
+        return { text: "this is not json" };
+      },
+    },
+    extensionGateway: {
+      getState() { return undefined; },
+      listStates() { return []; },
+      async execute() { return { status: "completed", output: "ok" }; },
+    },
+    approvalStore: createApprovalStore(),
+    lineageStore: {
+      async append(event) {
+        lineageEvents.push(event);
+      },
+    },
+    now: Date.now,
+  });
+
+  const result = await orchestrator.orchestrate({
+    sessionId: "session-hybrid-malformed-router",
+    userId: "user-hybrid-malformed-router",
+    text: "do that again",
+    messageId: "m-hybrid-malformed-router-1",
+    metadata: { threadKey: "root:4" },
+  });
+
+  assert.equal(result.type, "clarification_needed");
+
+  const routingEvent = lineageEvents.find((event) => event?.eventType === "routing.arbitration");
+  assert.ok(routingEvent);
+  assert.equal(routingEvent.router_invoked, true);
+  assert.equal(routingEvent.proposal_valid, false);
+  assert.equal(routingEvent.fallback_reason, "schema_invalid");
+});
+
+test("hybrid router clamps unknown targets with deterministic policy veto telemetry", async () => {
+  const lineageEvents = [];
+
+  const orchestrator = createOrchestrator({
+    profileResolutionGateway: {
+      async resolve() {
+        return {
+          status: "resolved",
+          profileConfig: {
+            systemPrompt: "You are a parent profile.",
+            modelPolicy: { providerId: "openai", modelId: "gpt-4.1-mini" },
+          },
+        };
+      },
+    },
+    chatManagementGateway: {
+      async appendMessage() {
+        return { status: "appended" };
+      },
+      async getSessionHistory() {
+        return { items: [] };
+      },
+    },
+    providerGateway: {
+      async generate(input) {
+        if (typeof input?.system === "string" && input.system.includes("routing model")) {
+          return {
+            text: JSON.stringify({
+              decision: "tool",
+              target: { extensionId: "unknown", capabilityId: "not_installed" },
+              confidence: 0.97,
+              rationale: "tool request",
+              references: { refersTo: "latest", refersToReason: "explicit ask" },
+            }),
+          };
+        }
+        return { text: "ok" };
+      },
+    },
+    extensionGateway: {
+      getState() { return undefined; },
+      listStates() { return []; },
+      async execute() { return { status: "completed", output: "ok" }; },
+    },
+    approvalStore: createApprovalStore(),
+    lineageStore: {
+      async append(event) {
+        lineageEvents.push(event);
+      },
+    },
+    now: Date.now,
+  });
+
+  const result = await orchestrator.orchestrate({
+    sessionId: "session-hybrid-veto",
+    userId: "user-hybrid-veto",
+    text: "do that again with the special tool",
+    messageId: "m-hybrid-veto-1",
+    metadata: { threadKey: "root:5" },
+  });
+
+  assert.equal(result.type, "clarification_needed");
+  const routingEvent = lineageEvents.find((event) => event?.eventType === "routing.arbitration");
+  assert.ok(routingEvent);
+  assert.equal(routingEvent.router_invoked, true);
+  assert.ok(Array.isArray(routingEvent.policy_vetoes));
+  assert.equal(routingEvent.policy_vetoes.includes("unknown_tool_target"), true);
+  assert.equal(routingEvent.fallback_reason, "unknown_target");
+});

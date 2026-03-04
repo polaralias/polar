@@ -2686,3 +2686,34 @@ Commands run and outcomes:
 
 ### Next
 - **Next prompt:** `IP-02: Routing LLM-first migration`.
+
+## 2026-03-04 (UTC) - Prompt IP-02: Routing migration to LLM-first proposal
+
+**Branch:** `main`  
+**Commit:** `not committed`  
+**Prompt reference:** `IP-02: Routing migration to LLM-first proposal`
+
+### Summary
+- Shifted orchestration routing to an LLM-first proposal flow for new-request turns, while preserving deterministic prefilter and policy authority.
+- Added deterministic routing policy enforcement helper that clamps unknown delegation/tool targets and enforces destructive-risk clarify vetoes.
+- Repositioned regex heuristics as fallback weighting hints in arbitration and preserved deterministic clarify on ambiguity/low confidence.
+- Added routing telemetry fields for proposal validity, router invocation/affirmation, policy vetoes, and fallback reason.
+- Added replay-oriented hybrid routing tests for malformed router output fallback and unknown-target veto telemetry.
+
+### Files changed
+- `packages/polar-runtime-core/src/orchestrator.mjs`
+- `packages/polar-runtime-core/src/routing-policy-engine.mjs`
+- `tests/runtime-core-orchestrator-hybrid-routing.test.mjs`
+- `docs/IMPLEMENTATION_LOG.md`
+
+### Tests and validation
+- `node --test tests/runtime-core-orchestrator-hybrid-routing.test.mjs`
+- `node --test --test-name-pattern "tool unavailable returns stable response and clears pending slot state" tests/runtime-core-orchestrator-workflow-validation.test.mjs`
+- `npm test`
+- `npm run check:boundaries`
+
+### Blockers
+- None.
+
+### Next
+- **Next prompt:** `IP-03: Dynamic workflow planner migration`.
