@@ -849,11 +849,15 @@ export function createControlPlaneService(config = {}) {
 
   const memoryExtractionMiddleware = createMemoryExtractionMiddleware({
     memoryGateway: { upsert: (req) => memoryGatewayRef.upsert(req) },
-    providerGateway: { generate: (req) => providerGatewayRef.generate(req) }
+    providerGateway: {
+      generate: (req) => providerGatewayRef.generate(req),
+      embed: (req) => providerGatewayRef.embed(req),
+    }
   });
 
   const memoryRecallMiddleware = createMemoryRecallMiddleware({
-    memoryGateway: { search: (req) => memoryGatewayRef.search(req) }
+    memoryGateway: { search: (req) => memoryGatewayRef.search(req) },
+    providerGateway: { embed: (req) => providerGatewayRef.embed(req) },
   });
 
   const toolSynthesisMiddleware = createToolSynthesisMiddleware({

@@ -31,16 +31,20 @@ function parseExtractionResponse(rawText) {
  * 
  * @param {{
  *   memoryGateway: { upsert: (req: any) => Promise<any> },
- *   providerGateway: { generate: (req: any) => Promise<any> },
+ *   providerGateway: { generate: (req: any) => Promise<any>, embed?: (req: any) => Promise<any> },
  *   extractionProviderId?: string,
- *   extractionModel?: string
+ *   extractionModel?: string,
+ *   embeddingProviderId?: string,
+ *   embeddingModel?: string
  * }} config
  */
 export function createMemoryExtractionMiddleware({
     memoryGateway,
     providerGateway,
     extractionProviderId = 'openai',
-    extractionModel = 'gpt-4.1-mini'
+    extractionModel = 'gpt-4.1-mini',
+    embeddingProviderId = 'openai',
+    embeddingModel = 'text-embedding-3-small'
 }) {
     return {
         id: 'memory-extraction',
@@ -52,6 +56,15 @@ export function createMemoryExtractionMiddleware({
                 context.input.role === 'user') {
 
                 const { sessionId, userId, text, traceId } = context.input;
+                const laneThreadKey =
+                    typeof context.input.threadKey === "string" && context.input.threadKey.length > 0
+                        ? context.input.threadKey
+                        : (
+                            typeof context.input.metadata?.threadKey === "string" &&
+                                context.input.metadata.threadKey.length > 0
+                                ? context.input.metadata.threadKey
+                                : undefined
+                        );
 
                 // Run extraction in background but attach a .catch() to prevent unhandled rejections (BUG-007)
                 const extractionPromise = (async () => {
@@ -71,6 +84,28 @@ export function createMemoryExtractionMiddleware({
                         const facts = Array.isArray(parsed.facts) ? parsed.facts : [];
 
                         for (const fact of facts) {
+                            let embeddingVector = undefined;
+                            if (typeof providerGateway.embed === "function") {
+                                try {
+                                    const embeddingResult = await providerGateway.embed({
+                                        traceId: `${traceId}-extract-embed`,
+                                        executionType: 'tool',
+                                        providerId: embeddingProviderId,
+                                        model: embeddingModel,
+                                        text: fact,
+                                    });
+                                    if (
+                                        embeddingResult &&
+                                        Array.isArray(embeddingResult.vector) &&
+                                        embeddingResult.vector.length > 0 &&
+                                        embeddingResult.vector.every((value) => Number.isFinite(Number(value)))
+                                    ) {
+                                        embeddingVector = embeddingResult.vector.map((value) => Number(value));
+                                    }
+                                } catch {
+                                    // non-fatal embedding failure
+                                }
+                            }
                             await memoryGateway.upsert({
                                 traceId: `${traceId}-extract-upsert`,
                                 sessionId,
@@ -84,7 +119,9 @@ export function createMemoryExtractionMiddleware({
                                 },
                                 metadata: {
                                     strategy: 'automated_extraction',
-                                    originalText: text.substring(0, 100) + '...'
+                                    originalText: text.substring(0, 100) + '...',
+                                    ...(laneThreadKey ? { threadKey: laneThreadKey } : {}),
+                                    ...(embeddingVector ? { embeddingVector, embeddingModel } : {}),
                                 }
                             });
                         }

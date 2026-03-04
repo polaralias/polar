@@ -28,6 +28,13 @@ export function createSqliteMemoryProvider({ db, now = () => Date.now() }) {
       createdAtMs INTEGER NOT NULL,
       updatedAtMs INTEGER NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS polar_memory_embeddings (
+      memoryId TEXT PRIMARY KEY,
+      vector JSON NOT NULL,
+      model TEXT,
+      createdAtMs INTEGER NOT NULL,
+      updatedAtMs INTEGER NOT NULL
+    );
     CREATE INDEX IF NOT EXISTS idx_memory_search ON polar_memory(sessionId, userId, scope);
   `);
 
@@ -91,6 +98,20 @@ export function createSqliteMemoryProvider({ db, now = () => Date.now() }) {
       LIMIT ?
     `),
         deleteById: db.prepare(`DELETE FROM polar_memory WHERE memoryId = ?`),
+        upsertEmbedding: db.prepare(`
+      INSERT INTO polar_memory_embeddings (memoryId, vector, model, createdAtMs, updatedAtMs)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(memoryId) DO UPDATE SET
+        vector = excluded.vector,
+        model = excluded.model,
+        updatedAtMs = excluded.updatedAtMs
+    `),
+        getEmbeddingById: db.prepare(`
+      SELECT memoryId, vector, model
+      FROM polar_memory_embeddings
+      WHERE memoryId = ?
+    `),
+        deleteEmbeddingById: db.prepare(`DELETE FROM polar_memory_embeddings WHERE memoryId = ?`),
     };
 
     // FTS statements (only prepared if FTS5 is available)
@@ -122,6 +143,44 @@ export function createSqliteMemoryProvider({ db, now = () => Date.now() }) {
         return parts.join(' ');
     }
 
+    function normalizeQueryVector(value) {
+        if (!Array.isArray(value) || value.length === 0) {
+            return null;
+        }
+        const normalized = value.map((entry) => Number(entry));
+        if (normalized.some((entry) => !Number.isFinite(entry))) {
+            return null;
+        }
+        return normalized;
+    }
+
+    function cosineSimilarity(left, right) {
+        if (!Array.isArray(left) || !Array.isArray(right) || left.length === 0 || right.length === 0) {
+            return null;
+        }
+        const dimensions = Math.min(left.length, right.length);
+        if (dimensions === 0) {
+            return null;
+        }
+        let dot = 0;
+        let normLeft = 0;
+        let normRight = 0;
+        for (let index = 0; index < dimensions; index += 1) {
+            const a = Number(left[index]);
+            const b = Number(right[index]);
+            if (!Number.isFinite(a) || !Number.isFinite(b)) {
+                return null;
+            }
+            dot += a * b;
+            normLeft += a * a;
+            normRight += b * b;
+        }
+        if (normLeft <= 0 || normRight <= 0) {
+            return null;
+        }
+        return dot / (Math.sqrt(normLeft) * Math.sqrt(normRight));
+    }
+
     return Object.freeze({
         async upsert(request) {
             const memoryId = request.memoryId || `mem_${Math.random().toString(36).substring(2, 10)}`;
@@ -146,6 +205,21 @@ export function createSqliteMemoryProvider({ db, now = () => Date.now() }) {
                     ftsStatements.insertFts.run(memoryId, extractSearchableText(request.record));
                 } catch {
                     // FTS indexing failure is non-fatal
+                }
+            }
+
+            const embeddingVector = normalizeQueryVector(request?.metadata?.embeddingVector);
+            if (embeddingVector) {
+                try {
+                    statements.upsertEmbedding.run(
+                        memoryId,
+                        JSON.stringify(embeddingVector),
+                        typeof request?.metadata?.embeddingModel === "string" ? request.metadata.embeddingModel : null,
+                        timestamp,
+                        timestamp
+                    );
+                } catch {
+                    // Embedding indexing failure is non-fatal
                 }
             }
 
@@ -213,13 +287,48 @@ export function createSqliteMemoryProvider({ db, now = () => Date.now() }) {
                 );
             }
 
-            return {
-                records: rows.map(r => ({
+            const queryVector = normalizeQueryVector(request?.filters?.queryVector);
+            let normalizedRows = rows.map(r => ({
                     memoryId: r.memoryId,
                     record: JSON.parse(r.record),
                     metadata: JSON.parse(r.metadata),
                     updatedAtMs: r.updatedAtMs
-                }))
+                }));
+
+            if (queryVector) {
+                normalizedRows = normalizedRows
+                    .map((entry) => {
+                        const embeddingRow = statements.getEmbeddingById.get(entry.memoryId);
+                        if (!embeddingRow || typeof embeddingRow.vector !== "string") {
+                            return {
+                                ...entry,
+                                similarityScore: null,
+                            };
+                        }
+                        let storedVector = null;
+                        try {
+                            storedVector = normalizeQueryVector(JSON.parse(embeddingRow.vector));
+                        } catch {
+                            storedVector = null;
+                        }
+                        const similarityScore = storedVector ? cosineSimilarity(queryVector, storedVector) : null;
+                        return {
+                            ...entry,
+                            similarityScore,
+                        };
+                    })
+                    .sort((left, right) => {
+                        const leftScore = typeof left.similarityScore === "number" ? left.similarityScore : -Infinity;
+                        const rightScore = typeof right.similarityScore === "number" ? right.similarityScore : -Infinity;
+                        if (leftScore !== rightScore) {
+                            return rightScore - leftScore;
+                        }
+                        return right.updatedAtMs - left.updatedAtMs;
+                    });
+            }
+
+            return {
+                records: normalizedRows
             };
         },
 
@@ -281,6 +390,7 @@ export function createSqliteMemoryProvider({ db, now = () => Date.now() }) {
                     const placeholders = chunk.map(() => '?').join(',');
                     
                     db.prepare(`DELETE FROM polar_memory WHERE memoryId IN (${placeholders})`).run(...chunk);
+                    db.prepare(`DELETE FROM polar_memory_embeddings WHERE memoryId IN (${placeholders})`).run(...chunk);
                     if (ftsStatements) {
                         try {
                             db.prepare(`DELETE FROM polar_memory_fts WHERE memoryId IN (${placeholders})`).run(...chunk);

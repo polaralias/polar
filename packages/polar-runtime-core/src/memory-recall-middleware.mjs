@@ -3,10 +3,18 @@
  * and injects them into the provider prompt.
  * 
  * @param {{
- *   memoryGateway: { search: (req: any) => Promise<any> }
+ *   memoryGateway: { search: (req: any) => Promise<any> },
+ *   providerGateway?: { embed?: (req: any) => Promise<any> },
+ *   embeddingProviderId?: string,
+ *   embeddingModel?: string
  * }} config
  */
-export function createMemoryRecallMiddleware({ memoryGateway }) {
+export function createMemoryRecallMiddleware({
+    memoryGateway,
+    providerGateway,
+    embeddingProviderId = "openai",
+    embeddingModel = "text-embedding-3-small",
+}) {
     return {
         id: 'memory-recall',
 
@@ -18,6 +26,19 @@ export function createMemoryRecallMiddleware({ memoryGateway }) {
                 !context.input.skipRecall) {
 
                 const { sessionId, userId, messages } = context.input;
+                const hasExistingRecallContext =
+                    (typeof context.input.system === "string" &&
+                        /\[(THREAD_SUMMARY|SESSION_SUMMARY|TEMPORAL_ATTENTION|RETRIEVED_MEMORIES|DURABLE_MEMORY_RECALL)/.test(context.input.system)) ||
+                    (Array.isArray(messages) &&
+                        messages.some((entry) =>
+                            entry &&
+                            entry.role === "system" &&
+                            typeof entry.content === "string" &&
+                            /\[(THREAD_SUMMARY|SESSION_SUMMARY|TEMPORAL_ATTENTION|RETRIEVED_MEMORIES|DURABLE_MEMORY_RECALL)/.test(entry.content)
+                        ));
+                if (hasExistingRecallContext) {
+                    return;
+                }
                 const laneThreadKey =
                     typeof context.input.threadKey === "string" && context.input.threadKey.length > 0
                         ? context.input.threadKey
@@ -33,13 +54,36 @@ export function createMemoryRecallMiddleware({ memoryGateway }) {
 
                 if (lastUserMessage && typeof lastUserMessage.content === 'string') {
                     try {
+                        let queryVector = undefined;
+                        if (typeof providerGateway?.embed === "function") {
+                            try {
+                                const embeddingResult = await providerGateway.embed({
+                                    traceId: `${context.traceId}-recall-embed`,
+                                    executionType: "tool",
+                                    providerId: embeddingProviderId,
+                                    model: embeddingModel,
+                                    text: lastUserMessage.content,
+                                });
+                                if (
+                                    embeddingResult &&
+                                    Array.isArray(embeddingResult.vector) &&
+                                    embeddingResult.vector.length > 0 &&
+                                    embeddingResult.vector.every((value) => Number.isFinite(Number(value)))
+                                ) {
+                                    queryVector = embeddingResult.vector.map((value) => Number(value));
+                                }
+                            } catch {
+                                // non-fatal embedding failure
+                            }
+                        }
                         const searchResult = await memoryGateway.search({
                             traceId: `${context.traceId}-recall`,
                             sessionId,
                             userId,
                             scope: 'session',
                             query: lastUserMessage.content,
-                            limit: 5
+                            limit: 5,
+                            ...(queryVector ? { filters: { queryVector } } : {}),
                         });
 
                         if (searchResult.status === 'completed' && searchResult.records.length > 0) {
@@ -49,7 +93,7 @@ export function createMemoryRecallMiddleware({ memoryGateway }) {
                                         ? recordEntry.metadata.threadKey
                                         : null;
                                     if (!recordThreadKey) {
-                                        return true;
+                                        return recordEntry?.record?.type === "session_summary";
                                     }
                                     return recordThreadKey === laneThreadKey;
                                 })

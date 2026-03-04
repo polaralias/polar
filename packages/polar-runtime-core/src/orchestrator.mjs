@@ -523,6 +523,8 @@ const FOCUS_RESOLVER_AMBIGUITY_SCORE_GAP_THRESHOLD = 0.2;
 const FOCUS_RESOLVER_AMBIGUITY_CONFIDENCE_THRESHOLD = 0.72;
 const TEMPORAL_ATTENTION_WINDOW_MS = 30 * 60 * 1000;
 const TEMPORAL_ATTENTION_RECENT_ACTION_LIMIT = 5;
+const DURABLE_LANE_RECENCY_LIMIT = 20;
+const SUMMARY_MIN_KEY_DETAIL_COUNT = 2;
 
 const ROUTING_DECISIONS = /** @type {const} */ (["respond", "delegate", "tool", "workflow", "clarify"]);
 
@@ -1217,17 +1219,41 @@ function isMessageInLane(message, laneThreadKey) {
     return laneThreadKey === "root:unknown";
 }
 
+function normalizeSummaryPointText(text) {
+    return redactSecrets(String(text || ""))
+        .replace(/\s+/g, " ")
+        .trim();
+}
+
+function isLowSignalSummaryText(text) {
+    const normalized = String(text || "").toLowerCase().trim();
+    if (!normalized) {
+        return true;
+    }
+    if (normalized.length < 8) {
+        return true;
+    }
+    if (/^(ok|okay|sure|thanks|thank you|cool|nice|great|got it|yes|no)[.!]?$/i.test(normalized)) {
+        return true;
+    }
+    return false;
+}
+
 function buildThreadSummaryRecord(laneMessages) {
     const olderMessages = laneMessages.slice(0, Math.max(0, laneMessages.length - LANE_UNSUMMARIZED_TAIL_COUNT));
     const latestMessages = laneMessages.slice(-LANE_UNSUMMARIZED_TAIL_COUNT);
     const userPoints = olderMessages
         .filter((item) => item.role === "user")
         .slice(-6)
-        .map((item) => `- ${redactSecrets(item.text).slice(0, 220)}`);
+        .map((item) => normalizeSummaryPointText(item.text).slice(0, 220))
+        .filter((text) => !isLowSignalSummaryText(text))
+        .map((text) => `- ${text}`);
     const assistantPoints = olderMessages
         .filter((item) => item.role === "assistant")
         .slice(-6)
-        .map((item) => `- ${redactSecrets(item.text).slice(0, 220)}`);
+        .map((item) => normalizeSummaryPointText(item.text).slice(0, 220))
+        .filter((text) => !isLowSignalSummaryText(text))
+        .map((text) => `- ${text}`);
 
     const summary = [
         "Current goals / open questions:",
@@ -1244,6 +1270,7 @@ function buildThreadSummaryRecord(laneMessages) {
         summary,
         unsummarizedTail: latestMessages,
         summarizedCount: olderMessages.length,
+        keyDetailCount: userPoints.length + assistantPoints.length,
     };
 }
 
@@ -1253,11 +1280,15 @@ function buildSessionSummaryRecord(sessionMessages) {
     const userPoints = olderMessages
         .filter((item) => item.role === "user")
         .slice(-10)
-        .map((item) => `- ${redactSecrets(item.text).slice(0, 220)}`);
+        .map((item) => normalizeSummaryPointText(item.text).slice(0, 220))
+        .filter((text) => !isLowSignalSummaryText(text))
+        .map((text) => `- ${text}`);
     const assistantPoints = olderMessages
         .filter((item) => item.role === "assistant")
         .slice(-10)
-        .map((item) => `- ${redactSecrets(item.text).slice(0, 220)}`);
+        .map((item) => normalizeSummaryPointText(item.text).slice(0, 220))
+        .filter((text) => !isLowSignalSummaryText(text))
+        .map((text) => `- ${text}`);
 
     const summary = [
         "Session goals / open requests:",
@@ -1274,6 +1305,7 @@ function buildSessionSummaryRecord(sessionMessages) {
         summary,
         unsummarizedTail: latestMessages,
         summarizedCount: olderMessages.length,
+        keyDetailCount: userPoints.length + assistantPoints.length,
     };
 }
 
@@ -1419,6 +1451,10 @@ export function createOrchestrator({
 
     function buildWorkflowThreadStateMemoryId(workflowId) {
         return `thread_state:workflow:${workflowId}`;
+    }
+
+    function buildLaneRecencyStateMemoryId(sessionId, laneThreadKey) {
+        return `thread_state:lane_recency:${sessionId}:${encodeURIComponent(laneThreadKey)}`;
     }
 
     function normalizeSessionStateValue(value) {
@@ -1595,6 +1631,59 @@ export function createOrchestrator({
                 clearedAtMs: now(),
             },
             { workflowId, expiresAtMs: now() },
+        );
+    }
+
+    /**
+     * @param {string} sessionId
+     * @param {string} laneThreadKey
+     * @returns {Promise<readonly Record<string, unknown>[]>}
+     */
+    async function hydrateLaneRecencyState(sessionId, laneThreadKey) {
+        const record = await readThreadStateRecord(buildLaneRecencyStateMemoryId(sessionId, laneThreadKey));
+        if (!record || record.type !== "thread_state" || record.stateKind !== "lane_recency") {
+            return [];
+        }
+        if (!Array.isArray(record.items)) {
+            return [];
+        }
+        return record.items
+            .filter((entry) => entry && typeof entry === "object")
+            .map((entry) => ({
+                sessionId,
+                role: entry.role,
+                text: entry.text,
+                messageId: entry.messageId,
+                timestampMs: entry.timestampMs,
+                metadata: {
+                    threadKey: laneThreadKey,
+                },
+            }));
+    }
+
+    async function persistLaneRecencyState(sessionId, laneThreadKey, laneMessages) {
+        const items = laneMessages
+            .slice(-DURABLE_LANE_RECENCY_LIMIT)
+            .map((entry) => ({
+                role: entry.role,
+                text: entry.text,
+                messageId: entry.messageId,
+                timestampMs: entry.timestampMs,
+            }));
+        await writeThreadStateRecord(
+            buildLaneRecencyStateMemoryId(sessionId, laneThreadKey),
+            {
+                type: "thread_state",
+                stateKind: "lane_recency",
+                sessionId,
+                laneThreadKey,
+                items: toJsonSafeValue(items),
+            },
+            {
+                sessionId,
+                threadKey: laneThreadKey,
+                updatedAtMs: now(),
+            },
         );
     }
 
@@ -2773,7 +2862,32 @@ ${routingRecommendation || ""}`;
                 limit: 250
             });
             const allHistoryItems = Array.isArray(historyData?.items) ? historyData.items : [];
-            const laneMessages = allHistoryItems.filter((item) => isMessageInLane(item, laneThreadKey));
+            let laneMessages = allHistoryItems.filter((item) => isMessageInLane(item, laneThreadKey));
+            if (laneMessages.length <= 1) {
+                try {
+                    const recoveredLaneMessages = await hydrateLaneRecencyState(polarSessionId, laneThreadKey);
+                    if (recoveredLaneMessages.length > 0) {
+                        const existingMessageIds = new Set(
+                            laneMessages
+                                .map((entry) => (typeof entry?.messageId === "string" ? entry.messageId : null))
+                                .filter(Boolean),
+                        );
+                        const recoveredOnly = recoveredLaneMessages.filter((entry) =>
+                            typeof entry?.messageId !== "string" || !existingMessageIds.has(entry.messageId),
+                        );
+                        laneMessages = [...recoveredOnly, ...laneMessages];
+                    }
+                } catch {
+                    // non-fatal lane recency restore failure
+                }
+            }
+            if (laneMessages.length > 0) {
+                try {
+                    await persistLaneRecencyState(polarSessionId, laneThreadKey, laneMessages);
+                } catch {
+                    // non-fatal lane recency persistence failure
+                }
+            }
 
             let threadSummaryText = "";
             let sessionSummaryText = "";
@@ -2844,7 +2958,10 @@ ${routingRecommendation || ""}`;
 
             if (shouldCompactLane && memoryGateway && typeof memoryGateway.upsert === "function") {
                 const rollup = buildThreadSummaryRecord(laneMessages);
-                if (rollup.summarizedCount > 0) {
+                if (
+                    rollup.summarizedCount > 0 &&
+                    rollup.keyDetailCount >= SUMMARY_MIN_KEY_DETAIL_COUNT
+                ) {
                     try {
                         await memoryGateway.upsert({
                             executionType: "handoff",
@@ -2877,7 +2994,10 @@ ${routingRecommendation || ""}`;
 
             if (shouldCompactSession && memoryGateway && typeof memoryGateway.upsert === "function") {
                 const sessionRollup = buildSessionSummaryRecord(allHistoryItems);
-                if (sessionRollup.summarizedCount > 0) {
+                if (
+                    sessionRollup.summarizedCount > 0 &&
+                    sessionRollup.keyDetailCount >= SUMMARY_MIN_KEY_DETAIL_COUNT
+                ) {
                     try {
                         await memoryGateway.upsert({
                             executionType: "handoff",
@@ -2948,8 +3068,38 @@ ${routingRecommendation || ""}`;
             }
 
             const retrievalHints = [];
+            const retrievedMemoryIds = [];
+            const retrievalSourceBreakdown = {
+                lane: 0,
+                session: 0,
+                cross_lane_blocked: 0,
+                unscoped_blocked: 0,
+            };
+            let retrievalUsedQueryVector = false;
             if (memoryGateway && typeof memoryGateway.search === "function" && typeof text === "string" && text.trim().length > 0) {
                 try {
+                    let queryVector = undefined;
+                    if (providerGateway && typeof providerGateway.embed === "function") {
+                        try {
+                            const embeddingResult = await providerGateway.embed({
+                                executionType: "handoff",
+                                providerId,
+                                model: "text-embedding-3-small",
+                                text,
+                            });
+                            if (
+                                embeddingResult &&
+                                Array.isArray(embeddingResult.vector) &&
+                                embeddingResult.vector.length > 0 &&
+                                embeddingResult.vector.every((value) => Number.isFinite(Number(value)))
+                            ) {
+                                queryVector = embeddingResult.vector.map((value) => Number(value));
+                                retrievalUsedQueryVector = true;
+                            }
+                        } catch {
+                            retrievalUsedQueryVector = false;
+                        }
+                    }
                     const memoryResult = await memoryGateway.search({
                         executionType: "handoff",
                         sessionId: polarSessionId,
@@ -2957,19 +3107,36 @@ ${routingRecommendation || ""}`;
                         scope: "session",
                         query: text,
                         limit: MEMORY_RETRIEVAL_LIMIT,
+                        ...(queryVector ? { filters: { queryVector } } : {}),
                     });
                     const records = Array.isArray(memoryResult?.records) ? memoryResult.records : [];
                     for (const entry of records) {
                         const entryThreadKey = entry?.metadata?.threadKey;
                         if (typeof entryThreadKey === "string" && entryThreadKey.length > 0 && entryThreadKey !== laneThreadKey) {
+                            retrievalSourceBreakdown.cross_lane_blocked += 1;
                             continue;
                         }
+                        if (typeof entryThreadKey !== "string" || entryThreadKey.length === 0) {
+                            if (entry?.record?.type !== "session_summary") {
+                                retrievalSourceBreakdown.unscoped_blocked += 1;
+                                continue;
+                            }
+                        }
                         if (entry?.record?.type === "thread_summary" && entryThreadKey !== laneThreadKey) {
+                            retrievalSourceBreakdown.cross_lane_blocked += 1;
                             continue;
                         }
                         const detail = entry?.record?.fact || entry?.record?.summary || entry?.record?.content || JSON.stringify(entry?.record ?? {});
                         if (typeof detail === "string" && detail.trim().length > 0) {
                             retrievalHints.push(`- ${redactSecrets(detail).slice(0, 220)}`);
+                            if (typeof entry?.memoryId === "string" && entry.memoryId.length > 0) {
+                                retrievedMemoryIds.push(entry.memoryId);
+                            }
+                            if (typeof entryThreadKey === "string" && entryThreadKey === laneThreadKey) {
+                                retrievalSourceBreakdown.lane += 1;
+                            } else {
+                                retrievalSourceBreakdown.session += 1;
+                            }
                         }
                         if (retrievalHints.length >= 5) {
                             break;
@@ -2979,6 +3146,16 @@ ${routingRecommendation || ""}`;
                     // non-fatal retrieval failure
                 }
             }
+            await emitLineageEvent({
+                eventType: "context.retrieval",
+                sessionId: polarSessionId,
+                userId,
+                laneThreadKey,
+                retrievedMemoryIds: Object.freeze([...retrievedMemoryIds]),
+                sourceBreakdown: retrievalSourceBreakdown,
+                usedQueryVector: retrievalUsedQueryVector,
+                timestampMs: now(),
+            });
 
             const replyContextBlock = buildReplyContextBlock(
                 metadata?.replyTo,

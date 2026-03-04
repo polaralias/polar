@@ -2959,3 +2959,74 @@ Full-suite run at end:
 
 ### Next
 - Keep targeted orchestrator behavior assertions synchronized with contract-first telemetry/failure-explainer semantics when evolving routing and execution paths.
+
+## 2026-03-04 (UTC) - Prompt Ad-hoc: Memory compaction gating + context recall hardening
+
+**Branch:** `main`  
+**Commit:** `not committed`  
+**Prompt reference:** `Implement compaction gating and fix-forward prior RAG/context findings`
+
+### Summary
+- Added key-detail gating for lane/session summary compaction so summary memory writes are skipped when discussion is low-signal.
+- Added durable lane recency snapshots in thread-state memory and orchestrator fallback hydration to reduce continuity loss after process restart.
+- Tightened lane isolation for retrieval by blocking unscoped memory records in lane mode (except `session_summary`) and tagging extracted facts with lane `threadKey`.
+- Added optional vector-assisted memory retrieval path:
+  - extraction stores embeddings on memory upsert metadata,
+  - sqlite memory provider persists embedding vectors in `polar_memory_embeddings`,
+  - memory search can rerank by cosine similarity when `filters.queryVector` is provided.
+- Added retrieval telemetry lineage event with retrieved memory ids, source breakdown, and vector-query usage flags.
+- Added duplicate recall guard in memory-recall middleware when context already contains summary/recall blocks.
+
+### Files changed
+- `packages/polar-runtime-core/src/orchestrator.mjs`
+  - added compaction signal gating (`SUMMARY_MIN_KEY_DETAIL_COUNT`),
+  - added durable lane recency state read/write helpers and fallback hydration,
+  - added retrieval vector query path + stricter lane/unscoped gating,
+  - added `context.retrieval` lineage emission with retrieval diagnostics.
+- `packages/polar-runtime-core/src/memory-extraction-middleware.mjs`
+  - tagged extracted facts with lane `threadKey`,
+  - added optional embedding call + metadata embedding payload persistence.
+- `packages/polar-runtime-core/src/memory-recall-middleware.mjs`
+  - added existing-context skip guard,
+  - added optional query embedding generation and `filters.queryVector` forwarding,
+  - tightened lane-mode record filtering for unscoped memories.
+- `packages/polar-runtime-core/src/memory-provider-sqlite.mjs`
+  - created `polar_memory_embeddings` table,
+  - indexed/stored embeddings on upsert when provided,
+  - added cosine reranking on search when `filters.queryVector` is present,
+  - ensured embedding rows are deleted during compaction deletes.
+- `packages/polar-control-plane/src/index.mjs`
+  - wired memory extraction/recall middleware provider proxies to include `embed`.
+- `tests/runtime-core-orchestrator-context-management.test.mjs`
+  - added compaction low-signal skip test,
+  - added durable lane recency restore test,
+  - expanded harness to support shared memory-backed get/upsert behavior.
+- `tests/runtime-core-memory-recall-middleware.test.mjs`
+  - added unscoped-record blocking assertion in lane mode,
+  - added duplicate-recall-context skip assertion.
+
+### Data model / migrations (if applicable)
+- **Tables created/changed:** `polar_memory_embeddings` (new).
+- **Migration notes:** table is created lazily via existing sqlite provider bootstrap (`CREATE TABLE IF NOT EXISTS`), no backfill required.
+- **Risk:** medium-low (retrieval behavior changed; covered by targeted and full-suite tests).
+
+### Security and safety checks
+- **Allowlist changes:** none.
+- **Capabilities/middleware affected:** memory extraction now optionally uses provider embed through provider gateway; failures are non-fatal.
+- **Sensitive operations:** retrieval now blocks unscoped lane memory by default except `session_summary`; this reduces cross-lane leakage risk.
+
+### Tests and validation
+- `node --test tests/runtime-core-orchestrator-context-management.test.mjs` - ✅
+- `node --test tests/runtime-core-memory-recall-middleware.test.mjs` - ✅
+- `node --test tests/control-plane-service.test.mjs` - ✅
+- `node --test tests/integration-vertical-slice.test.mjs` - ✅
+- `node --test tests/runtime-core-memory-gateway.test.mjs` - ✅
+- `npm run check:boundaries` - ✅
+- `npm test` - ✅ (482 passed, 0 failed)
+
+### Blockers
+- None.
+
+### Next
+- Consider adding an explicit memory-provider contract field for vector search controls (rather than generic `filters`) to make query intent/audit semantics stricter.
+- Optionally add telemetry dashboard aggregation for `context.retrieval` lineage events (`retrievedMemoryIds`, `sourceBreakdown`, vector usage rate).
