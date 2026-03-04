@@ -292,6 +292,36 @@ function mergeDraft(base, override) {
   return next;
 }
 
+function normalizeDraftScheduleFromPlanner(schedule, fallback) {
+  if (!isPlainObject(schedule)) {
+    return fallback;
+  }
+  const kind = typeof schedule.kind === "string" ? schedule.kind.toLowerCase() : "";
+  const expression =
+    typeof schedule.expression === "string"
+      ? schedule.expression.trim().toLowerCase()
+      : "";
+  if (kind === "interval") {
+    const match = expression.match(/^every\s+(\d{1,3})\s+hours?$/);
+    if (match) {
+      const intervalHours = Number.parseInt(match[1], 10);
+      if (Number.isInteger(intervalHours) && intervalHours > 0) {
+        return { kind: "hourly", intervalHours };
+      }
+    }
+  }
+  if (kind === "daily") {
+    return { kind: "hourly", intervalHours: 24 };
+  }
+  if (kind === "weekly") {
+    return { kind: "weekly", byDay: ["MO"], hourUtc: 9, minuteUtc: 0 };
+  }
+  if (kind === "event") {
+    return { kind: "event", expression: expression || "on event" };
+  }
+  return fallback;
+}
+
 function adaptAutomationPlannerProposal(baseDraft, proposal) {
   const validation = validateSchemaProposal(proposal, automationPlannerSchema);
   if (!validation.valid) {
@@ -305,14 +335,19 @@ function adaptAutomationPlannerProposal(baseDraft, proposal) {
   const proposed = validation.value;
   const confidence = normalizeConfidence(proposed.confidence);
   const decision = proposed.decision;
-  const shouldClampToClarify = confidence === null || (decision === "propose" && confidence < 0.35);
+  const shouldClampToClarify =
+    confidence === null ||
+    decision === "clarify" ||
+    (decision === "propose" && confidence < 0.35);
   if (shouldClampToClarify) {
     return {
       draft: {
         ...baseDraft,
         status: "drafted",
         summary: proposed.summary,
-        reason: proposed.clarificationQuestion || "Need confirmation before creating automation.",
+        reason:
+          proposed.clarificationQuestion ||
+          "Need confirmation before creating automation.",
       },
     };
   }
@@ -333,10 +368,19 @@ function adaptAutomationPlannerProposal(baseDraft, proposal) {
       status: "drafted",
       summary: proposed.summary,
       triggerType: proposed.schedule?.kind === "event" ? "event" : "schedule",
-      schedule: proposed.schedule,
-      runScope: proposed.runScope,
+      schedule: normalizeDraftScheduleFromPlanner(proposed.schedule, baseDraft.schedule),
+      runScope: isPlainObject(proposed.runScope)
+        ? {
+            ...baseDraft.runScope,
+            ...proposed.runScope,
+            sessionId: baseDraft.runScope.sessionId,
+            userId: baseDraft.runScope.userId,
+          }
+        : baseDraft.runScope,
       selectedModelLane: baseDraft.selectedModelLane,
-      approvalRequired: proposed.riskHints?.requiresApproval === true,
+      approvalRequired:
+        proposed.riskHints?.requiresApproval === true ||
+        proposed.riskHints?.mayWrite === true,
     },
   };
 }

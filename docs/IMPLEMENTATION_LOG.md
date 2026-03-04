@@ -2748,3 +2748,32 @@ Commands run and outcomes:
 
 ### Next
 - **Next prompt:** `IP-04: Automation planner LLM-first migration`.
+
+## 2026-03-04 (UTC) - IP-04: Automation planner migration to LLM-first
+
+**Branch:** `main`  
+**Commit:** `not committed`  
+**Prompt reference:** `IP-04: Automation planner migration to LLM-first`  
+**Specs referenced:**
+- `docs/specs/LLM_FIRST_PROPOSAL_AND_POLICY_ENFORCEMENT.md`
+- `docs/specs/AUTOMATION_RUNNER.md`
+- `docs/specs/ORCHESTRATOR_OUTPUT_RULE.md`
+- `docs/specs/CONTEXT_MANAGEMENT_SYSTEM.md`
+- `docs/prompts/AUTOMATION_PLANNER_PROMPT_CONTRACT.md`
+
+### Summary
+- Migrated orchestrator automation drafting to an LLM-first structured planner proposal path using the automation planner prompt contract schema.
+- Added deterministic normalization/clamping for schedule, quiet hours, max notification caps, and approval-required derivation before creating pending automation proposals.
+- Added explicit low-confidence clarification flow that returns a deterministic confirmation question instead of silently drafting a job.
+- Extended pending automation proposal payloads with approval-required metadata.
+- Added runtime-core tests covering planner proposal accept/reject/clarify adaptation and orchestrator low-confidence/cap-enforcement behavior.
+
+### Tests and validation
+- `npm test`
+- `npm run check:boundaries`
+
+### Blockers
+- None.
+
+### Next
+- Wire structured telemetry fields (`proposal_type`, `llm_confidence`, `proposal_valid`, `final_decision`) for automation planner decisions into lineage/usage telemetry for dashboard visibility.

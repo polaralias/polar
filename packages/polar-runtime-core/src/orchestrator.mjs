@@ -19,6 +19,7 @@ import { normalizeToolWorkflowError } from './tool-workflow-error-normalizer.mjs
 import {
     parseJsonProposalText,
     routerProposalSchema,
+    automationPlannerSchema,
     validateWorkflowPlannerProposal,
     failureExplainerSchema,
     normalizeConfidence,
@@ -192,6 +193,14 @@ function detectAutomationProposal(text) {
  * @param {string} text
  * @returns {null|{ schedule: string, promptTemplate: string, limits: Record<string, unknown>, quietHours: Record<string, unknown>, templateType: "inbox_check" }}
  */
+function isAutomationIntentCandidate(text) {
+    if (typeof text !== "string") {
+        return false;
+    }
+    const normalized = text.toLowerCase();
+    return /\b(remind|reminder|notify|ping|automation|schedule|daily|every\s+\d+\s*(?:minute|minutes|hour|hours|day|days)|monitor|check)\b/.test(normalized);
+}
+
 function detectInboxAutomationProposal(text) {
     if (typeof text !== "string") {
         return null;
@@ -223,6 +232,105 @@ function detectInboxAutomationProposal(text) {
             startHour: 22,
             endHour: 7,
             timezone: "UTC",
+        },
+    };
+}
+
+/**
+ * @param {{
+ *  providerGateway: { generate: (input: Record<string, unknown>) => Promise<{ text?: string }|Record<string, unknown>> },
+ *  providerId: string,
+ *  model: string,
+ *  text: string,
+ *  sessionId: string,
+ *  userId: string
+ * }} input
+ */
+async function requestAutomationPlannerProposal(input) {
+    const response = await input.providerGateway.generate({
+        executionType: "tool",
+        providerId: input.providerId,
+        model: input.model,
+        system: "You are an automation planning model. Output strict JSON only.",
+        prompt:
+            `Produce an automation planner proposal JSON object only. ${JSON.stringify({
+                userText: input.text,
+                runScope: {
+                    sessionId: input.sessionId,
+                    userId: input.userId,
+                },
+                constraints: {
+                    maxNotificationsPerDayCap: 3,
+                    quietHoursDefault: { startHour: 22, endHour: 7, timezone: "UTC" },
+                    allowedScheduleKinds: ["interval", "daily", "weekly", "event"],
+                },
+            })}`,
+    });
+    return parseJsonProposalText(response?.text || "{}", automationPlannerSchema);
+}
+
+function normalizeAutomationScheduleFromProposal(schedule) {
+    if (typeof schedule !== "object" || schedule === null) {
+        return null;
+    }
+    const kind = typeof schedule.kind === "string" ? schedule.kind.toLowerCase() : "";
+    const expression = typeof schedule.expression === "string" ? schedule.expression.trim().toLowerCase() : "";
+    if (!kind || !expression) {
+        return null;
+    }
+    if (kind === "interval") {
+        const match = expression.match(/^every\s+(\d{1,3})\s+(minutes?|hours?|days?)$/);
+        if (!match) {
+            return null;
+        }
+        const amount = Number.parseInt(match[1], 10);
+        if (!Number.isInteger(amount) || amount < 1) {
+            return null;
+        }
+        return `every ${amount} ${match[2]}`;
+    }
+    if (kind === "daily") {
+        const timeMatch = expression.match(/^(?:at\s+)?(\d{1,2}):(\d{2})$/);
+        if (!timeMatch) {
+            return null;
+        }
+        const hour = Number.parseInt(timeMatch[1], 10);
+        const minute = Number.parseInt(timeMatch[2], 10);
+        if (hour < 0 || hour > 23 || minute < 0 || minute > 59) {
+            return null;
+        }
+        return `daily at ${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+    }
+    return null;
+}
+
+function normalizeAutomationLimits(limits) {
+    const quietHoursInput =
+        typeof limits === "object" && limits !== null && typeof limits.quietHours === "object" && limits.quietHours !== null
+            ? limits.quietHours
+            : {};
+    const startHour = Number.parseInt(String(quietHoursInput.startHour ?? 22), 10);
+    const endHour = Number.parseInt(String(quietHoursInput.endHour ?? 7), 10);
+    const timezone = typeof quietHoursInput.timezone === "string" && quietHoursInput.timezone.trim().length > 0
+        ? quietHoursInput.timezone.trim()
+        : "UTC";
+    const maxNotificationsPerDayRaw = Number.parseInt(
+        String((typeof limits === "object" && limits !== null ? limits.maxNotificationsPerDay : 3) ?? 3),
+        10,
+    );
+    const maxNotificationsPerDay =
+        Number.isInteger(maxNotificationsPerDayRaw)
+            ? Math.max(1, Math.min(3, maxNotificationsPerDayRaw))
+            : 3;
+
+    return {
+        limits: {
+            maxNotificationsPerDay,
+        },
+        quietHours: {
+            startHour: Number.isInteger(startHour) ? Math.max(0, Math.min(23, startHour)) : 22,
+            endHour: Number.isInteger(endHour) ? Math.max(0, Math.min(23, endHour)) : 7,
+            timezone,
         },
     };
 }
@@ -2165,11 +2273,69 @@ ${routingRecommendation || ""}`;
                 });
             }
 
-            const automationProposal =
-                !suppressAutomationWrites
-                    ? (detectInboxAutomationProposal(text) ??
-                        detectAutomationProposal(text))
+            let automationProposal = null;
+            let automationPlannerDecision = null;
+            if (!suppressAutomationWrites && isAutomationIntentCandidate(text)) {
+                const plannerValidation = await requestAutomationPlannerProposal({
+                    providerGateway,
+                    providerId,
+                    model,
+                    text,
+                    sessionId: polarSessionId,
+                    userId: userId.toString(),
+                }).catch(() => ({ valid: false, value: null }));
+
+                const plannerConfidence = normalizeConfidence(plannerValidation?.value?.confidence);
+                const plannerDecision = plannerValidation?.valid ? plannerValidation.value.decision : null;
+                const lowConfidence = plannerConfidence === null || plannerConfidence < 0.55;
+                const normalizedSchedule = plannerValidation?.valid
+                    ? normalizeAutomationScheduleFromProposal(plannerValidation.value.schedule)
                     : null;
+                const normalizedLimits = normalizeAutomationLimits(
+                    plannerValidation?.valid ? plannerValidation.value.limits : {},
+                );
+
+                if (plannerValidation?.valid && plannerDecision === "propose" && normalizedSchedule && !lowConfidence) {
+                    const promptTemplateCandidate =
+                        typeof plannerValidation.value.summary === "string" && plannerValidation.value.summary.trim().length > 0
+                            ? `Reminder: ${plannerValidation.value.summary.trim()}`
+                            : inferAutomationPromptTemplate(text);
+                    const inboxFallback = detectInboxAutomationProposal(text);
+                    automationProposal = {
+                        schedule: normalizedSchedule,
+                        promptTemplate: promptTemplateCandidate,
+                        limits: inboxFallback
+                            ? {
+                                ...normalizedLimits.limits,
+                                inbox: inboxFallback.limits.inbox,
+                            }
+                            : normalizedLimits.limits,
+                        quietHours: normalizedLimits.quietHours,
+                        templateType: inboxFallback?.templateType ?? "generic",
+                        approvalRequired:
+                            plannerValidation.value?.riskHints?.requiresApproval === true ||
+                            plannerValidation.value?.riskHints?.mayWrite === true,
+                    };
+                } else if (plannerValidation?.valid && (plannerDecision === "clarify" || lowConfidence)) {
+                    automationPlannerDecision = {
+                        status: "clarify",
+                        question:
+                            plannerValidation.value.clarificationQuestion ||
+                            "Quick check: should I create this automation with conservative daily limits?",
+                        confidence: plannerConfidence,
+                    };
+                } else if (plannerValidation?.valid && plannerDecision === "skip") {
+                    automationPlannerDecision = {
+                        status: "skip",
+                    };
+                }
+
+                if (!automationProposal && !automationPlannerDecision) {
+                    automationProposal =
+                        detectInboxAutomationProposal(text) ??
+                        detectAutomationProposal(text);
+                }
+            }
             if (automationProposal) {
                 const proposalId = `auto_prop_${crypto.randomUUID()}`;
                 const assistantMessageId = `msg_a_${crypto.randomUUID()}`;
@@ -2178,7 +2344,8 @@ ${routingRecommendation || ""}`;
                     `- Schedule: ${automationProposal.schedule}\n` +
                     `- Prompt template: ${automationProposal.promptTemplate}\n` +
                     `- Limits: maxNotificationsPerDay=${automationProposal.limits.maxNotificationsPerDay}\n` +
-                    `- Quiet hours: ${automationProposal.quietHours.startHour}:00-${automationProposal.quietHours.endHour}:00 ${automationProposal.quietHours.timezone}\n\n` +
+                    `- Quiet hours: ${automationProposal.quietHours.startHour}:00-${automationProposal.quietHours.endHour}:00 ${automationProposal.quietHours.timezone}\n` +
+                    `- Approval required: ${automationProposal.approvalRequired ? "yes" : "no"}\n\n` +
                     `Approve to create the job.`;
 
                 PENDING_AUTOMATION_PROPOSALS.set(proposalId, {
@@ -2191,6 +2358,7 @@ ${routingRecommendation || ""}`;
                     limits: automationProposal.limits,
                     quietHours: automationProposal.quietHours,
                     templateType: automationProposal.templateType ?? "generic",
+                    approvalRequired: automationProposal.approvalRequired === true,
                 });
 
                 if (!suppressResponsePersist) {
@@ -2218,7 +2386,33 @@ ${routingRecommendation || ""}`;
                         limits: automationProposal.limits,
                         quietHours: automationProposal.quietHours,
                         templateType: automationProposal.templateType ?? "generic",
+                        approvalRequired: automationProposal.approvalRequired === true,
                     }),
+                    useInlineReply: currentTurnAnchor ?? false,
+                    anchorMessageId: currentAnchorMessageId,
+                };
+            }
+
+            if (automationPlannerDecision?.status === "clarify") {
+                const assistantMessageId = `msg_a_${crypto.randomUUID()}`;
+                const clarificationText = automationPlannerDecision.question;
+                if (!suppressResponsePersist) {
+                    await chatManagementGateway.appendMessage({
+                        sessionId: polarSessionId,
+                        userId: "assistant",
+                        messageId: assistantMessageId,
+                        role: "assistant",
+                        text: clarificationText,
+                        timestampMs: now(),
+                        ...(inboundThreadId !== undefined ? { threadId: inboundThreadId } : {}),
+                        ...(inboundMetadata !== undefined ? { metadata: inboundMetadata } : {}),
+                    });
+                }
+                return {
+                    status: "completed",
+                    type: "automation_clarification",
+                    text: clarificationText,
+                    assistantMessageId,
                     useInlineReply: currentTurnAnchor ?? false,
                     anchorMessageId: currentAnchorMessageId,
                 };
@@ -3462,6 +3656,7 @@ ${routingRecommendation || ""}`;
                     limits: proposal.limits,
                     quietHours: proposal.quietHours,
                     templateType: proposal.templateType,
+                    approvalRequired: proposal.approvalRequired === true,
                     createdAt: proposal.createdAt,
                 }),
             };
