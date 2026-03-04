@@ -74,3 +74,103 @@ export function validateSteps(steps, policyContext = {}) {
 
     return { ok: errors.length === 0, errors };
 }
+
+/**
+ * @param {unknown} capability
+ * @returns {string[]}
+ */
+function extractRequiredArgKeys(capability) {
+    if (!capability || typeof capability !== "object") {
+        return [];
+    }
+    const record = /** @type {Record<string, unknown>} */ (capability);
+    const candidates = [
+        record.requiredArgs,
+        record.required,
+        record?.argsSchema?.required,
+        record?.inputSchema?.required,
+    ];
+    for (const value of candidates) {
+        if (!Array.isArray(value)) {
+            continue;
+        }
+        const keys = value
+            .filter((key) => typeof key === "string" && key.length > 0)
+            .map((key) => key.trim());
+        if (keys.length > 0) {
+            return keys;
+        }
+    }
+    return [];
+}
+
+/**
+ * Validates planner-proposed steps against install state/capability existence and
+ * lightweight args requirements before workflow execution.
+ * @param {Array<{ extensionId: string, capabilityId: string, args?: Record<string, unknown>, reason?: string, id?: string, dependsOnStep?: string }>} steps
+ * @param {{ extensionStates?: unknown[] }} context
+ * @returns {{ acceptedSteps: Array<{ extensionId: string, capabilityId: string, args: Record<string, unknown> }>, rejectedSteps: Array<{ index: number, extensionId: string, capabilityId: string, reason: string }>, hasRejected: boolean }}
+ */
+export function validateDynamicWorkflowSteps(steps, context = {}) {
+    const stateByExtension = new Map();
+    for (const state of context.extensionStates || []) {
+        if (!state || typeof state !== "object") {
+            continue;
+        }
+        const record = /** @type {Record<string, unknown>} */ (state);
+        if (typeof record.extensionId !== "string" || record.extensionId.length === 0) {
+            continue;
+        }
+        stateByExtension.set(record.extensionId, record);
+    }
+
+    const acceptedSteps = [];
+    const rejectedSteps = [];
+    for (let index = 0; index < steps.length; index += 1) {
+        const step = steps[index];
+        const extensionState = stateByExtension.get(step.extensionId);
+        if (step.extensionId !== "system") {
+            if (!extensionState) {
+                rejectedSteps.push({ index, extensionId: step.extensionId, capabilityId: step.capabilityId, reason: "extension_not_installed" });
+                continue;
+            }
+            const lifecycleState = typeof extensionState.lifecycleState === "string" ? extensionState.lifecycleState : "installed";
+            if (lifecycleState !== "enabled" && lifecycleState !== "installed") {
+                rejectedSteps.push({ index, extensionId: step.extensionId, capabilityId: step.capabilityId, reason: "extension_not_enabled" });
+                continue;
+            }
+        }
+
+        const capabilities = Array.isArray(extensionState?.capabilities) ? extensionState.capabilities : [];
+        const capabilityMetadata = capabilities.find((candidate) => candidate && typeof candidate === "object" && candidate.capabilityId === step.capabilityId);
+        if (step.extensionId !== "system" && !capabilityMetadata) {
+            rejectedSteps.push({ index, extensionId: step.extensionId, capabilityId: step.capabilityId, reason: "capability_not_found" });
+            continue;
+        }
+
+        const args = step.args && typeof step.args === "object" ? step.args : {};
+        const requiredArgKeys = extractRequiredArgKeys(capabilityMetadata);
+        const missingArgs = requiredArgKeys.filter((key) => !(key in args));
+        if (missingArgs.length > 0) {
+            rejectedSteps.push({
+                index,
+                extensionId: step.extensionId,
+                capabilityId: step.capabilityId,
+                reason: `missing_required_args:${missingArgs.join(",")}`,
+            });
+            continue;
+        }
+
+        acceptedSteps.push({
+            extensionId: step.extensionId,
+            capabilityId: step.capabilityId,
+            args,
+        });
+    }
+
+    return {
+        acceptedSteps,
+        rejectedSteps,
+        hasRejected: rejectedSteps.length > 0,
+    };
+}
