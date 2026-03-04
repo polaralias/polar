@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseModelProposal, expandTemplate, validateSteps } from "../packages/polar-runtime-core/src/workflow-engine.mjs";
+import { parseModelProposal, expandTemplate, validateSteps, validateDynamicWorkflowSteps } from "../packages/polar-runtime-core/src/workflow-engine.mjs";
 
 test("workflow-engine parses valid template action", () => {
     const text = `<polar_action>{"template": "lookup_weather", "args": {"location": "London"}}</polar_action>`;
@@ -59,4 +59,27 @@ test("workflow-engine expansion keeps optional args if present", () => {
         model_override: "gpt-4-mini"
     });
     assert.equal(steps[0].args.model_override, "gpt-4-mini");
+});
+
+test("workflow-engine dynamic step validation rejects non-installed and missing-arg steps", () => {
+    const validation = validateDynamicWorkflowSteps([
+        { extensionId: "web", capabilityId: "search_web", args: {} },
+        { extensionId: "calendar", capabilityId: "create_event", args: { title: "x" } },
+    ], {
+        extensionStates: [
+            {
+                extensionId: "web",
+                lifecycleState: "enabled",
+                capabilities: [
+                    { capabilityId: "search_web", requiredArgs: ["query"] },
+                ],
+            },
+        ],
+    });
+
+    assert.equal(validation.acceptedSteps.length, 0);
+    assert.deepEqual(validation.rejectedSteps.map((item) => item.reason), [
+        "missing_required_args:query",
+        "extension_not_installed",
+    ]);
 });

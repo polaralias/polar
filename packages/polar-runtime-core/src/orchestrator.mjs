@@ -14,7 +14,7 @@ import {
 import { validateForwardSkills, validateModelOverride, computeCapabilityScope } from './capability-scope.mjs';
 import { classifyUserMessage, applyUserTurn, selectReplyAnchor, detectOfferInText, setOpenOffer, computeRepairDecision, handleRepairSelection, enforceRoutingProposalPolicy } from './routing-policy-engine.mjs';
 import { evaluateCapabilityApprovalRequirement } from './extension-gateway.mjs';
-import { parseModelProposal, expandTemplate, validateSteps } from './workflow-engine.mjs';
+import { parseModelProposal, expandTemplate, validateSteps, validateDynamicWorkflowSteps } from './workflow-engine.mjs';
 import { normalizeToolWorkflowError } from './tool-workflow-error-normalizer.mjs';
 import {
     parseJsonProposalText,
@@ -239,6 +239,38 @@ function parseJsonWithSchema(rawText, schema) {
         throw new RuntimeExecutionError(`Invalid ${schema.schemaId}: ${(validation.errors || []).join('; ')}`);
     }
     return /** @type {Record<string, unknown>} */ (validation.value);
+}
+
+/**
+ * @param {{
+ *  providerGateway: { generate: (input: Record<string, unknown>) => Promise<{ text?: string }|Record<string, unknown>> },
+ *  providerId: string,
+ *  model: string,
+ *  text: string,
+ *  cleanText: string,
+ *  availableTools: Array<{ extensionId: string, capabilityId: string }>
+ * }} input
+ */
+async function requestWorkflowPlannerProposal(input) {
+    const response = await input.providerGateway.generate({
+        executionType: "tool",
+        providerId: input.providerId,
+        model: input.model,
+        system: "You are a workflow planning model. Output strict JSON only.",
+        prompt:
+            `Propose an executable workflow JSON object only. ${JSON.stringify({
+                userText: input.text,
+                assistantContext: input.cleanText || null,
+                availableTools: input.availableTools,
+            })}`,
+    });
+    let parsed = {};
+    try {
+        parsed = JSON.parse(normalizeJsonText(response?.text || "{}"));
+    } catch {
+        return { valid: false, clampReasons: ["schema_invalid"] };
+    }
+    return validateWorkflowPlannerProposal(parsed);
 }
 
 /**
@@ -2084,7 +2116,7 @@ To delegate to a sub-agent, propose a workflow step using the tool "delegate_to_
 }
 
 [WORKFLOW CAPABILITY ENGINE]
-Propose workflows via <polar_action> blocks. Only use established templates. Arbitrary step chains are not supported.
+Propose workflows via <polar_action> blocks. You may return dynamic step graphs with {goal, confidence, riskHints, steps[]} using installed capabilities. Static templates remain supported for compatibility fallback.
 
 Available Templates:
 - lookup_weather(location)
@@ -2540,32 +2572,97 @@ ${routingRecommendation || ""}`;
                     let workflowSteps = null;
                     let proposalValidation = { proposalType: "workflow", proposalValid: true, clampReasons: [] };
                     const actionJson = actionMatch[1]?.trim();
+                    const extensionStates = extensionGateway.listStates() || [];
+                    const plannerAvailableTools = extensionStates.flatMap((state) =>
+                        (Array.isArray(state?.capabilities) ? state.capabilities : [])
+                            .filter((capability) => capability && typeof capability?.capabilityId === "string")
+                            .map((capability) => ({
+                                extensionId: state.extensionId,
+                                capabilityId: capability.capabilityId,
+                            }))
+                    );
+
+                    let plannerValidation = { valid: false, clampReasons: ["schema_invalid"] };
                     try {
-                        const parsedAction = JSON.parse(actionJson);
-                        const workflowPlannerValidation = validateWorkflowPlannerProposal(parsedAction);
-                        if (workflowPlannerValidation.valid) {
-                            workflowSteps = workflowPlannerValidation.value.steps.map((step) => ({
+                        const plannerProposal = await requestWorkflowPlannerProposal({
+                            providerGateway,
+                            providerId,
+                            model,
+                            text,
+                            cleanText,
+                            availableTools: plannerAvailableTools,
+                        });
+                        if (plannerProposal.valid) {
+                            const plannerSteps = plannerProposal.value.steps.map((step) => ({
                                 extensionId: step.extensionId,
                                 capabilityId: step.capabilityId,
                                 args: step.args,
                             }));
-                        } else {
+                            const dynamicValidation = validateDynamicWorkflowSteps(plannerSteps, { extensionStates });
+                            if (dynamicValidation.acceptedSteps.length > 0) {
+                                workflowSteps = dynamicValidation.acceptedSteps;
+                            }
+
+                            const dynamicClampReasons = dynamicValidation.rejectedSteps.map(
+                                (rejection) => `step_${rejection.index}:${rejection.reason}`,
+                            );
                             proposalValidation = {
                                 proposalType: "workflow",
-                                proposalValid: false,
-                                clampReasons: workflowPlannerValidation.clampReasons,
+                                proposalValid: dynamicClampReasons.length === 0,
+                                clampReasons: dynamicClampReasons,
                             };
-                            const legacyProposal = parseModelProposal(actionMatch[0]);
-                            if (!legacyProposal || legacyProposal.error) {
-                                return { status: 'clarification_needed', text: "I need a clearer workflow plan before I can run tools safely." };
-                            }
-                            workflowSteps = expandTemplate(legacyProposal.templateId, legacyProposal.args);
+                            plannerValidation = { valid: true, clampReasons: dynamicClampReasons };
+                        } else {
+                            plannerValidation = plannerProposal;
                         }
                     } catch {
-                        const proposal = parseModelProposal(actionMatch[0]);
-                        if (!proposal || proposal.error) return { status: 'clarification_needed', text: "I need a clearer workflow plan before I can run tools safely." };
-                        proposalValidation = { proposalType: "workflow", proposalValid: false, clampReasons: ["schema_invalid"] };
-                        workflowSteps = expandTemplate(proposal.templateId, proposal.args);
+                        plannerValidation = { valid: false, clampReasons: ["planner_unavailable"] };
+                    }
+
+                    if (!workflowSteps) {
+                        try {
+                            const parsedAction = JSON.parse(actionJson);
+                            const workflowPlannerValidation = validateWorkflowPlannerProposal(parsedAction);
+                            if (workflowPlannerValidation.valid) {
+                                workflowSteps = workflowPlannerValidation.value.steps.map((step) => ({
+                                    extensionId: step.extensionId,
+                                    capabilityId: step.capabilityId,
+                                    args: step.args,
+                                }));
+                            }
+                        } catch {
+                            // Ignore and fallback to static template path below.
+                        }
+                    }
+
+                    if (!workflowSteps) {
+                        const legacyProposal = parseModelProposal(actionMatch[0]);
+                        if (!legacyProposal || legacyProposal.error) {
+                            return { status: 'clarification_needed', text: "I need a clearer workflow plan before I can run tools safely." };
+                        }
+                        proposalValidation = {
+                            proposalType: "workflow",
+                            proposalValid: false,
+                            clampReasons: plannerValidation.clampReasons || ["fallback_template"],
+                        };
+                        workflowSteps = expandTemplate(legacyProposal.templateId, legacyProposal.args);
+                    }
+
+                    const preflightCapabilityScope = computeCapabilityScope({
+                        sessionProfile: profile,
+                        multiAgentConfig,
+                        installedExtensions: extensionGateway.listStates(),
+                        authorityStates: listAuthorityStates(),
+                    });
+                    const preflightValidation = validateSteps(workflowSteps, { capabilityScope: preflightCapabilityScope });
+                    if (!preflightValidation.ok) {
+                        return {
+                            status: 'clarification_needed',
+                            text: "I can't run part of that workflow with the currently allowed capabilities.",
+                            proposalType: 'workflow',
+                            proposalValid: false,
+                            clampReasons: preflightValidation.errors.map((error) => `scope_mismatch:${error}`),
+                        };
                     }
 
                     const risk = evaluateWorkflowRisk(workflowSteps);

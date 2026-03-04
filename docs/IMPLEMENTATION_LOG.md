@@ -2717,3 +2717,34 @@ Commands run and outcomes:
 
 ### Next
 - **Next prompt:** `IP-03: Dynamic workflow planner migration`.
+
+## 2026-03-04 (UTC) - Prompt IP-03: Dynamic workflow planner migration
+
+**Branch:** `main`  
+**Commit:** `not committed`  
+**Prompt reference:** `IP-03: Dynamic workflow planner (LLM-proposed graph, code-validated execution)`
+
+### Summary
+- Added a dedicated workflow-planner proposal call in orchestrator flow that requests strict JSON workflow plans from the provider and validates against the workflow planner contract.
+- Implemented dynamic workflow step validation for install/enabled state, capability existence, lightweight args requirements, and clamp semantics for mixed-validity plans.
+- Added deterministic preflight capability-scope enforcement before workflow proposal persistence, returning explicit clarification when proposed steps violate current scope.
+- Preserved static template parsing/expansion as a compatibility fallback path when dynamic planner proposals are unavailable or invalid.
+- Added/updated tests covering dynamic mixed-validity clamping, capability-scope rejection, and dynamic step validation behavior.
+
+### Files changed
+- `packages/polar-runtime-core/src/orchestrator.mjs`
+- `packages/polar-runtime-core/src/workflow-engine.mjs`
+- `tests/runtime-core-orchestrator-workflow-validation.test.mjs`
+- `tests/runtime-core-workflow-template-enforcement.test.mjs`
+- `docs/IMPLEMENTATION_LOG.md`
+
+### Tests and validation
+- `node --test tests/runtime-core-workflow-template-enforcement.test.mjs tests/runtime-core-orchestrator-workflow-validation.test.mjs`
+- `npm test` (suite executed and reported passing subtests through workflow/orchestrator coverage; process required manual termination due lingering test runner handles)
+- `npm run check:boundaries`
+
+### Blockers
+- `npm test` did not exit on its own in this environment because the node test process remained alive after reporting passing subtests; manually terminated after verification output.
+
+### Next
+- **Next prompt:** `IP-04: Automation planner LLM-first migration`.

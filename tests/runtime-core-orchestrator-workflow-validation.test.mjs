@@ -130,6 +130,131 @@ test("orchestrator does not execute tools when template args are invalid", async
   });
 });
 
+test("orchestrator clamps mixed-validity dynamic workflow planner steps", async () => {
+  await withUnrefedIntervals(async () => {
+    const appendedMessages = [];
+    const orchestrator = createOrchestrator({
+      profileResolutionGateway: {
+        async resolve() {
+          return {
+            profileConfig: {
+              systemPrompt: "You are a test assistant.",
+              modelPolicy: { providerId: "test-provider", modelId: "test-model" },
+              allowedSkills: ["email"],
+            },
+          };
+        },
+      },
+      chatManagementGateway: {
+        async appendMessage(message) {
+          appendedMessages.push(message);
+          return { status: "appended" };
+        },
+        async getSessionHistory({ sessionId, limit = 100 }) {
+          const items = appendedMessages
+            .filter((message) => message.sessionId === sessionId)
+            .map((message) => ({ role: message.role, text: message.text }));
+          return { items: items.slice(-limit) };
+        },
+      },
+      providerGateway: {
+        async generate({ system, prompt }) {
+          if (typeof system === "string" && system.includes("workflow planning model")) {
+            return {
+              text: JSON.stringify({
+                goal: "Send an email",
+                confidence: 0.93,
+                riskHints: { mayWrite: true, mayRequireApproval: true, mayBeDestructive: false },
+                steps: [
+                  {
+                    id: "step-1",
+                    reason: "send the email",
+                    extensionId: "email",
+                    capabilityId: "send_email",
+                    args: { to: "dev@polar.local", subject: "Hi", body: "hello" },
+                  },
+                  {
+                    id: "step-2",
+                    reason: "post to missing integration",
+                    extensionId: "not_installed",
+                    capabilityId: "do_thing",
+                    args: {},
+                  },
+                ],
+              }),
+            };
+          }
+          if (typeof prompt === "string" && prompt.includes("Analyze these execution results")) {
+            return { text: "summary" };
+          }
+          return {
+            text: `<polar_action>{"template":"send_email","args":{"to":"dev@polar.local","subject":"Hi","body":"hello"}}</polar_action>`,
+          };
+        },
+      },
+      extensionGateway: {
+        getState(extensionId) {
+          if (extensionId !== "email") return undefined;
+          return {
+            extensionId: "email",
+            lifecycleState: "enabled",
+            capabilities: [
+              { capabilityId: "send_email", riskLevel: "write", sideEffects: "external", requiredArgs: ["to", "subject", "body"] },
+            ],
+          };
+        },
+        listStates() {
+          return [this.getState("email")];
+        },
+        async execute() {
+          return { status: "completed", output: "ok" };
+        },
+      },
+      approvalStore: createApprovalStore(),
+      gateway: {
+        async getConfig() {
+          return { status: "not_found" };
+        },
+      },
+      now: Date.now,
+    });
+
+    const result = await orchestrator.orchestrate({
+      sessionId: "session-mixed-validity",
+      userId: "user-mixed-validity",
+      text: "send this email",
+      messageId: "m-mixed-validity",
+    });
+
+    assert.equal(result.status, "workflow_proposed");
+    assert.equal(result.proposalValid, false);
+    assert.ok(result.clampReasons.some((reason) => reason.includes("extension_not_installed")));
+    assert.equal(result.steps.length, 1);
+    assert.equal(result.steps[0].capabilityId, "send_email");
+    assert.ok(Array.isArray(result.risk.requirements));
+    assert.equal(result.risk.requirements.length > 0, true);
+  });
+});
+
+test("orchestrator rejects planner steps that violate capability scope", async () => {
+  await withUnrefedIntervals(async () => {
+    const { orchestrator, extensionExecutions } = createOrchestratorHarness({
+      providerText: `<polar_action>{"template":"search_web","args":{"query":"polar"}}</polar_action>`,
+    });
+
+    const result = await orchestrator.orchestrate({
+      sessionId: "session-scope-mismatch",
+      userId: "user-scope-mismatch",
+      text: "search the web",
+      messageId: "m-scope-mismatch",
+    });
+
+    assert.equal(result.status, "clarification_needed");
+    assert.match(result.text, /currently allowed capabilities/i);
+    assert.equal(extensionExecutions.length, 0);
+  });
+});
+
 test("orchestrator clamps forwarded skills before activating delegation", async () => {
   await withUnrefedIntervals(async () => {
     const appendedMessages = [];
@@ -534,12 +659,8 @@ test("orchestrator computes capability scope from skill-registry authority state
       text: "draft an email",
       messageId: "m-2",
     });
-    assert.equal(blockedProposal.status, "workflow_proposed");
-    assert.match(blockedProposal.assistantMessageId, /^msg_a_/);
-
-    const blockedExecution = await orchestrator.executeWorkflow(blockedProposal.workflowId);
-    assert.equal(blockedExecution.status, "error");
-    assert.match(blockedExecution.text, /Workflow blocked/);
+    assert.equal(blockedProposal.status, "clarification_needed");
+    assert.match(blockedProposal.text, /currently allowed capabilities/i);
     assert.equal(extensionExecutions.length, 1);
   });
 });
@@ -697,4 +818,3 @@ test("workflow execution remains stable when chat appends reject internal system
     assert.match(result.text, /Execution Results/);
   });
 });
-
