@@ -18,6 +18,15 @@ export function createMemoryRecallMiddleware({ memoryGateway }) {
                 !context.input.skipRecall) {
 
                 const { sessionId, userId, messages } = context.input;
+                const laneThreadKey =
+                    typeof context.input.threadKey === "string" && context.input.threadKey.length > 0
+                        ? context.input.threadKey
+                        : (
+                            typeof context.input.metadata?.threadKey === "string" &&
+                                context.input.metadata.threadKey.length > 0
+                                ? context.input.metadata.threadKey
+                                : null
+                        );
 
                 // Find the last user message to use as the search query
                 const lastUserMessage = [...messages].reverse().find(m => m.role === 'user');
@@ -34,7 +43,18 @@ export function createMemoryRecallMiddleware({ memoryGateway }) {
                         });
 
                         if (searchResult.status === 'completed' && searchResult.records.length > 0) {
-                            const facts = searchResult.records
+                            const scopedRecords = laneThreadKey
+                                ? searchResult.records.filter((recordEntry) => {
+                                    const recordThreadKey = typeof recordEntry?.metadata?.threadKey === "string"
+                                        ? recordEntry.metadata.threadKey
+                                        : null;
+                                    if (!recordThreadKey) {
+                                        return true;
+                                    }
+                                    return recordThreadKey === laneThreadKey;
+                                })
+                                : searchResult.records;
+                            const facts = scopedRecords
                                 .map(r => r.record.fact || JSON.stringify(r.record))
                                 .filter(Boolean)
                                 .join('\n- ');

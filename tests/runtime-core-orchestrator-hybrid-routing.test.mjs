@@ -51,6 +51,28 @@ test("hybrid router persists clarification state and consumes follow-up selectio
       listStates() { return []; },
       async execute() { return { status: "completed", output: "ok" }; },
     },
+    gateway: {
+      readConfigRecord(resourceType, resourceId) {
+        if (resourceType === "policy" && resourceId === "agent-registry:default") {
+          return {
+            resourceType,
+            resourceId,
+            version: 1,
+            config: {
+              version: 1,
+              agents: [
+                {
+                  agentId: "@writer",
+                  profileId: "profile.writer",
+                  description: "Writer agent",
+                },
+              ],
+            },
+          };
+        }
+        return undefined;
+      },
+    },
     approvalStore: createApprovalStore(),
     lineageStore: {
       async append(event) {
@@ -80,12 +102,160 @@ test("hybrid router persists clarification state and consumes follow-up selectio
     metadata: { threadKey: "root:1" },
   });
 
-  assert.equal(second.status, "completed");
-  assert.equal(callIndex, 2);
-  const secondSystemPrompt = providerCalls.at(-1)?.system || "";
-  assert.match(secondSystemPrompt, /\[ROUTER_DECISION\] Delegate this request/);
+  assert.equal(second.status, "workflow_proposed");
+  assert.equal(callIndex, 1);
+  assert.equal(second.steps[0].capabilityId, "delegate_to_agent");
+  assert.equal(second.steps[0].args.agentId, "@writer");
 
   const consumedEvent = lineageEvents.find((event) => event?.eventType === "routing.pending_state.consumed");
   assert.ok(consumedEvent);
   assert.equal(consumedEvent.selectionIntent, "delegate");
+});
+
+test("hybrid router executes authoritative tool action without second model planning call", async () => {
+  const providerCalls = [];
+  let callIndex = 0;
+
+  const orchestrator = createOrchestrator({
+    profileResolutionGateway: {
+      async resolve() {
+        return {
+          status: "resolved",
+          profileConfig: {
+            systemPrompt: "You are a parent profile.",
+            modelPolicy: { providerId: "openai", modelId: "gpt-4.1-mini" },
+          },
+        };
+      },
+    },
+    chatManagementGateway: {
+      async appendMessage() {
+        return { status: "appended" };
+      },
+      async getSessionHistory() {
+        return { items: [] };
+      },
+    },
+    providerGateway: {
+      async generate(input) {
+        providerCalls.push(input);
+        callIndex += 1;
+        if (callIndex === 1) {
+          return {
+            text: JSON.stringify({
+              decision: "tool",
+              target: {
+                extensionId: "weather",
+                capabilityId: "lookup_weather",
+              },
+              confidence: 0.92,
+              rationale: "weather request",
+              references: { refersTo: "latest", refersToReason: "explicit weather intent" },
+            }),
+          };
+        }
+        return { text: "summary" };
+      },
+    },
+    extensionGateway: {
+      getState(extensionId) {
+        if (extensionId === "system") {
+          return {
+            extensionId: "system",
+            lifecycleState: "installed",
+            capabilities: [
+              { capabilityId: "lookup_weather", riskLevel: "read", sideEffects: "none" },
+            ],
+          };
+        }
+        return undefined;
+      },
+      listStates() {
+        return [
+          {
+            extensionId: "weather",
+            lifecycleState: "installed",
+            capabilities: [{ capabilityId: "lookup_weather" }],
+          },
+        ];
+      },
+      async execute() {
+        return { status: "completed", output: "Sunny 18C" };
+      },
+    },
+    approvalStore: createApprovalStore(),
+    now: Date.now,
+  });
+
+  const result = await orchestrator.orchestrate({
+    sessionId: "session-hybrid-tool",
+    userId: "user-hybrid-tool",
+    text: "weather in Swansea",
+    messageId: "m-hybrid-tool-1",
+    metadata: { threadKey: "root:2" },
+  });
+
+  assert.equal(result.status, "completed");
+  assert.equal(
+    providerCalls.some((call) => typeof call.system === "string" && call.system.includes("MULTI-AGENT ORCHESTRATION ENGINE")),
+    false,
+  );
+});
+
+test("hybrid router asks deterministic clarification when workflow decision lacks executable template details", async () => {
+  let callIndex = 0;
+
+  const orchestrator = createOrchestrator({
+    profileResolutionGateway: {
+      async resolve() {
+        return {
+          status: "resolved",
+          profileConfig: {
+            systemPrompt: "You are a parent profile.",
+            modelPolicy: { providerId: "openai", modelId: "gpt-4.1-mini" },
+          },
+        };
+      },
+    },
+    chatManagementGateway: {
+      async appendMessage() {
+        return { status: "appended" };
+      },
+      async getSessionHistory() {
+        return { items: [] };
+      },
+    },
+    providerGateway: {
+      async generate() {
+        callIndex += 1;
+        return {
+          text: JSON.stringify({
+            decision: "workflow",
+            confidence: 0.95,
+            rationale: "needs workflow",
+            references: { refersTo: "latest", refersToReason: "explicit workflow ask" },
+          }),
+        };
+      },
+    },
+    extensionGateway: {
+      getState() { return undefined; },
+      listStates() { return []; },
+      async execute() { return { status: "completed", output: "ok" }; },
+    },
+    approvalStore: createApprovalStore(),
+    now: Date.now,
+  });
+
+  const result = await orchestrator.orchestrate({
+    sessionId: "session-hybrid-workflow-clarify",
+    userId: "user-hybrid-workflow-clarify",
+    text: "run a workflow",
+    messageId: "m-hybrid-workflow-1",
+    metadata: { threadKey: "root:3" },
+  });
+
+  assert.equal(result.type, "clarification_needed");
+  assert.match(result.text, /which workflow should I run/i);
+  assert.equal(callIndex, 1);
 });

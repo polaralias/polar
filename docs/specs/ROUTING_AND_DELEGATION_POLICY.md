@@ -12,6 +12,17 @@ while increasing model-driven decision quality without sacrificing safety or tra
 
 ---
 
+## Vision alignment
+This policy implements the "advanced context + specialist agents" operating model:
+- one orchestrator, many specialist execution paths
+- deterministic+LLM hybrid route selection
+- dynamic context loading from lane memory, summaries, and typed pending state
+- agent-first handling for external actions, multi-step work, or specialist-domain tasks
+
+The assistant may reason semantically, but policy chooses the final safe action.
+
+---
+
 ## Core principle
 Use a **hybrid weighted router**:
 - LLM contributes semantic reasoning and ambiguity handling.
@@ -84,6 +95,21 @@ Arbitration:
 
 ---
 
+## Decision tree contract
+Routing should follow this high-level tree before arbitration details:
+1. Does this require external data or side effects (search/email/calendar/tool calls)?
+   - yes -> prefer `tool` or `workflow` candidate set
+2. Is this a multi-step or long-form task ("research and compare", "10 variants", "draft + revise")?
+   - yes -> prefer `workflow` or `delegate`
+3. Does this benefit from a specialist profile/agent?
+   - yes -> prefer `delegate` with explicit `agentId`
+4. Else:
+   - prefer `respond`
+
+If any branch remains ambiguous after weighted arbitration, return `clarify`.
+
+---
+
 ## Weighted arbitration contract
 ### Inputs
 - `heuristicScores[candidate]`
@@ -118,6 +144,12 @@ Force clarification when any is true:
 - read-only delegation may auto-run
 - write, complex, workflow-level, or destructive delegation requires approval
 - model cannot override approval requirement
+
+### Delegation context affinity
+When delegating related subtasks in the same lane/project:
+- preserve and reuse the same delegated `agentId` when safe and available
+- treat lane focus anchor + temporal attention as delegation context
+- avoid cross-lane delegation carryover unless explicitly requested by user
 
 ---
 
@@ -154,6 +186,9 @@ Record on every routing turn:
 - `risk_class`
 - `policy_vetoes`
 - `final_outcome`
+- `router_invoked` (boolean)
+- `router_affirmed_decision` (boolean)
+- `delegate_target_resolution_source` (`pending|router|mention|fallback`)
 
 Operational requirements:
 - maintain replayable routing fixtures from production transcripts (redacted)
@@ -177,6 +212,7 @@ Operational requirements:
 - hard policy vetoes clamp invalid tool/agent decisions
 - delegation approval requirement cannot be bypassed by router output
 - replay suite validates no regression on known ambiguous transcripts
+- explicit decision-tree cases ("external action", "multi-step", "specialist needed") map to expected candidate modes
 
 ---
 

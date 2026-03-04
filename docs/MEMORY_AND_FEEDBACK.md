@@ -5,6 +5,13 @@ Polar needs two different persistence stories:
 1) **Memory**: facts/summaries used for continuity.
 2) **Feedback/events**: reactions, approvals, heartbeats, automation outcomes used for improvement and ops.
 
+## Vision alignment
+The memory system is a hybrid context stack:
+- rolling summaries for long chats
+- durable fact memory for important user/project details
+- typed pending/runtime state for short follow-ups and control flow
+- dynamic retrieval that is lane-first and only widens scope when justified
+
 ## Current state
 - SQLite-backed memory provider exists (with text search/FTS where available).
 - Telegram runner writes reactions to a markdown file (flat append).
@@ -21,6 +28,15 @@ Polar needs two different persistence stories:
 
 This keeps queries straightforward and avoids mixing “what happened” with “what we currently believe”.
 
+### Memory categories
+Keep these as distinct record types:
+- `thread_summary` and `session_summary`: compressed continuity
+- `temporal_attention`: recent unresolved/actions view
+- `extracted_fact`: durable user/project facts
+- `thread_state`: typed pending records (`slot_request`, `clarification_needed`, `workflow_waiting`, `workflow_cancellable`, `delegation_candidate`)
+
+`thread_state` is runtime-critical continuity and should be durable, lane-scoped, and TTL-aware.
+
 ## Do we need a vector DB?
 Not yet.
 
@@ -31,6 +47,11 @@ If/when similarity recall is worth it:
 - add an optional embeddings table keyed to memory IDs
 - migrate to Postgres + pgvector later if/when you need scale
 
+## Retrieval rules
+- Default retrieval is lane-first.
+- Session-level summaries are fallback context, not primary.
+- Cross-lane retrieval requires explicit user reference or high-confidence match.
+- Never retrieve/store secrets or credentials in memory summaries/facts.
 
 ## See also
 - `docs/specs/DATA_MODEL.md`

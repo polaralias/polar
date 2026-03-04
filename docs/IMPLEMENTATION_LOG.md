@@ -2276,3 +2276,253 @@ Commands run and outcomes:
 ### Next
 - **Next prompt:** Persist typed pending routing state (`clarification_needed`/`delegation_candidate`) into durable memory/thread_state records and add replay harness for routing telemetry tuning.
 - **Suggested starting point:** `packages/polar-runtime-core/src/orchestrator.mjs`, `packages/polar-runtime-core/src/memory-provider-sqlite.mjs`, and new replay fixtures under `tests/`.
+
+## 2026-03-04 (UTC) - Prompt Ad-hoc: Re-review hybrid routing findings and implement validated router fixes
+
+**Branch:** `main`  
+**Commit:** `not committed`  
+**Prompt reference:** `Re-review findings after parallel router updates; implement validated bugs`  
+**Specs referenced:**
+- `docs/specs/ROUTING_AND_DELEGATION_POLICY.md`
+- `docs/specs/FOCUS_CONTEXT_AND_PENDING.md`
+- `docs/specs/CONTEXT_MANAGEMENT_SYSTEM.md`
+
+### Summary
+- Re-reviewed previously reported routing findings against current runtime and confirmed which remained valid after recent Hybrid v2 work.
+- Implemented deterministic delegation execution when fused routing chooses `delegate`, by synthesizing a validated `delegate_to_agent` workflow proposal path instead of relying on advisory prompt hints.
+- Removed Stage-A hard override that forced delegate outputs independent of fused arbitration; Stage-A now influences heuristics without bypassing arbitration.
+- Refined router prefiltering so router is only invoked on new requests with actionable routing cues (delegate/workflow/tool when tool candidates exist, or ambiguous references), preventing router calls from hijacking normal low-risk inline/tool-recovery flows.
+- Added deterministic delegate-target resolution fallback chain: pending-state target -> router target -> explicit/natural-language agent mention -> generic fallback.
+- Persisted delegate target across `clarification_needed` pending routing state so follow-up selection (`B`) routes to the originally proposed agent instead of falling back to generic.
+- Updated affected tests to align with authoritative delegation execution semantics.
+
+### Scope and decisions
+- **In scope:** orchestrator routing/delegation execution path and test fixtures covering hybrid routing and agent delegation behavior.
+- **Out of scope:** durable DB-backed storage migration for typed routing pending state.
+- **Key decisions:**
+  - Keep deterministic policy authority by converting delegate decisions into executable workflow proposals.
+  - Avoid over-clarification/over-routing by applying a deterministic Tier-1 prefilter before invoking router generation.
+  - Preserve explicit agent intent from user text and pending clarification state to reduce accidental generic fallbacks.
+
+### Files changed
+- `packages/polar-runtime-core/src/orchestrator.mjs`
+  - Added forced delegation action builder.
+  - Added delegate target resolution from text mentions.
+  - Changed router prefilter and removed hard Stage-A delegation override.
+  - Made delegate fused decision executable (deterministic workflow proposal).
+  - Persisted `targetAgentId` in clarification pending state.
+- `tests/runtime-core-orchestrator-agent-registry.test.mjs`
+  - Updated expectations for deterministic delegation path and added unknown-agent fallback assertion.
+- `tests/runtime-core-orchestrator-hybrid-routing.test.mjs`
+  - Updated follow-up selection expectations for workflow-proposed delegate path and registered test agent fixture.
+
+### Data model / migrations (if applicable)
+- **Tables created/changed:** none
+- **Migration notes:** none
+- **Risk:** medium (core routing behavior changes), mitigated by full suite pass.
+
+### Security and safety checks
+- **Allowlist changes:** none
+- **Capabilities/middleware affected:** none bypassed; delegation still executes via workflow validation + approval/capability enforcement path.
+- **Sensitive operations:** none
+
+### Tests and validation
+Commands run and outcomes:
+- `node --test tests/runtime-core-orchestrator-agent-registry.test.mjs` - ✅
+- `node --test tests/runtime-core-orchestrator-routing.test.mjs` - ✅
+- `node --test tests/runtime-core-orchestrator-hybrid-routing.test.mjs` - ✅
+- `node --test tests/runtime-core-orchestrator-workflow-validation.test.mjs` - ✅
+- `node --test tests/integration-vertical-slice.test.mjs` - ✅
+- `npm test` - ✅ (445 passed, 0 failed)
+- `npm run check:boundaries` - ✅
+
+### Blockers
+- None.
+
+### Next
+- **Next prompt:** Extend deterministic post-policy executor so `tool` and `workflow` fused decisions can be made executable without relying on model-format action emission where safe.
+- **Suggested starting point:** `packages/polar-runtime-core/src/orchestrator.mjs` around fused decision handling and model-generation fallback branch.
+
+## 2026-03-04 (UTC) - Prompt Ad-hoc: Authoritative execution for fused tool/workflow routing decisions
+
+**Branch:** `main`  
+**Commit:** `not committed`  
+**Prompt reference:** `Implement authoritative execution for tool/workflow fused routing decisions`  
+**Specs referenced:**
+- `docs/specs/ROUTING_AND_DELEGATION_POLICY.md`
+- `docs/specs/WORKFLOW_EXECUTION_INTEGRITY.md`
+
+### Summary
+- Implemented deterministic authoritative execution for fused `tool`/`workflow` routing decisions when router and fused decision align, using synthetic `<polar_action>` generation for supported templates.
+- Added deterministic template/argument synthesis for known templates/capabilities (`lookup_weather`, `search_web`, `draft_email`, `send_email`) with explicit clarify fallback when required args are missing.
+- Added deterministic fallback clarifications for non-executable workflow/tool routing outcomes instead of silently reverting to unconstrained model planning.
+- Kept safety by requiring router affirmation before authoritative `tool`/`workflow` forcing; heuristic-only routes continue through normal model planning.
+- Added targeted hybrid-routing regression tests for:
+  - authoritative tool execution without a second planning call,
+  - deterministic clarification when workflow decision lacks executable details.
+
+### Scope and decisions
+- **In scope:** orchestrator routing post-arbitration execution behavior for tool/workflow decisions and related tests.
+- **Out of scope:** broad template inference for arbitrary custom workflows.
+- **Key decisions:**
+  - Authoritative `tool`/`workflow` forcing is gated by router affirmation (`llmDecision === fusedDecision`) to avoid regressions in heuristic-only legacy flows.
+  - Deterministic clarify prompts are used when actionable template/args are unavailable.
+
+### Files changed
+- `packages/polar-runtime-core/src/orchestrator.mjs`
+  - Added deterministic template inference + arg synthesis helpers.
+  - Added authoritative routing output resolver for delegate/tool/workflow.
+  - Added tool/workflow clarify fallback path when non-executable.
+  - Gated tool/workflow authoritative forcing on router affirmation.
+- `tests/runtime-core-orchestrator-hybrid-routing.test.mjs`
+  - Added authoritative tool execution regression test.
+  - Added non-executable workflow clarification regression test.
+- `docs/IMPLEMENTATION_LOG.md`
+  - Appended this entry.
+
+### Data model / migrations (if applicable)
+- **Tables created/changed:** none
+- **Migration notes:** none
+- **Risk:** medium (routing execution path changes), mitigated by full suite pass.
+
+### Security and safety checks
+- **Allowlist changes:** none
+- **Capabilities/middleware affected:** unchanged enforcement path; workflows still validate via templates, capability scope, approvals, and middleware.
+- **Sensitive operations:** none added.
+
+### Tests and validation
+Commands run and outcomes:
+- `node --test tests/runtime-core-orchestrator-hybrid-routing.test.mjs` - ✅
+- `node --test tests/runtime-core-orchestrator-workflow-validation.test.mjs` - ✅
+- `node --test tests/runtime-core-orchestrator-agent-registry.test.mjs` - ✅
+- `node --test tests/integration-vertical-slice.test.mjs` - ✅
+- `npm test` - ✅ (447 passed, 0 failed)
+- `npm run check:boundaries` - ✅
+
+### Blockers
+- None.
+
+### Next
+- **Next prompt:** Expand deterministic tool/workflow argument extraction coverage (email templates and richer slot extraction), and add replay fixtures for routing-execution parity.
+- **Suggested starting point:** `packages/polar-runtime-core/src/orchestrator.mjs` helper section near authoritative routing resolvers and `tests/runtime-core-orchestrator-hybrid-routing.test.mjs`.
+
+## 2026-03-04 (UTC) - Prompt Ad-hoc: Docs alignment pass for advanced context + delegation vision
+
+**Branch:** `main`  
+**Commit:** `not committed`  
+**Prompt reference:** `Docs pass to align memory + routing with advanced context management vision`  
+**Specs referenced:**
+- `docs/specs/ROUTING_AND_DELEGATION_POLICY.md`
+- `docs/specs/CONTEXT_MANAGEMENT_SYSTEM.md`
+- `docs/specs/FOCUS_CONTEXT_AND_PENDING.md`
+- `docs/MEMORY_AND_FEEDBACK.md`
+
+### Summary
+- Updated routing policy spec to explicitly encode the decision-tree framing (external action, multi-step work, specialist need) and how that maps to candidate routing modes.
+- Added delegation context-affinity guidance to keep related subtasks under the same delegated agent within a lane unless the user redirects.
+- Expanded context-management spec to explicitly define dynamic loading and lane-first retrieval behavior as first-class principles.
+- Clarified memory taxonomy and persistence expectations in `MEMORY_AND_FEEDBACK.md`, including durable typed `thread_state` as runtime-critical continuity.
+- Extended focus/pending spec with deterministic delegate-target resolution order and acceptance criteria for preserved clarification target behavior.
+
+### Scope and decisions
+- **In scope:** docs-only alignment to vision and policy clarification.
+- **Out of scope:** runtime code changes, migrations, or threshold updates.
+- **Key decisions:**
+  - Keep specs explicit about target behavior even where implementation is partial, to avoid implicit drift.
+  - Treat lane-first retrieval and typed pending durability as required architecture direction.
+  - Make delegation-target resolution order explicit to preserve user intent and reduce stale/generic fallback routing.
+
+### Files changed
+- `docs/specs/ROUTING_AND_DELEGATION_POLICY.md`
+- `docs/specs/CONTEXT_MANAGEMENT_SYSTEM.md`
+- `docs/specs/FOCUS_CONTEXT_AND_PENDING.md`
+- `docs/MEMORY_AND_FEEDBACK.md`
+- `docs/IMPLEMENTATION_LOG.md`
+
+### Data model / migrations (if applicable)
+- **Tables created/changed:** none
+- **Migration notes:** none
+- **Risk:** low (documentation-only changes)
+
+### Security and safety checks
+- **Allowlist changes:** none
+- **Capabilities/middleware affected:** none (docs-only)
+- **Sensitive operations:** none
+
+### Tests and validation
+Commands run and outcomes:
+- Not run (docs-only pass).
+
+### Blockers
+- None.
+
+### Next
+- **Next prompt:** Implement durable typed `thread_state` persistence and lane-aware middleware recall gating to match updated context/memory specs.
+- **Suggested starting point:** `packages/polar-runtime-core/src/orchestrator.mjs`, `packages/polar-runtime-core/src/memory-recall-middleware.mjs`.
+
+## 2026-03-04 (UTC) - Prompt Ad-hoc: Durable thread state, lane-aware recall, structured temporal attention, and broader routing cues
+
+**Branch:** `main`  
+**Commit:** `not committed`  
+**Prompt reference:** `Implement fixes for durable pending/routing state, lane-aware recall, temporal attention typing, and routing taxonomy breadth`  
+**Specs referenced:**
+- `docs/specs/CONTEXT_MANAGEMENT_SYSTEM.md`
+- `docs/specs/ROUTING_AND_DELEGATION_POLICY.md`
+- `docs/specs/FOCUS_CONTEXT_AND_PENDING.md`
+- `docs/MEMORY_AND_FEEDBACK.md`
+
+### Summary
+- Implemented durable runtime `thread_state` persistence/recovery in orchestrator for:
+  - session thread state (`SESSION_THREADS`)
+  - lane-scoped pending routing state (`PENDING_ROUTING_STATES`)
+  - pending workflow proposals (`PENDING_WORKFLOWS`)
+- Added orchestrator hydration on entry and in workflow/reject/cancel/update-message paths so restart continuity works without requiring warm in-memory maps.
+- Updated pending workflow lifecycle to persist on proposal creation and clear durable entry on execute/reject/cancel.
+- Added lane-aware filtering to memory recall middleware so records with a mismatched `metadata.threadKey` are excluded when a lane key is available.
+- Extended temporal attention record to persist first-class structured fields (`riskHints`, `activeDelegation`, `window`) in addition to summary/unresolved/focus candidates.
+- Broadened routing taxonomy and heuristic cues for specialist/multi-step intents (research/compare/proposal/debug/travel/calendar/email/inbox patterns) and improved email argument inference for authoritative template execution.
+
+### Scope and decisions
+- **In scope:** orchestrator durability + routing/context behavior, middleware recall lane filtering, and tests.
+- **Out of scope:** schema/migration-level DB table redesign; embeddings/vector retrieval.
+- **Key decisions:**
+  - Persist runtime control state as `thread_state` memory records through `memoryGateway` to keep middleware/audit path intact.
+  - Use deterministic durable-state IDs for session/routing/workflow records so restart hydration can recover by key.
+  - Keep lane-aware recall as a strict filter when `threadKey` is supplied, with conservative fallback behavior when absent.
+
+### Files changed
+- `packages/polar-runtime-core/src/orchestrator.mjs`
+- `packages/polar-runtime-core/src/memory-recall-middleware.mjs`
+- `tests/runtime-core-orchestrator-context-management.test.mjs`
+- `tests/runtime-core-orchestrator-durable-state.test.mjs` (new)
+- `tests/runtime-core-memory-recall-middleware.test.mjs` (new)
+- `docs/IMPLEMENTATION_LOG.md`
+
+### Data model / migrations (if applicable)
+- **Tables created/changed:** none (reused existing memory table via `memoryGateway`)
+- **Migration notes:** none
+- **Risk:** medium (orchestrator state lifecycle and workflow approval execution path changes), mitigated by full suite pass.
+
+### Security and safety checks
+- **Allowlist changes:** none
+- **Capabilities/middleware affected:** none bypassed; persistence uses existing memory gateway path.
+- **Sensitive operations:** none added.
+
+### Tests and validation
+Commands run and outcomes:
+- `node --test tests/runtime-core-memory-recall-middleware.test.mjs` - ✅
+- `node --test tests/runtime-core-orchestrator-durable-state.test.mjs` - ✅
+- `node --test tests/runtime-core-orchestrator-context-management.test.mjs` - ✅
+- `node --test tests/runtime-core-orchestrator-hybrid-routing.test.mjs` - ✅
+- `node --test tests/runtime-core-orchestrator-agent-registry.test.mjs` - ✅
+- `node --test tests/runtime-core-orchestrator-workflow-validation.test.mjs` - ✅
+- `node --test tests/bug-fixes-comprehensive.test.mjs` - ✅
+- `npm test` - ✅ (450 passed, 0 failed)
+- `npm run check:boundaries` - ✅
+
+### Blockers
+- None.
+
+### Next
+- **Next prompt:** Add deterministic replay fixtures for durable-state restart scenarios (clarification + workflow proposal + cancellation) and expose typed thread-state diagnostics in control plane.
+- **Suggested starting point:** `tests/integration-vertical-slice.test.mjs`, `packages/polar-control-plane/src/index.mjs`.

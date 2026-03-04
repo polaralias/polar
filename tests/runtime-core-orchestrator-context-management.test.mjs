@@ -108,8 +108,13 @@ test("summary compaction writes thread_summary for oversized lane history", asyn
   assert.equal(memoryUpserts.some((entry) => entry.record?.type === "thread_summary"), true);
   assert.equal(memoryUpserts.some((entry) => entry.record?.type === "temporal_attention"), true);
   const threadSummaryUpsert = memoryUpserts.find((entry) => entry.record?.type === "thread_summary");
+  const temporalUpsert = memoryUpserts.find((entry) => entry.record?.type === "temporal_attention");
   assert.equal(threadSummaryUpsert.metadata.threadKey, "root:42");
   assert.equal(threadSummaryUpsert.record.unsummarizedTailCount, 10);
+  assert.equal(typeof temporalUpsert.record.riskHints?.hasPendingApproval, "boolean");
+  assert.equal(typeof temporalUpsert.record.riskHints?.hasInFlightWorkflow, "boolean");
+  assert.equal(typeof temporalUpsert.record.window?.startAtMs, "number");
+  assert.equal(typeof temporalUpsert.record.window?.endAtMs, "number");
   assert.match(providerCalls.at(-1).system, /\[THREAD_SUMMARY threadKey=root:42\]/);
   assert.match(providerCalls.at(-1).system, /\[TEMPORAL_ATTENTION threadKey=root:42\]/);
 });

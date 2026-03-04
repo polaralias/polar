@@ -109,11 +109,16 @@ test("orchestrator includes registered agents in context and clamps delegated mo
     messageId: "m-agent-1",
   });
   assert.equal(proposed.status, "workflow_proposed");
-
-  const mainCall = providerCalls.find((call) => typeof call.system === "string" && call.system.includes("Available pre-configured sub-agents"));
-  assert.ok(mainCall);
-  assert.match(mainCall.system, /@writer/);
-  assert.match(mainCall.system, /Writes docs/);
+  assert.equal(proposed.steps[0].capabilityId, "delegate_to_agent");
+  assert.equal(proposed.steps[0].args.agentId, "@writer");
+  assert.equal(
+    providerCalls.some(
+      (call) =>
+        typeof call.system === "string" &&
+        call.system.includes("You are a routing model. Output strict JSON only."),
+    ),
+    true,
+  );
 
   const executed = await orchestrator.executeWorkflow(proposed.workflowId);
   assert.equal(executed.status, "completed");
@@ -203,7 +208,7 @@ test("orchestrator asks a short clarification question when router confidence is
   assert.ok(assistantMessage);
 });
 
-test("orchestrator includes default generic fallback sub-agent in model context", async () => {
+test("orchestrator falls back to default generic sub-agent when router suggests unknown agent", async () => {
   const providerCalls = [];
 
   const orchestrator = createOrchestrator({
@@ -225,17 +230,15 @@ test("orchestrator includes default generic fallback sub-agent in model context"
     providerGateway: {
       async generate(input) {
         providerCalls.push(input);
-        if (providerCalls.length === 1) {
-          return {
-            text: JSON.stringify({
-              decision: "respond",
-              confidence: 0.9,
-              rationale: "simple",
-              references: { refersTo: "latest", refersToReason: "simple" },
-            }),
-          };
-        }
-        return { text: "Got it." };
+        return {
+          text: JSON.stringify({
+            decision: "delegate",
+            target: { agentId: "@unknown_agent" },
+            confidence: 0.9,
+            rationale: "delegate",
+            references: { refersTo: "latest", refersToReason: "complex task" },
+          }),
+        };
       },
     },
     extensionGateway: {
@@ -252,14 +255,14 @@ test("orchestrator includes default generic fallback sub-agent in model context"
     now: Date.now,
   });
 
-  await orchestrator.orchestrate({
+  const proposed = await orchestrator.orchestrate({
     sessionId: "session-default-generic",
     userId: "user-default-generic",
     text: "write 10 versions of this email",
     messageId: "m-default-generic",
   });
-
-  const mainCall = providerCalls[1];
-  assert.ok(mainCall);
-  assert.match(mainCall.system, /@generic_sub_agent/);
+  assert.equal(proposed.status, "workflow_proposed");
+  assert.equal(proposed.steps[0].capabilityId, "delegate_to_agent");
+  assert.equal(proposed.steps[0].args.agentId, "@generic_sub_agent");
+  assert.equal(providerCalls.length, 1);
 });

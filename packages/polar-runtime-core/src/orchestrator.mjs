@@ -316,6 +316,55 @@ function classifyRoutingRisk(text = "") {
 }
 
 /**
+ * @param {string} text
+ * @returns {boolean}
+ */
+function hasRoutingCue(text = "") {
+    const normalized = String(text || "").toLowerCase();
+    return /\b(sub-agent|sub agent|delegate|workflow|tool|do that|that|it|again|plan|step by step|multi-step|search|look up|weather|version|variant|research|compare|analy[sz]e|proposal|calendar|email|inbox|travel|code|debug|refactor)\b/.test(normalized);
+}
+
+/**
+ * @param {string} text
+ * @returns {boolean}
+ */
+function hasSpecialistDelegationCue(text = "") {
+    const normalized = String(text || "").toLowerCase();
+    return /\b(research|compare|analy[sz]e|proposal|strategy|travel|calendar|inbox|email triage|code review|refactor|debug|root cause|investigate)\b/.test(normalized);
+}
+
+/**
+ * @param {string} text
+ * @param {Set<string>} installedAgentIds
+ * @returns {string|null}
+ */
+function resolveMentionedAgentId(text, installedAgentIds) {
+    if (!(installedAgentIds instanceof Set) || installedAgentIds.size === 0) {
+        return null;
+    }
+    const normalizedText = String(text || "").toLowerCase();
+    const matches = normalizedText.match(/@[a-z0-9_-]{2,32}/g) || [];
+    for (const match of matches) {
+        if (installedAgentIds.has(match)) {
+            return match;
+        }
+    }
+    for (const agentId of installedAgentIds) {
+        const plain = String(agentId || "").toLowerCase().replace(/^@/, "");
+        if (!plain) continue;
+        const phrase = plain.replace(/[_-]+/g, " ").trim();
+        const plainPattern = new RegExp(`\\b${plain.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&")}\\b`, "i");
+        const phrasePattern = phrase
+            ? new RegExp(`\\b${phrase.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&")}\\b`, "i")
+            : null;
+        if (plainPattern.test(normalizedText) || (phrasePattern && phrasePattern.test(normalizedText))) {
+            return agentId;
+        }
+    }
+    return null;
+}
+
+/**
  * @param {Record<string, number>} scores
  * @returns {{ topDecision: string, topScore: number, secondScore: number, margin: number }}
  */
@@ -339,6 +388,7 @@ function extractTopDecision(scores) {
 function deriveHeuristicRoutingScores(input) {
     const { text, classification, stageADelegationSignal, availableToolsCount, policyFlags } = input;
     const normalized = String(text || "").toLowerCase();
+    const specialistCue = hasSpecialistDelegationCue(normalized);
     const scores = {
         respond: 0.45,
         delegate: 0.2,
@@ -357,11 +407,16 @@ function deriveHeuristicRoutingScores(input) {
         scores.delegate += 0.7;
         scores.workflow += 0.25;
     }
-    if (/\b(workflow|plan|step by step|multi-step)\b/.test(normalized)) {
+    if (/\b(workflow|plan|step by step|multi-step|research and compare|deep dive|proposal|10 versions|10 different versions)\b/.test(normalized)) {
         scores.workflow += 0.55;
     }
-    if (/\b(tool|search|look up|weather)\b/.test(normalized) && availableToolsCount > 0) {
+    if (/\b(tool|search|look up|weather|email|inbox|calendar|web)\b/.test(normalized) && availableToolsCount > 0) {
         scores.tool += 0.55;
+    }
+    if (specialistCue) {
+        scores.delegate += 0.35;
+        scores.workflow += 0.25;
+        scores.respond -= 0.15;
     }
     if (/\b(that|it|again)\b/.test(normalized)) {
         scores.clarify += 0.35;
@@ -433,8 +488,231 @@ function deriveRoutingWeights(input) {
 }
 
 /**
+ * @param {{ agentId: string, text: string, focusSnippet?: string, forwardSkills?: readonly string[] }} input
+ * @returns {string}
+ */
+function buildForcedDelegationActionText(input) {
+    const baseInstruction = String(input.text || "").trim();
+    const focusSnippet = typeof input.focusSnippet === "string" ? input.focusSnippet.trim() : "";
+    const taskInstructions = focusSnippet && focusSnippet.length > 0 && !baseInstruction.toLowerCase().includes(focusSnippet.toLowerCase())
+        ? `${baseInstruction}\n\nFocus anchor: ${focusSnippet}`
+        : baseInstruction;
+    const proposal = {
+        template: "delegate_to_agent",
+        args: {
+            agentId: input.agentId,
+            task_instructions: taskInstructions || "Please handle this user request.",
+            forward_skills: Array.isArray(input.forwardSkills) ? [...input.forwardSkills] : [],
+        },
+    };
+    return `Delegating this to ${input.agentId}.\n<polar_action>\n${JSON.stringify(proposal, null, 2)}\n</polar_action>`;
+}
+
+const CAPABILITY_TO_TEMPLATE_ID = Object.freeze({
+    lookup_weather: "lookup_weather",
+    search_web: "search_web",
+    draft_email: "draft_email",
+    send_email: "send_email",
+    delegate_to_agent: "delegate_to_agent",
+});
+
+/**
+ * @param {string} text
+ * @returns {string|null}
+ */
+function inferWeatherLocation(text) {
+    const normalized = String(text || "").trim();
+    if (!normalized) return null;
+    const inMatch = normalized.match(/\b(?:in|for|at)\s+([A-Za-z][A-Za-z\s,'-]{1,80})$/i);
+    if (inMatch && typeof inMatch[1] === "string" && inMatch[1].trim().length >= 2) {
+        return inMatch[1].trim();
+    }
+    const weatherMatch = normalized.match(/\bweather\s+([A-Za-z][A-Za-z\s,'-]{1,80})$/i);
+    if (weatherMatch && typeof weatherMatch[1] === "string" && weatherMatch[1].trim().length >= 2) {
+        return weatherMatch[1].trim();
+    }
+    return null;
+}
+
+/**
+ * @param {string} text
+ * @returns {string|null}
+ */
+function inferSearchQuery(text) {
+    const normalized = String(text || "").trim();
+    if (!normalized) return null;
+    const explicit = normalized.match(/\b(?:search(?:\s+the\s+web)?\s+(?:for\s+)?)\s+(.+)$/i)
+        || normalized.match(/\blook\s+up\s+(.+)$/i)
+        || normalized.match(/\bfind\s+(.+)$/i);
+    if (explicit && typeof explicit[1] === "string" && explicit[1].trim().length > 0) {
+        return explicit[1].trim();
+    }
+    return normalized.length > 0 ? normalized : null;
+}
+
+/**
+ * @param {string} text
+ * @returns {{ to: string, subject: string, body: string }|null}
+ */
+function inferEmailArgs(text) {
+    const normalized = String(text || "").trim();
+    if (!normalized) return null;
+    const explicit =
+        normalized.match(/\b(?:send|draft|write)\s+(?:an?\s+)?email\s+to\s+([^\s,]+)\s+(?:about|re)\s+(.+)$/i) ||
+        normalized.match(/\bemail\s+([^\s,]+)\s+(?:about|re)\s+(.+)$/i);
+    if (!explicit || typeof explicit[1] !== "string" || typeof explicit[2] !== "string") {
+        return null;
+    }
+    const to = explicit[1].trim();
+    const topic = explicit[2].trim();
+    if (!to || !topic) {
+        return null;
+    }
+    const subject = topic.length > 120 ? topic.slice(0, 120) : topic;
+    return {
+        to,
+        subject,
+        body: `Hi,\n\n${topic}\n\nBest,`,
+    };
+}
+
+/**
+ * @param {string|undefined} templateId
+ * @param {Record<string, unknown>|undefined} targetArgs
+ * @param {string} text
+ * @returns {Record<string, unknown>|null}
+ */
+function deriveTemplateArgs(templateId, targetArgs, text) {
+    if (!templateId || typeof templateId !== "string") {
+        return null;
+    }
+    const args = typeof targetArgs === "object" && targetArgs !== null ? { ...targetArgs } : {};
+    if (templateId === "lookup_weather") {
+        const location = typeof args.location === "string" && args.location.trim().length > 0
+            ? args.location.trim()
+            : inferWeatherLocation(text);
+        return location ? { location } : null;
+    }
+    if (templateId === "search_web") {
+        const query = typeof args.query === "string" && args.query.trim().length > 0
+            ? args.query.trim()
+            : inferSearchQuery(text);
+        return query ? { query } : null;
+    }
+    if (templateId === "draft_email" || templateId === "send_email") {
+        const inferred = inferEmailArgs(text);
+        const to = typeof args.to === "string" ? args.to.trim() : (inferred?.to || "");
+        const subject = typeof args.subject === "string" ? args.subject.trim() : (inferred?.subject || "");
+        const body = typeof args.body === "string" ? args.body.trim() : (inferred?.body || "");
+        if (!to || !subject || !body) {
+            return null;
+        }
+        return { to, subject, body };
+    }
+    if (templateId === "delegate_to_agent") {
+        const agentId = typeof args.agentId === "string" ? args.agentId.trim() : "";
+        const taskInstructions = typeof args.task_instructions === "string" ? args.task_instructions.trim() : "";
+        if (!agentId || !taskInstructions) {
+            return null;
+        }
+        return {
+            agentId,
+            task_instructions: taskInstructions,
+            forward_skills: Array.isArray(args.forward_skills) ? args.forward_skills : [],
+            ...(typeof args.model_override === "string" && args.model_override.trim().length > 0
+                ? { model_override: args.model_override.trim() }
+                : {}),
+        };
+    }
+    return null;
+}
+
+/**
+ * @param {{ templateId: string, args: Record<string, unknown>, intro: string }} input
+ * @returns {string}
+ */
+function buildForcedTemplateActionText(input) {
+    const proposal = {
+        template: input.templateId,
+        args: input.args,
+    };
+    return `${input.intro}\n<polar_action>\n${JSON.stringify(proposal, null, 2)}\n</polar_action>`;
+}
+
+/**
+ * @param {{ text: string, finalRoutingDecision: string, routerDecision: Record<string, unknown>|null, selectedDelegateAgentId: string|null, classification: Record<string, unknown>|null, profileAllowedSkills: readonly string[] }} input
+ * @returns {{ kind: "action", text: string }|{ kind: "clarify", question: string }|null}
+ */
+function resolveAuthoritativeRoutingOutput(input) {
+    const { text, finalRoutingDecision, routerDecision, selectedDelegateAgentId, classification, profileAllowedSkills } = input;
+    if (finalRoutingDecision === "delegate" && selectedDelegateAgentId) {
+        return {
+            kind: "action",
+            text: buildForcedDelegationActionText({
+                agentId: selectedDelegateAgentId,
+                text: String(text || ""),
+                focusSnippet: classification?.focusContext?.focusAnchorTextSnippet,
+                forwardSkills: profileAllowedSkills,
+            }),
+        };
+    }
+    if (finalRoutingDecision === "tool" || finalRoutingDecision === "workflow") {
+        const target = (routerDecision?.target && typeof routerDecision.target === "object")
+            ? routerDecision.target
+            : {};
+        let templateId =
+            typeof target.templateId === "string" && target.templateId.length > 0
+                ? target.templateId
+                : null;
+        if (!templateId && finalRoutingDecision === "tool" && typeof target.capabilityId === "string") {
+            templateId = CAPABILITY_TO_TEMPLATE_ID[target.capabilityId] || null;
+        }
+        if (!templateId && finalRoutingDecision === "workflow") {
+            const normalized = String(text || "").toLowerCase();
+            if (/\b(weather)\b/.test(normalized)) templateId = "lookup_weather";
+            else if (/\b(search|look up|find)\b/.test(normalized)) templateId = "search_web";
+            else if (/\b(draft email|compose email)\b/.test(normalized)) templateId = "draft_email";
+            else if (/\b(send email)\b/.test(normalized)) templateId = "send_email";
+        }
+        if (!templateId) {
+            return {
+                kind: "clarify",
+                question: "Quick check: which workflow should I run (weather lookup, web search, or email draft)?",
+            };
+        }
+        const targetArgs =
+            typeof target.args === "object" && target.args !== null
+                ? target.args
+                : {};
+        const args = deriveTemplateArgs(templateId, targetArgs, text);
+        if (!args) {
+            if (templateId === "lookup_weather") {
+                return { kind: "clarify", question: "Which location should I use for the weather lookup?" };
+            }
+            if (templateId === "draft_email" || templateId === "send_email") {
+                return { kind: "clarify", question: "Please provide recipient, subject, and body for the email." };
+            }
+            return { kind: "clarify", question: "Please provide the missing details so I can run that workflow." };
+        }
+        try {
+            expandTemplate(templateId, args);
+        } catch {
+            return { kind: "clarify", question: "I need a bit more detail before I can run that workflow safely." };
+        }
+        const intro = finalRoutingDecision === "tool"
+            ? `Running ${templateId} now.`
+            : `Starting workflow: ${templateId}.`;
+        return {
+            kind: "action",
+            text: buildForcedTemplateActionText({ templateId, args, intro }),
+        };
+    }
+    return null;
+}
+
+/**
  * @param {{ text: string, laneThreadKey: string, laneMessages: Record<string, unknown>[], sessionState: Record<string, unknown>, nowMs: number }} input
- * @returns {{ summary: string, windowStartMs: number, windowEndMs: number, focusCandidates: readonly string[], unresolved: readonly string[] }}
+ * @returns {{ summary: string, windowStartMs: number, windowEndMs: number, focusCandidates: readonly string[], unresolved: readonly string[], riskHints: Record<string, boolean>, activeDelegation: Record<string, unknown>|null }}
  */
 function buildTemporalAttentionRecord(input) {
     const { text, laneThreadKey, laneMessages, sessionState, nowMs } = input;
@@ -465,15 +743,52 @@ function buildTemporalAttentionRecord(input) {
         .slice(0, 3)
         .map((thread) => thread?.summary || thread?.pendingQuestion?.text || thread?.openOffer?.target || thread?.id)
         .filter((entry) => typeof entry === "string" && entry.length > 0);
+    let activeDelegation = null;
+    for (const entry of [...recentLaneMessages].reverse()) {
+        const messageText = typeof entry?.text === "string" ? entry.text : "";
+        if (!messageText) {
+            continue;
+        }
+        if (messageText.startsWith("[DELEGATION CLEARED]")) {
+            break;
+        }
+        if (messageText.startsWith("[DELEGATION ACTIVE]")) {
+            try {
+                const parsed = parseJsonWithSchema(
+                    messageText.replace("[DELEGATION ACTIVE]", "").trim(),
+                    delegationStateSchema,
+                );
+                activeDelegation = {
+                    agentId: parsed.agentId,
+                    task_instructions: parsed.task_instructions,
+                };
+            } catch {
+                activeDelegation = null;
+            }
+            break;
+        }
+    }
+    const riskHints = Object.freeze({
+        hasPendingApproval: laneThreads.some((thread) => Boolean(thread?.awaitingApproval?.workflowId)),
+        hasInFlightWorkflow: laneThreads.some((thread) => Boolean(thread?.inFlight?.workflowId)),
+        mayRequireWriteApproval: laneThreads.some(
+            (thread) => Boolean(thread?.awaitingApproval?.workflowId) || Boolean(thread?.openOffer?.target),
+        ),
+    });
     const summary = [
         `windowStartMs=${windowStartMs}`,
         `windowEndMs=${windowEndMs}`,
         `laneThreadKey=${laneThreadKey}`,
         `query=${redactSecrets(String(text || "")).slice(0, 120)}`,
+        `activeDelegation=${activeDelegation?.agentId || "none"}`,
         "focusCandidates:",
         ...(focusCandidates.length > 0 ? focusCandidates.map((entry) => `- ${entry}`) : ["- (none)"]),
         "unresolved:",
         ...(unresolved.length > 0 ? unresolved.map((entry) => `- ${entry}`) : ["- (none)"]),
+        "riskHints:",
+        `- hasPendingApproval=${riskHints.hasPendingApproval}`,
+        `- hasInFlightWorkflow=${riskHints.hasInFlightWorkflow}`,
+        `- mayRequireWriteApproval=${riskHints.mayRequireWriteApproval}`,
         "recentActions:",
         ...(recentActions.length > 0 ? recentActions.map((entry) => `- ${entry}`) : ["- (none)"]),
     ].join("\n");
@@ -484,6 +799,8 @@ function buildTemporalAttentionRecord(input) {
         windowEndMs,
         focusCandidates: Object.freeze(focusCandidates),
         unresolved: Object.freeze(unresolved),
+        riskHints,
+        activeDelegation,
     });
 }
 
@@ -850,6 +1167,199 @@ export function createOrchestrator({
         await resolvedLineageStore.append(event);
     }
 
+    const DURABLE_STATE_SESSION_ID = "__polar_runtime_state__";
+    const DURABLE_STATE_USER_ID = "__polar_runtime_state__";
+    const THREAD_STATE_VERSION = 1;
+
+    function buildSessionThreadStateMemoryId(sessionId) {
+        return `thread_state:session:${sessionId}`;
+    }
+
+    function buildRoutingThreadStateMemoryId(sessionId, laneThreadKey) {
+        return `thread_state:routing:${sessionId}:${encodeURIComponent(laneThreadKey)}`;
+    }
+
+    function buildWorkflowThreadStateMemoryId(workflowId) {
+        return `thread_state:workflow:${workflowId}`;
+    }
+
+    function normalizeSessionStateValue(value) {
+        const fallback = { threads: [], activeThreadId: null };
+        if (typeof value !== "object" || value === null) {
+            return fallback;
+        }
+        const threads = Array.isArray(value.threads) ? value.threads : [];
+        const activeThreadId =
+            typeof value.activeThreadId === "string" && value.activeThreadId.length > 0
+                ? value.activeThreadId
+                : null;
+        return {
+            threads,
+            activeThreadId,
+        };
+    }
+
+    async function readThreadStateRecord(memoryId) {
+        if (!memoryGateway || typeof memoryGateway.get !== "function") {
+            return null;
+        }
+        try {
+            const response = await memoryGateway.get({
+                executionType: "handoff",
+                sessionId: DURABLE_STATE_SESSION_ID,
+                userId: DURABLE_STATE_USER_ID,
+                scope: "session",
+                memoryId,
+            });
+            if (response?.status === "completed" && response.record && typeof response.record === "object") {
+                return response.record;
+            }
+        } catch {
+            // non-fatal durable state read failure
+        }
+        return null;
+    }
+
+    async function writeThreadStateRecord(memoryId, record, metadata = {}) {
+        if (!memoryGateway || typeof memoryGateway.upsert !== "function") {
+            return;
+        }
+        try {
+            await memoryGateway.upsert({
+                executionType: "handoff",
+                sessionId: DURABLE_STATE_SESSION_ID,
+                userId: DURABLE_STATE_USER_ID,
+                scope: "session",
+                memoryId,
+                record,
+                metadata: {
+                    stateVersion: THREAD_STATE_VERSION,
+                    updatedAtMs: now(),
+                    ...metadata,
+                },
+            });
+        } catch {
+            // non-fatal durable state write failure
+        }
+    }
+
+    async function hydrateSessionThreadsState(sessionId) {
+        if (SESSION_THREADS.has(sessionId)) {
+            return;
+        }
+        const record = await readThreadStateRecord(buildSessionThreadStateMemoryId(sessionId));
+        if (!record || record.type !== "thread_state" || record.stateKind !== "session_threads") {
+            return;
+        }
+        const restored = normalizeSessionStateValue(record.state);
+        SESSION_THREADS.set(sessionId, restored);
+    }
+
+    async function persistSessionThreadsState(sessionId) {
+        const sessionState = normalizeSessionStateValue(SESSION_THREADS.get(sessionId));
+        await writeThreadStateRecord(
+            buildSessionThreadStateMemoryId(sessionId),
+            {
+                type: "thread_state",
+                stateKind: "session_threads",
+                sessionId,
+                state: toJsonSafeValue(sessionState),
+            },
+            { sessionId },
+        );
+    }
+
+    async function hydrateRoutingState(sessionId, laneThreadKey) {
+        const routingStateKey = buildRoutingStateKey(sessionId, laneThreadKey);
+        const current = PENDING_ROUTING_STATES.get(routingStateKey);
+        if (current && now() <= (current.expiresAtMs || 0)) {
+            return;
+        }
+        const record = await readThreadStateRecord(buildRoutingThreadStateMemoryId(sessionId, laneThreadKey));
+        if (!record || record.type !== "thread_state" || record.stateKind !== "routing_pending") {
+            return;
+        }
+        const pendingState =
+            typeof record.pendingState === "object" && record.pendingState !== null
+                ? record.pendingState
+                : null;
+        if (!pendingState || now() > (pendingState.expiresAtMs || 0)) {
+            return;
+        }
+        PENDING_ROUTING_STATES.set(routingStateKey, Object.freeze(pendingState));
+    }
+
+    async function persistRoutingState(sessionId, laneThreadKey, pendingState) {
+        const routingStateKey = buildRoutingStateKey(sessionId, laneThreadKey);
+        if (pendingState && typeof pendingState === "object") {
+            PENDING_ROUTING_STATES.set(routingStateKey, Object.freeze(pendingState));
+        } else {
+            PENDING_ROUTING_STATES.delete(routingStateKey);
+        }
+        await writeThreadStateRecord(
+            buildRoutingThreadStateMemoryId(sessionId, laneThreadKey),
+            {
+                type: "thread_state",
+                stateKind: "routing_pending",
+                sessionId,
+                laneThreadKey,
+                pendingState: pendingState ? toJsonSafeValue(pendingState) : null,
+                expiresAtMs: pendingState?.expiresAtMs || now(),
+            },
+            { sessionId, threadKey: laneThreadKey, expiresAtMs: pendingState?.expiresAtMs || now() },
+        );
+    }
+
+    async function hydratePendingWorkflow(workflowId) {
+        if (PENDING_WORKFLOWS.has(workflowId)) {
+            return;
+        }
+        const record = await readThreadStateRecord(buildWorkflowThreadStateMemoryId(workflowId));
+        if (!record || record.type !== "thread_state" || record.stateKind !== "pending_workflow") {
+            return;
+        }
+        const entry = record.entry;
+        if (!entry || typeof entry !== "object") {
+            return;
+        }
+        if (now() - (entry.createdAt || 0) > WORKFLOW_TTL_MS) {
+            return;
+        }
+        PENDING_WORKFLOWS.set(workflowId, entry);
+    }
+
+    async function persistPendingWorkflow(workflowId, entry) {
+        await writeThreadStateRecord(
+            buildWorkflowThreadStateMemoryId(workflowId),
+            {
+                type: "thread_state",
+                stateKind: "pending_workflow",
+                workflowId,
+                entry: toJsonSafeValue(entry),
+            },
+            {
+                sessionId: entry?.polarSessionId || "unknown",
+                threadKey: entry?.laneThreadKey || "unknown",
+                workflowId,
+                expiresAtMs: (entry?.createdAt || now()) + WORKFLOW_TTL_MS,
+            },
+        );
+    }
+
+    async function clearPendingWorkflow(workflowId) {
+        await writeThreadStateRecord(
+            buildWorkflowThreadStateMemoryId(workflowId),
+            {
+                type: "thread_state",
+                stateKind: "pending_workflow",
+                workflowId,
+                entry: null,
+                clearedAtMs: now(),
+            },
+            { workflowId, expiresAtMs: now() },
+        );
+    }
+
     function buildRoutingStateKey(sessionId, laneThreadKey) {
         return `${sessionId}::${laneThreadKey}`;
     }
@@ -1061,12 +1571,15 @@ export function createOrchestrator({
                 suppressUserMessagePersist || suppressMemoryWrite || suppressTaskWrites;
             const laneThreadKey = deriveLaneThreadKey(polarSessionId, inboundThreadKey, inboundThreadId);
 
+            await hydrateSessionThreadsState(polarSessionId);
+            await hydrateRoutingState(polarSessionId, laneThreadKey);
             let sessionState = SESSION_THREADS.get(polarSessionId) || { threads: [], activeThreadId: null };
             let routingRecommendation = null;
             let classification = null;
             let currentTurnAnchor = null;
             let currentAnchorMessageId = null;
             let forcedRoutingDecision = null;
+            let forcedRoutingTargetAgentId = null;
             const routingStateKey = buildRoutingStateKey(polarSessionId, laneThreadKey);
             const pendingRoutingState = PENDING_ROUTING_STATES.get(routingStateKey);
             if (pendingRoutingState && now() <= (pendingRoutingState.expiresAtMs || 0) && text) {
@@ -1080,7 +1593,14 @@ export function createOrchestrator({
                 }
                 if (selectionIntent) {
                     forcedRoutingDecision = selectionIntent;
-                    PENDING_ROUTING_STATES.delete(routingStateKey);
+                    if (
+                        selectionIntent === "delegate" &&
+                        typeof pendingRoutingState.targetAgentId === "string" &&
+                        pendingRoutingState.targetAgentId.length > 0
+                    ) {
+                        forcedRoutingTargetAgentId = pendingRoutingState.targetAgentId;
+                    }
+                    await persistRoutingState(polarSessionId, laneThreadKey, null);
                     await emitLineageEvent({
                         eventType: "routing.pending_state.consumed",
                         sessionId: polarSessionId,
@@ -1093,7 +1613,7 @@ export function createOrchestrator({
                     });
                 }
             } else if (pendingRoutingState) {
-                PENDING_ROUTING_STATES.delete(routingStateKey);
+                await persistRoutingState(polarSessionId, laneThreadKey, null);
             }
             const profile = await profileResolutionGateway.resolve({
                 sessionId: polarSessionId,
@@ -1129,6 +1649,7 @@ export function createOrchestrator({
                     laneThreadKey,
                 });
                 SESSION_THREADS.set(polarSessionId, sessionState);
+                await persistSessionThreadsState(polarSessionId);
 
                 // Check if repair is needed (ambiguous short follow-up with multiple open offers)
                 const repairDecision = suppressTaskWrites
@@ -1258,12 +1779,22 @@ export function createOrchestrator({
                 })));
 
             const lowerText = String(text || "").toLowerCase();
+            const specialistDelegationCue = hasSpecialistDelegationCue(lowerText);
             const stageADelegationSignal = /\b(do that via sub-agent|via sub-agent|delegate this|delegate to)\b/.test(lowerText)
                 || /\bwrite\s+10\b/.test(lowerText)
-                || /\b10\s+(versions|version|variants|variant)\b/.test(lowerText);
+                || /\b10\s+(versions|version|variants|variant)\b/.test(lowerText)
+                || specialistDelegationCue;
+            const riskClass = classifyRoutingRisk(text);
+            const hasDelegateCue = stageADelegationSignal || /\b(sub-agent|sub agent|delegate)\b/.test(lowerText);
+            const hasWorkflowCue = /\b(workflow|plan|step by step|multi-step|research and compare|deep dive|proposal)\b/.test(lowerText);
+            const hasToolCue = /\b(tool|search|look up|weather|email|inbox|calendar|web)\b/.test(lowerText) && installedToolPairs.length > 0;
+            const hasAmbiguousReferenceText = /\b(that|it|again)\b/.test(lowerText);
+            const lowRiskUnambiguousInline = riskClass === "low" && !hasRoutingCue(lowerText);
 
-            const shouldRunRouter = classification?.type === "new_request"
-                && (stageADelegationSignal || /\b(sub-agent|delegate|workflow|tool|do that|that)\b/.test(lowerText));
+            const shouldRunRouter =
+                classification?.type === "new_request" &&
+                !lowRiskUnambiguousInline &&
+                (hasDelegateCue || hasWorkflowCue || hasToolCue || hasAmbiguousReferenceText);
             const temporalAttentionHint = buildTemporalAttentionRecord({
                 text,
                 laneThreadKey,
@@ -1288,6 +1819,8 @@ export function createOrchestrator({
                                     summary: temporalAttentionHint.summary,
                                     unresolved: temporalAttentionHint.unresolved,
                                     focusCandidates: temporalAttentionHint.focusCandidates,
+                                    riskHints: temporalAttentionHint.riskHints,
+                                    activeDelegation: temporalAttentionHint.activeDelegation,
                                 },
                                 availableAgents: [...installedAgentIds],
                                 availableTools: installedToolPairs,
@@ -1302,15 +1835,6 @@ export function createOrchestrator({
                 } catch {
                     routerDecision = null;
                 }
-            }
-
-            if (stageADelegationSignal && (!routerDecision || routerDecision.decision !== "delegate")) {
-                routerDecision = {
-                    decision: "delegate",
-                    target: { agentId: DEFAULT_GENERIC_AGENT_ID },
-                    confidence: 0.68,
-                    rationale: "Stage A guardrail detected explicit/strong delegation signal.",
-                };
             }
 
             if (routerDecision?.decision === "delegate") {
@@ -1334,7 +1858,6 @@ export function createOrchestrator({
                 }
             }
 
-            const riskClass = classifyRoutingRisk(text);
             const policyFlags = Object.freeze({
                 highRisk: riskClass === "high" || riskClass === "destructive",
                 requiresApproval: riskClass !== "low",
@@ -1360,7 +1883,6 @@ export function createOrchestrator({
             const fusedTop = extractTopDecision(fusedScores);
             let finalRoutingDecision = forcedRoutingDecision || fusedTop.topDecision;
             const hasValidRouterDecision = Boolean(routerDecision && llmRouting.decision);
-            const hasAmbiguousReferenceText = /\b(that|it|again)\b/.test(lowerText);
             const shouldClarifyByConflict =
                 hasValidRouterDecision &&
                 (
@@ -1381,6 +1903,7 @@ export function createOrchestrator({
             if (!forcedRoutingDecision && !hasValidRouterDecision && hasAmbiguousReferenceText && classification?.type === "new_request") {
                 finalRoutingDecision = "clarify";
             }
+            const routerAffirmedDecision = hasValidRouterDecision && llmRouting.decision === finalRoutingDecision;
 
             await emitLineageEvent({
                 eventType: "routing.arbitration",
@@ -1400,13 +1923,20 @@ export function createOrchestrator({
                 timestampMs: now(),
             });
 
+            let forcedClarificationQuestion = null;
             if (finalRoutingDecision === "clarify") {
                 const focusSnippet = classification.focusContext?.focusAnchorTextSnippet;
                 const optionA = focusSnippet ? `Continue with "${focusSnippet.slice(0, 36)}"` : "Continue inline here";
                 const optionB = "Delegate to a sub-agent";
                 const clarificationQuestion = `Quick check: should I ${optionA} or ${optionB}?`;
                 const assistantMessageId = `msg_a_${crypto.randomUUID()}`;
-                PENDING_ROUTING_STATES.set(routingStateKey, Object.freeze({
+                const pendingTargetAgentId =
+                    routerDecision?.decision === "delegate" &&
+                        typeof routerDecision?.target?.agentId === "string" &&
+                        routerDecision.target.agentId.length > 0
+                        ? routerDecision.target.agentId
+                        : undefined;
+                await persistRoutingState(polarSessionId, laneThreadKey, Object.freeze({
                     type: "clarification_needed",
                     createdAtMs: now(),
                     expiresAtMs: now() + ROUTING_STATE_TTL_MS,
@@ -1415,6 +1945,7 @@ export function createOrchestrator({
                         Object.freeze({ id: "A", decision: "respond", label: optionA }),
                         Object.freeze({ id: "B", decision: "delegate", label: optionB }),
                     ]),
+                    ...(pendingTargetAgentId ? { targetAgentId: pendingTargetAgentId } : {}),
                 }));
                 if (!suppressResponsePersist) {
                     await chatManagementGateway.appendMessage({
@@ -1437,20 +1968,64 @@ export function createOrchestrator({
                 };
             }
 
+            let selectedDelegateAgentId = null;
             if (finalRoutingDecision === "delegate") {
-                const delegatedAgentId = routerDecision?.target?.agentId || DEFAULT_GENERIC_AGENT_ID;
+                const mentionedAgentId = resolveMentionedAgentId(text, installedAgentIds);
+                const delegatedAgentId =
+                    forcedRoutingTargetAgentId ||
+                    routerDecision?.target?.agentId ||
+                    mentionedAgentId ||
+                    DEFAULT_GENERIC_AGENT_ID;
+                selectedDelegateAgentId = delegatedAgentId;
                 const approvalPolicy = deriveDelegationApprovalPolicy(text);
                 const decisionConfidence = Number.isFinite(routerDecision?.confidence)
                     ? routerDecision.confidence
                     : Math.max(0.5, fusedTop.topScore);
                 routingRecommendation = `${routingRecommendation ? `${routingRecommendation}\n` : ""}[ROUTER_DECISION] Delegate this request to ${delegatedAgentId}. Confidence=${decisionConfidence}. ${approvalPolicy.requiresApproval ? "This requires approval before execution." : "Simple read delegation may execute without manual approval."}`;
-                PENDING_ROUTING_STATES.set(routingStateKey, Object.freeze({
+                await persistRoutingState(polarSessionId, laneThreadKey, Object.freeze({
                     type: "delegation_candidate",
                     createdAtMs: now(),
                     expiresAtMs: now() + ROUTING_STATE_TTL_MS,
                     laneThreadKey,
                     targetAgentId: delegatedAgentId,
                 }));
+            }
+
+            if ((finalRoutingDecision === "tool" || finalRoutingDecision === "workflow") && routerAffirmedDecision) {
+                const authoritativeResolution = resolveAuthoritativeRoutingOutput({
+                    text: String(text || ""),
+                    finalRoutingDecision,
+                    routerDecision,
+                    selectedDelegateAgentId,
+                    classification,
+                    profileAllowedSkills: normalizeStringArray(profile.profileConfig?.allowedSkills),
+                });
+                if (authoritativeResolution?.kind === "clarify") {
+                    forcedClarificationQuestion = authoritativeResolution.question;
+                }
+            }
+
+            if (forcedClarificationQuestion) {
+                const assistantMessageId = `msg_a_${crypto.randomUUID()}`;
+                if (!suppressResponsePersist) {
+                    await chatManagementGateway.appendMessage({
+                        sessionId: polarSessionId,
+                        userId: "assistant",
+                        messageId: assistantMessageId,
+                        role: "assistant",
+                        text: forcedClarificationQuestion,
+                        timestampMs: now(),
+                        ...(inboundThreadId !== undefined ? { threadId: inboundThreadId } : {}),
+                        ...(inboundMetadata !== undefined ? { metadata: inboundMetadata } : {}),
+                    });
+                }
+                return {
+                    status: "ok",
+                    type: "clarification_needed",
+                    text: forcedClarificationQuestion,
+                    assistantMessageId,
+                    useInlineReply: false,
+                };
             }
 
             let systemPrompt = profile.profileConfig?.systemPrompt || "You are a helpful Polar AI assistant. Be concise and friendly.";
@@ -1759,6 +2334,12 @@ ${routingRecommendation || ""}`;
                             summary: temporalAttention.summary,
                             focusCandidates: temporalAttention.focusCandidates,
                             unresolved: temporalAttention.unresolved,
+                            riskHints: temporalAttention.riskHints,
+                            activeDelegation: temporalAttention.activeDelegation,
+                            window: {
+                                startAtMs: temporalAttention.windowStartMs,
+                                endAtMs: temporalAttention.windowEndMs,
+                            },
                         },
                         metadata: {
                             threadKey: laneThreadKey,
@@ -1831,14 +2412,31 @@ ${routingRecommendation || ""}`;
                 ];
             }
 
-            const result = await providerGateway.generate({
-                executionType: "handoff",
-                providerId,
-                model,
-                system: systemPrompt,
-                messages: messages.length > 0 && messages[messages.length - 1].role === 'user' ? messages.slice(0, -1) : messages,
-                prompt: text || "Process user message."
+            const authoritativeRoutingOutput = resolveAuthoritativeRoutingOutput({
+                text: String(text || ""),
+                finalRoutingDecision,
+                routerDecision,
+                selectedDelegateAgentId,
+                classification,
+                profileAllowedSkills: normalizeStringArray(profile.profileConfig?.allowedSkills),
             });
+            const canForceToolWorkflow =
+                finalRoutingDecision === "delegate" ||
+                ((finalRoutingDecision === "tool" || finalRoutingDecision === "workflow") && routerAffirmedDecision);
+            const forcedActionText = canForceToolWorkflow && authoritativeRoutingOutput?.kind === "action"
+                ? authoritativeRoutingOutput.text
+                : null;
+
+            const result = forcedActionText
+                ? { text: forcedActionText }
+                : await providerGateway.generate({
+                    executionType: "handoff",
+                    providerId,
+                    model,
+                    system: systemPrompt,
+                    messages: messages.length > 0 && messages[messages.length - 1].role === 'user' ? messages.slice(0, -1) : messages,
+                    prompt: text || "Process user message."
+                });
 
             if (result && result.text) {
                 const responseText = result.text;
@@ -1877,6 +2475,7 @@ ${routingRecommendation || ""}`;
                                 askedAtMessageId: assistantMessageId
                             }, now());
                             SESSION_THREADS.set(polarSessionId, st);
+                            await persistSessionThreadsState(polarSessionId);
                         }
                     }
                 }
@@ -1916,6 +2515,7 @@ ${routingRecommendation || ""}`;
                             threadRef.lastActivityTs = now();
                         }
                         SESSION_THREADS.set(polarSessionId, st);
+                        await persistSessionThreadsState(polarSessionId);
                     } catch (e) { }
                 }
 
@@ -1940,6 +2540,7 @@ ${routingRecommendation || ""}`;
                         threadId: ownerThreadId, // canonical thread→workflow link
                         risk: { ...risk, requirements: pendingRequirements }
                     });
+                    await persistPendingWorkflow(workflowId, PENDING_WORKFLOWS.get(workflowId));
 
                     // Auto-run rules: if no manual approval required, execute immediately
                     if (!requiresManualApproval) {
@@ -1955,6 +2556,8 @@ ${routingRecommendation || ""}`;
                             thread.awaitingApproval = { workflowId, proposedAtMessageId: assistantMessageId };
                             thread.lastActivityTs = now();
                         }
+                        SESSION_THREADS.set(polarSessionId, st);
+                        await persistSessionThreadsState(polarSessionId);
                     }
 
                     return {
@@ -1986,11 +2589,14 @@ ${routingRecommendation || ""}`;
         },
 
         async executeWorkflow(workflowId, options = {}) {
+            await hydratePendingWorkflow(workflowId);
             const entry = PENDING_WORKFLOWS.get(workflowId);
             if (!entry) return { status: 'error', text: "Workflow not found" };
 
             const { steps: workflowSteps, polarSessionId, userId, multiAgentConfig, threadId: ownerThreadId, risk } = entry;
+            await hydrateSessionThreadsState(polarSessionId);
             PENDING_WORKFLOWS.delete(workflowId);
+            await clearPendingWorkflow(workflowId);
 
             // Resolve the target thread — use stored threadId, never rely on activeThreadId drift
             const runId = `run_${crypto.randomUUID()}`;
@@ -2076,6 +2682,8 @@ ${routingRecommendation || ""}`;
                 }
                 // Force active thread to the workflow's thread
                 st.activeThreadId = targetThreadId;
+                SESSION_THREADS.set(polarSessionId, st);
+                await persistSessionThreadsState(polarSessionId);
             }
 
             try {
@@ -2143,6 +2751,8 @@ ${routingRecommendation || ""}`;
                             thread.status = 'failed';
                             delete thread.inFlight;
                         }
+                        SESSION_THREADS.set(polarSessionId, st);
+                        await persistSessionThreadsState(polarSessionId);
                     }
                     return { status: 'error', text: "Workflow blocked: " + validation.errors.join(", ") };
                 }
@@ -2376,6 +2986,7 @@ ${routingRecommendation || ""}`;
                         });
                         if (normalized.clearPending) {
                             clearTerminalPendingState(polarSessionId, targetThreadId);
+                            await persistSessionThreadsState(polarSessionId);
                         }
                         await emitLineageEvent({
                             eventType: 'workflow.execution.error_normalized',
@@ -2401,6 +3012,8 @@ ${routingRecommendation || ""}`;
                                 thread.status = 'failed';
                                 delete thread.inFlight;
                             }
+                            SESSION_THREADS.set(polarSessionId, st);
+                            await persistSessionThreadsState(polarSessionId);
                         }
                         break;
                     }
@@ -2430,6 +3043,8 @@ ${routingRecommendation || ""}`;
                         }
                         thread.lastActivityTs = now();
                     }
+                    SESSION_THREADS.set(polarSessionId, st);
+                    await persistSessionThreadsState(polarSessionId);
                 }
                 if (wasCancelled) {
                     await emitLineageEvent({
@@ -2543,9 +3158,12 @@ ${routingRecommendation || ""}`;
                     }
                     // Keep failed thread active — don't let next message spawn a greeting
                     st.activeThreadId = targetThreadId;
+                    SESSION_THREADS.set(polarSessionId, st);
+                    await persistSessionThreadsState(polarSessionId);
                 }
                 if (normalized.clearPending) {
                     clearTerminalPendingState(polarSessionId, targetThreadId);
+                    await persistSessionThreadsState(polarSessionId);
                 }
                 await emitLineageEvent({
                     eventType: 'workflow.execution.error_normalized',
@@ -2568,7 +3186,8 @@ ${routingRecommendation || ""}`;
             }
         },
 
-        updateMessageChannelId(sessionId, messageId, channelMessageId) {
+        async updateMessageChannelId(sessionId, messageId, channelMessageId) {
+            await hydrateSessionThreadsState(sessionId);
             let st = SESSION_THREADS.get(sessionId);
             if (st) {
                 for (const t of st.threads) {
@@ -2579,6 +3198,8 @@ ${routingRecommendation || ""}`;
                         t.lastError.channelMessageId = channelMessageId;
                     }
                 }
+                SESSION_THREADS.set(sessionId, st);
+                await persistSessionThreadsState(sessionId);
             }
             return chatManagementGateway.appendMessage({
                 sessionId,
@@ -2596,8 +3217,10 @@ ${routingRecommendation || ""}`;
         },
 
         async rejectWorkflow(workflowId) {
+            await hydratePendingWorkflow(workflowId);
             const entry = PENDING_WORKFLOWS.get(workflowId);
             if (entry) {
+                await hydrateSessionThreadsState(entry.polarSessionId);
                 // Clear awaitingApproval on the owning thread
                 const st = SESSION_THREADS.get(entry.polarSessionId);
                 if (st && entry.threadId) {
@@ -2607,16 +3230,21 @@ ${routingRecommendation || ""}`;
                         delete thread.awaitingApproval;
                         thread.lastActivityTs = now();
                     }
+                    SESSION_THREADS.set(entry.polarSessionId, st);
+                    await persistSessionThreadsState(entry.polarSessionId);
                 }
             }
             PENDING_WORKFLOWS.delete(workflowId);
             WORKFLOW_CANCEL_REQUESTS.delete(workflowId);
+            await clearPendingWorkflow(workflowId);
             return { status: 'rejected' };
         },
 
         async cancelWorkflow(workflowId) {
+            await hydratePendingWorkflow(workflowId);
             const pending = PENDING_WORKFLOWS.get(workflowId);
             if (pending) {
+                await hydrateSessionThreadsState(pending.polarSessionId);
                 PENDING_WORKFLOWS.delete(workflowId);
                 const st = SESSION_THREADS.get(pending.polarSessionId);
                 if (st && pending.threadId) {
@@ -2627,7 +3255,10 @@ ${routingRecommendation || ""}`;
                         thread.status = "done";
                         thread.lastActivityTs = now();
                     }
+                    SESSION_THREADS.set(pending.polarSessionId, st);
+                    await persistSessionThreadsState(pending.polarSessionId);
                 }
+                await clearPendingWorkflow(workflowId);
                 return { status: "cancelled", phase: "pending", workflowId };
             }
 
@@ -2685,6 +3316,7 @@ ${routingRecommendation || ""}`;
          * @returns {{ status: string, selectedThreadId?: string }}
          */
         async handleRepairSelectionEvent({ sessionId, selection, correlationId }) {
+            await hydrateSessionThreadsState(sessionId);
             const repairContext = PENDING_REPAIRS.get(correlationId);
             if (!repairContext) {
                 await emitLineageEvent({
@@ -2737,6 +3369,7 @@ ${routingRecommendation || ""}`;
             let sessionState = SESSION_THREADS.get(sessionId) || { threads: [], activeThreadId: null };
             sessionState = handleRepairSelection(sessionState, selection, correlationId, repairContext, now());
             SESSION_THREADS.set(sessionId, sessionState);
+            await persistSessionThreadsState(sessionId);
             PENDING_REPAIRS.delete(correlationId);
 
             await emitLineageEvent({

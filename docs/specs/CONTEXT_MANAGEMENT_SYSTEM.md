@@ -12,6 +12,15 @@ This improves coherence and decision quality, but does not replace deterministic
 
 ---
 
+## Vision alignment
+The context system is intentionally multi-layered, not "one giant prompt window":
+- compress old conversation into structured summaries
+- store durable facts separately from transient runtime state
+- dynamically load only relevant memory for the current lane/task
+- keep specialist/delegated work context tied to the same lane unless user redirects
+
+---
+
 ## Core entities
 ### SessionId
 Chat-scoped:
@@ -52,6 +61,7 @@ Rules:
 - recency message window remains lane-scoped
 - temporal attention is structured fields, not a raw transcript dump
 - prefer high-signal compact blocks over long history
+- avoid including cross-lane context unless explicitly referenced or high-confidence matched
 
 ---
 
@@ -63,6 +73,7 @@ SQLite remains source of truth.
 - `session_summary` (session scope, keyed by sessionId)
 - `temporal_attention` (session scope, keyed by sessionId + threadKey)
 - `thread_state` (typed pending state and focus anchors)
+- `extracted_fact` (session scope, durable user/project fact)
 
 Required metadata:
 - `threadKey` (where applicable)
@@ -70,6 +81,7 @@ Required metadata:
 - `updatedAtMs`
 - `messageRange` (optional)
 - `windowStartMs`/`windowEndMs` for temporal attention
+- `stateVersion` + `expiresAtMs` for typed pending records (`thread_state`)
 
 Never persist secrets/credentials in summaries or temporal attention blocks.
 
@@ -86,6 +98,7 @@ Deterministically produce a compact JSON-like block containing:
 - `unresolved`: pending slots, clarifications, approvals, cancellations
 - `recentActions`: last meaningful tool/workflow/delegation outcomes
 - `riskHints`: whether unresolved items imply write/destructive approvals
+- `activeDelegation`: currently active delegated agent (if any)
 
 ### Selection policy
 - default source: current lane
@@ -127,6 +140,8 @@ Retrieve in this order:
 
 Avoid retrieving all-thread memories by default.
 
+When middleware-level recall is enabled, it must apply the same lane-first policy and cross-lane gating.
+
 ---
 
 ## Typed pending state integration
@@ -143,6 +158,7 @@ Rules:
 - if inbound matches pending type, resolve deterministically before broad retrieval
 - pending state is lane-scoped and TTL-bound
 - terminal normalized failures clear incompatible pending state in same lane
+- pending state should be durable across runtime restarts (`thread_state` source of truth)
 
 ---
 
@@ -169,6 +185,8 @@ Capture per-turn context telemetry:
 - retrieved memory IDs
 - pending state consumed/updated
 - routed decision path and outcome
+- memory source breakdown (`lane|session|cross_lane`)
+- recall gate decisions (why any cross-lane record was included)
 
 Replay requirements:
 - preserve redacted transcript fixtures with expected focus/routing outputs
@@ -182,6 +200,7 @@ Replay requirements:
 - session continuity improves without raw whole-chat injection
 - context remains compact while unresolved items are retained accurately
 - replay suite catches regressions in focus/routing continuity
+- restarts do not silently lose active typed pending state for a lane
 
 ---
 

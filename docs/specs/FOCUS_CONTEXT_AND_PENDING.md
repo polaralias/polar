@@ -5,6 +5,8 @@ Prevent wrong-reference routing (for example, delegating an older task when user
 
 This stage runs before final route execution and before high-impact tool/delegation actions.
 
+This is the bridge between dynamic context loading and safe specialist-agent delegation.
+
 ---
 
 ## Inputs
@@ -83,6 +85,11 @@ Focus resolver output is authoritative input to routing arbitration:
 - router may rank semantic fit between provided candidates
 - router may not invent anchors outside provided candidate set
 - deterministic policy still chooses final safe action on high-risk conflicts
+- delegation target resolution should prefer:
+  1) pending routing-state target in same lane
+  2) router-provided target
+  3) explicit user-mentioned agent in turn text
+  4) deterministic fallback agent
 
 ---
 
@@ -91,6 +98,7 @@ Focus resolver output is authoritative input to routing arbitration:
 - slot fills apply only when expected type matches.
 - short replies ("yes", "that one") resolve via typed pending first.
 - incompatible/expired pending records are cleared and cannot persist indefinitely.
+- selecting option `B` after clarification consistently delegates to the preserved target agent for that lane.
 
 ---
 
