@@ -1,19 +1,34 @@
-# Polar ❄️
+# Polar
 
-Polar is a contract-first runtime for building an extendable assistant (starting with a Telegram bot) where **code decides** and the model can only propose.
+Polar is a contract-first assistant runtime where **the model proposes and code enforces**.
 
-The goal is OpenClaw-style extensibility (skills, workflows, multi-agent patterns) with much stronger safety guarantees: middleware on every call, explicit capabilities, approvals, audit trails, and persistent state.
+It is designed for multi-surface assistants (Telegram + Web UI today) with hard safety boundaries:
+- strict input/output contracts,
+- non-bypassable middleware on provider/tool/handoff/automation calls,
+- capability allowlists + approvals for sensitive actions,
+- audit and lineage by default.
 
-## What’s in this repo
-- **Runtime spine:** `packages/polar-runtime-core/`
-- **Control plane:** `packages/polar-control-plane/` (contracts, registries, gateway wiring)
-- **Surfaces:** `packages/polar-bot-runner/` (Telegram), plus a lightweight Web UI for ops and debugging
-- **Docs:** `docs/` (truth set), `docs/specs/` (implementation-grade), `docs/_archive/` (reference-only history)
+## Current platform state
+- **Single composition root:** `@polar/platform` boots DB, stores, control plane, and runtime wiring.
+- **Thin surfaces:** Telegram bot and Web UI are ingress/egress adapters around control-plane APIs.
+- **LLM-first planning with deterministic policy:** routing, workflow planning, automation planning, focus resolution, and failure explanation are model-proposed, then schema-validated and policy-clamped in code.
+- **Durable orchestrator state:** pending workflow/routing/thread-state records persist through memory-backed thread state.
+- **Memory system (hybrid):**
+  - lane/session summaries,
+  - temporal attention snapshots,
+  - extracted durable facts,
+  - lane-first retrieval with cross-lane gating,
+  - gated compaction (skip low-signal/no-key-detail summarization),
+  - optional embedding-assisted rerank on top of SQLite search.
 
-## Docs and specs
-- Start with `docs/README.md`.
-- If you are implementing anything, read the relevant spec under `docs/specs/` first.
-- All meaningful changes should be recorded in `docs/IMPLEMENTATION_LOG.md`.
+## Repository layout
+- `packages/polar-platform/` - composition root (`createPolarPlatform`)
+- `packages/polar-runtime-core/` - gateways, middleware, orchestrator, stores
+- `packages/polar-control-plane/` - API surface, contract wiring, policy endpoints
+- `packages/polar-bot-runner/` - Telegram surface
+- `packages/polar-web-ui/` - operations/debug UI
+- `packages/polar-cli/` - CLI entry surface
+- `docs/` - canonical docs and specs
 
 ## Quick start
 ### Install
@@ -22,54 +37,53 @@ npm install
 ```
 
 ### Configure
-Create `.env` in the repo root.
+Create `.env` in repo root.
 
-Minimum for Telegram:
+Minimum Telegram setup:
 ```env
 TELEGRAM_BOT_TOKEN=...
 OPENAI_API_KEY=...
 ```
 
 ### Run
-Run Web UI + Telegram bot together:
+Run UI + Telegram bot:
 ```bash
 npm run dev
 ```
 
-Or individually:
+Run individually:
 ```bash
 npm run dev:ui
 npm run dev:bot
 ```
 
-### Tests
+### Validate
 ```bash
 npm test
 npm run check:boundaries
 ```
 
-## Docs structure (current truth set)
-Start here:
-- `docs/README.md` (docs index)
-- `docs/ARCHITECTURE.md` (how Polar is wired)
-- `docs/SECURITY.md` (non-negotiables: contracts, middleware, approvals, audit)
-- `docs/SKILLS.md` (skill model and installation)
-- `docs/AUTOMATIONS.md` (scheduled/proactive behaviour model)
-- `docs/MEMORY_AND_FEEDBACK.md` (memory vs feedback events, projections, exports)
-- `docs/DEVELOPMENT.md` (local dev and conventions)
-- `docs/IMPLEMENTATION_LOG.md` (decision and change log)
+## Key functionality
+- Contract-validated provider operations (`generate`, `stream`, `embed`) with fallback/cooldown policy.
+- Workflow execution with deterministic capability-scope enforcement and approval handling.
+- Automation jobs with scheduler queue processing and run ledger persistence.
+- Deterministic chat command layer for operational/admin actions.
+- Feedback/run/memory artifact exports under `artifacts/`.
 
-Older deep-dives and prior drafts are archived under:
-- `docs/_archive/2026-03-01/`
+## Docs
+Start with:
+- `docs/README.md`
+- `docs/ARCHITECTURE.md`
+- `docs/SECURITY.md`
+- `docs/MEMORY_AND_FEEDBACK.md`
+- `docs/IMPLEMENTATION_LOG.md`
 
-## Current product focus
-- Single spine, multiple thin surfaces (Telegram first)
-- Skills that install cleanly and execute safely through the gateway
-- Automations and proactive updates implemented as scheduled jobs that run through the same middleware pipeline
-- Memory and feedback captured as queryable events (with markdown exports as optional projections)
+Implementation specs live in `docs/specs/`. Historical documents are in `docs/_archive/2026-03-01/`.
 
-## Licence
-See repo files.
-## Key concepts
-- **Sub-agent profiles:** task-specific profiles (e.g. writer/researcher) the orchestrator can delegate to. See `docs/specs/AGENT_PROFILES.md`.
-- **Deterministic chat commands:** configuration via `/` commands without LLM intent guessing. See `docs/specs/CHAT_COMMANDS.md`.
+## Development notes
+- Follow `AGENTS.md` and relevant specs before coding.
+- Record structural/behavioral decisions in `docs/IMPLEMENTATION_LOG.md`.
+- Boundary rule: no cross-package `src/` imports from surfaces.
+
+## License
+See repository license files.
