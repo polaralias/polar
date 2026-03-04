@@ -50,6 +50,11 @@ test("telegram runner renders automation proposal controls and processes approva
   assert.match(runnerSource, /controlPlane\.consumeAutomationProposal\(proposalId\)/);
   assert.match(runnerSource, /controlPlane\.createAutomationJob\(/);
   assert.match(runnerSource, /controlPlane\.rejectAutomationProposal\(proposalId\)/);
+  assert.match(runnerSource, /sendOrchestratedSystemReply\(\{/);
+  assert.match(runnerSource, /suppressUserMessagePersist: true/);
+  assert.match(runnerSource, /suppressMemoryWrite: true/);
+  assert.match(runnerSource, /suppressTaskWrites: true/);
+  assert.match(runnerSource, /suppressAutomationWrites: true/);
 });
 
 test("telegram runner renders repair_question buttons and processes selection events", () => {
@@ -111,6 +116,8 @@ test("telegram emoji lifecycle uses explicit state transitions and timer-based c
   assert.match(runnerSource, /await setReactionState\(ctx, ctx\.chat\.id, telegramMessageId, 'waiting_user'\)/);
   assert.match(runnerSource, /await setReactionState\(ctx, ctx\.chat\.id, telegramMessageId, 'done'\)/);
   assert.match(reactionSource, /const REACTION_EMOJI_BY_STATE = Object\.freeze\(/);
+  assert.match(reactionSource, /ensureChatReactionSupportDiscovered/);
+  assert.match(reactionSource, /ctx\.telegram\.getChat/);
   assert.match(reactionSource, /scheduleTimeout\(\(\) => \{\s*clearReaction\(ctx, chatId, inboundMessageId\)/);
   assert.match(runnerSource, /transitionWaitingReactionToDone\(ctx, callbackData\)/);
 });
@@ -154,4 +161,11 @@ test("web ui allowlist includes personality profile control-plane actions", () =
   assert.match(viteSource, /'upsertPersonalityProfile'/);
   assert.match(viteSource, /'resetPersonalityProfile'/);
   assert.match(viteSource, /'listPersonalityProfiles'/);
+});
+
+test("web ui allowlist includes diagnostics and lineage telemetry actions", () => {
+  const viteSource = readFile(webVitePath);
+
+  assert.match(viteSource, /'listExecutionLineage'/);
+  assert.match(viteSource, /'getThreadStateDiagnostics'/);
 });

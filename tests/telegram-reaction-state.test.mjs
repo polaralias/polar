@@ -131,3 +131,35 @@ test("chat reactions stay enabled after any prior success even when later emojis
   const attemptedEmojis = calls.map((call) => call.payload[0]?.emoji).filter(Boolean);
   assert.deepEqual(attemptedEmojis, ["👀", "✅", "👌", "❌", "👎"]);
 });
+
+test("reaction controller preloads per-chat supported reactions and skips unsupported emojis", async () => {
+  const calls = [];
+  const getChatCalls = [];
+  const controller = createTelegramReactionController();
+  const ctx = {
+    chat: { id: 77 },
+    telegram: {
+      async getChat(chatId) {
+        getChatCalls.push(chatId);
+        return {
+          available_reactions: [
+            { type: "emoji", emoji: "🤔" },
+            { type: "emoji", emoji: "✅" },
+            { type: "emoji", emoji: "❌" },
+          ],
+        };
+      },
+      async setMessageReaction(chatId, messageId, payload) {
+        calls.push({ chatId, messageId, payload });
+      },
+    },
+  };
+
+  await controller.setReactionState(ctx, 77, 1001, "waiting_user");
+  await controller.setReactionState(ctx, 77, 1002, "waiting_user");
+  await controller.setReactionState(ctx, 77, 1003, "done");
+
+  assert.deepEqual(getChatCalls, [77]);
+  const attemptedEmojis = calls.map((call) => call.payload[0]?.emoji).filter(Boolean);
+  assert.deepEqual(attemptedEmojis, ["🤔", "🤔", "✅"]);
+});

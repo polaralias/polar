@@ -51,6 +51,20 @@ test("control-plane service health reports contract and record counts", async ()
   });
 });
 
+test("control-plane service proxies thread-state diagnostics", async () => {
+  const service = createControlPlaneService();
+
+  const diagnostics = await service.getThreadStateDiagnostics({
+    sessionId: "session-diagnostics",
+  });
+
+  assert.equal(diagnostics.status, "ok");
+  assert.equal(diagnostics.sessionCount, 1);
+  assert.equal(Array.isArray(diagnostics.sessions), true);
+  assert.equal(diagnostics.sessions[0].sessionId, "session-diagnostics");
+  assert.equal(typeof diagnostics.generatedAtMs, "number");
+});
+
 test("control-plane service proxies typed config operations", async () => {
   const service = createControlPlaneService();
 

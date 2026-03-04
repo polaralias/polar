@@ -24,6 +24,46 @@ const CONFIGURED_REACTION_EMOJIS = Object.freeze(
 
 /**
  * @param {unknown} value
+ * @returns {readonly string[]|null}
+ */
+function parseAvailableReactionEmojis(value) {
+  if (!Array.isArray(value) || value.length === 0) {
+    return null;
+  }
+  const supported = new Set();
+  for (const entry of value) {
+    if (typeof entry === "string") {
+      const normalized = entry.trim().toLowerCase();
+      if (normalized === "all") {
+        return null;
+      }
+      if (entry.trim().length > 0) {
+        supported.add(entry.trim());
+      }
+      continue;
+    }
+    if (typeof entry !== "object" || entry === null) {
+      continue;
+    }
+    const type = typeof entry.type === "string" ? entry.type.trim().toLowerCase() : "";
+    if (type === "all") {
+      return null;
+    }
+    const emoji =
+      typeof entry.emoji === "string"
+        ? entry.emoji
+        : typeof entry.reaction?.emoji === "string"
+          ? entry.reaction.emoji
+          : null;
+    if (emoji && emoji.trim().length > 0) {
+      supported.add(emoji.trim());
+    }
+  }
+  return Object.freeze([...supported]);
+}
+
+/**
+ * @param {unknown} value
  */
 function parseFinitePositiveInteger(value) {
   const parsed = typeof value === "number" ? value : Number(value);
@@ -87,11 +127,56 @@ export function createTelegramReactionController(options = {}) {
       support = {
         disabled: false,
         hasAnySuccess: false,
+        discoveryAttempted: false,
         unsupportedEmojis: new Set(),
       };
       reactionSupportByChat.set(chatId, support);
     }
     return support;
+  }
+
+  /**
+   * @param {unknown} ctx
+   * @param {string|number} chatId
+   * @param {{ disabled: boolean, hasAnySuccess: boolean, discoveryAttempted: boolean, unsupportedEmojis: Set<string> }} support
+   */
+  async function ensureChatReactionSupportDiscovered(ctx, chatId, support) {
+    if (support.discoveryAttempted) {
+      return;
+    }
+    support.discoveryAttempted = true;
+    if (!ctx?.telegram || typeof ctx.telegram.getChat !== "function") {
+      return;
+    }
+    try {
+      const chat = await ctx.telegram.getChat(chatId);
+      const available =
+        chat?.available_reactions !== undefined
+          ? chat.available_reactions
+          : chat?.availableReactions;
+      const supported = parseAvailableReactionEmojis(available);
+      if (!supported) {
+        return;
+      }
+      const supportedSet = new Set(supported);
+      for (const emoji of CONFIGURED_REACTION_EMOJIS) {
+        if (!supportedSet.has(emoji)) {
+          support.unsupportedEmojis.add(emoji);
+        }
+      }
+      if (
+        !support.hasAnySuccess &&
+        CONFIGURED_REACTION_EMOJIS.every((candidate) =>
+          support.unsupportedEmojis.has(candidate),
+        )
+      ) {
+        support.disabled = true;
+      }
+    } catch (error) {
+      logger.warn?.(
+        `[REACTION_DISCOVERY_FAIL] Could not inspect available reactions for chat ${chatId}: ${String(error?.message || error)}`,
+      );
+    }
   }
 
   /**
@@ -102,6 +187,7 @@ export function createTelegramReactionController(options = {}) {
    */
   async function safeReact(ctx, emoji, messageId, chatId) {
     const support = getChatReactionSupport(chatId);
+    await ensureChatReactionSupportDiscovered(ctx, chatId, support);
     if (support.disabled) {
       return false;
     }

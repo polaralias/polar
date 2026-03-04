@@ -1,12 +1,19 @@
 import { fetchApi } from '../api.js';
+import {
+  normalizeUsageSummary,
+  summarizeProposalValidationEvents,
+} from './telemetry-normalization.js';
 
 export async function renderDashboard(container) {
   try {
     const health = await fetchApi('health');
     const alertsReq = await fetchApi('listTelemetryAlerts', { maxResults: 5 }).catch(() => ({ alerts: [] }));
     const usageReq = await fetchApi('listUsageTelemetry', { maxResults: 1 }).catch(() => ({ summary: {} }));
+    const lineageReq = await fetchApi('listExecutionLineage', { limit: 200 })
+      .catch(() => ({ items: [] }));
 
-    const summary = usageReq.summary || {};
+    const summary = normalizeUsageSummary(usageReq.summary || {});
+    const proposalSummary = summarizeProposalValidationEvents(lineageReq.items || []);
 
     container.innerHTML = `
       <div class="grid grid-cols-4 fade-in" style="animation-delay: 0.1s">
@@ -67,6 +74,13 @@ export async function renderDashboard(container) {
                         <div style="font-size: 20px; font-weight: 700;">${health.recordCount || 0}</div>
                     </div>
                     <span class="badge success">PERSISTENT</span>
+                </div>
+                <div class="glass-box" style="display: flex; justify-content: space-between; align-items: center;">
+                    <div>
+                        <div style="font-size: 13px; color: var(--text-muted); font-weight: 600;">Proposal Validation Events</div>
+                        <div style="font-size: 20px; font-weight: 700;">${proposalSummary.total}</div>
+                    </div>
+                    <span class="badge ${proposalSummary.invalid > 0 ? 'warning' : 'success'}">${proposalSummary.invalid} Invalid</span>
                 </div>
             </div>
         </div>

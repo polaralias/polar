@@ -71,3 +71,6 @@ Do this every run:
 - Boundary checks pass (`npm run check:boundaries`)
 - Docs updated where behaviour changed
 - Implementation log updated for structural/behavioural decisions
+
+## Notes
+- In this environment, full `npm test` can take ~3-4 minutes. When running via automation/tooling, use a timeout of at least `300000ms` to avoid false timeouts.

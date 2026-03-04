@@ -355,6 +355,63 @@ async function transitionWaitingReactionToDone(ctx, callbackData) {
     );
 }
 
+function buildSystemOrchestrationMetadata(inboundMessage, threadKey) {
+    return {
+        ...(typeof threadKey === "string" && threadKey.length > 0
+            ? { threadKey }
+            : {}),
+        ...(inboundMessage?.message_id !== undefined
+            ? { replyToMessageId: inboundMessage.message_id }
+            : {}),
+        ...(inboundMessage?.message_thread_id !== undefined
+            ? { messageThreadId: inboundMessage.message_thread_id }
+            : {}),
+        suppressUserMessagePersist: true,
+        suppressMemoryWrite: true,
+        suppressTaskWrites: true,
+        suppressAutomationWrites: true,
+        executionType: "system",
+    };
+}
+
+async function sendOrchestratedSystemReply({
+    ctx,
+    sessionId,
+    userId,
+    threadKey,
+    inboundMessage,
+    text,
+    fallbackText,
+    replyOptions,
+}) {
+    const metadata = buildSystemOrchestrationMetadata(inboundMessage, threadKey);
+    try {
+        const result = await controlPlane.orchestrate({
+            sessionId,
+            userId: String(userId),
+            text,
+            messageId: `msg_sys_${crypto.randomUUID()}`,
+            metadata,
+        });
+        const outputText =
+            typeof result?.text === "string" && result.text.trim().length > 0
+                ? result.text
+                : fallbackText;
+        const replyMessage = await ctx.reply(outputText, replyOptions);
+        if (typeof result?.assistantMessageId === "string" && result.assistantMessageId.length > 0) {
+            await controlPlane.updateMessageChannelId(
+                sessionId,
+                result.assistantMessageId,
+                replyMessage.message_id,
+            );
+        }
+        return result;
+    } catch {
+        await ctx.reply(fallbackText, replyOptions);
+        return { status: "completed", text: fallbackText };
+    }
+}
+
 const commandRouter = createTelegramCommandRouter({
     controlPlane,
     dbPath: platform.dbPath,
@@ -849,6 +906,28 @@ async function handleReactionUpdate(ctx) {
 bot.on('callback_query', async (ctx) => {
     const callbackData = ctx.callbackQuery.data;
     const callbackReplyOptions = buildTopicReplyOptions(ctx.callbackQuery?.message);
+    const callbackMessageContext = resolveTelegramMessageContext(ctx);
+    const sessionContext = await resolvePolarSessionContext(ctx).catch(() => ({
+        sessionId: `telegram:chat:${ctx.callbackQuery?.message?.chat?.id ?? ctx.message?.chat?.id ?? "unknown"}`,
+        threadId: undefined,
+        replyToMessageId: undefined
+    }));
+    const callbackThreadKey = callbackMessageContext
+        ? await resolveThreadKeyForMessage(sessionContext.sessionId, callbackMessageContext).catch(() => deriveThreadKey(callbackMessageContext))
+        : undefined;
+
+    const replyFromOrchestrator = async (text, fallbackText = text, sessionId = sessionContext.sessionId) => {
+        return sendOrchestratedSystemReply({
+            ctx,
+            sessionId,
+            userId: ctx.from?.id ?? "unknown",
+            threadKey: callbackThreadKey,
+            inboundMessage: callbackMessageContext,
+            text,
+            fallbackText,
+            replyOptions: callbackReplyOptions,
+        });
+    };
 
     // We stored the JSON in an in-memory Map, mapping an ID from callback_data
 
@@ -860,21 +939,19 @@ bot.on('callback_query', async (ctx) => {
         await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
 
         try {
-            const sessionId = (await resolvePolarSessionContext(ctx).catch(() => ({
-                sessionId: `telegram:chat:${ctx.callbackQuery?.message?.chat?.id ?? ctx.message?.chat?.id ?? "unknown"}`,
-                threadId: undefined,
-                replyToMessageId: undefined
-            }))).sessionId;
             await executeWorkflowAndReply({
                 ctx,
                 workflowId,
-                sessionId,
+                sessionId: sessionContext.sessionId,
                 replyOptions: callbackReplyOptions,
             });
             await transitionWaitingReactionToDone(ctx, callbackData);
         } catch (execErr) {
             console.error(execErr);
-            await ctx.reply("❌ Workflow execution crashed: " + execErr.message, callbackReplyOptions);
+            await replyFromOrchestrator(
+                `Workflow execution crashed: ${execErr.message}`,
+                `Workflow execution crashed: ${execErr.message}`,
+            );
             await transitionWaitingReactionToDone(ctx, callbackData);
         }
 
@@ -885,9 +962,9 @@ bot.on('callback_query', async (ctx) => {
         await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
         const cancelResult = await controlPlane.cancelWorkflow(workflowId);
         if (cancelResult.status === "cancelled" || cancelResult.status === "cancellation_requested") {
-            await ctx.reply("🛑 Cancellation requested. Stopping workflow.", callbackReplyOptions);
+            await replyFromOrchestrator("Cancellation requested. Stopping workflow.");
         } else {
-            await ctx.reply("⚠️ Workflow was not found or already finished.", callbackReplyOptions);
+            await replyFromOrchestrator("Workflow was not found or already finished.");
         }
         await transitionWaitingReactionToDone(ctx, callbackData);
 
@@ -898,7 +975,7 @@ bot.on('callback_query', async (ctx) => {
 
         await ctx.answerCbQuery("Workflow Rejected.");
         await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
-        await ctx.reply("❌ Workflow rejected.", callbackReplyOptions);
+        await replyFromOrchestrator("Workflow rejected.");
         await transitionWaitingReactionToDone(ctx, callbackData);
 
     } else if (callbackData.startsWith('auto_app:')) {
@@ -907,16 +984,10 @@ bot.on('callback_query', async (ctx) => {
         await ctx.answerCbQuery("Automation approved. Creating job...");
         await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
 
-        const sessionContext = await resolvePolarSessionContext(ctx).catch(() => ({
-            sessionId: `telegram:chat:${ctx.callbackQuery?.message?.chat?.id ?? "unknown"}`,
-            threadId: undefined,
-            replyToMessageId: undefined
-        }));
-
         try {
             const proposalResult = await controlPlane.consumeAutomationProposal(proposalId);
             if (proposalResult.status !== "found") {
-                await ctx.reply("⚠️ This automation proposal expired or was already handled.", callbackReplyOptions);
+                await replyFromOrchestrator("This automation proposal expired or was already handled.");
                 await transitionWaitingReactionToDone(ctx, callbackData);
                 return;
             }
@@ -980,9 +1051,9 @@ bot.on('callback_query', async (ctx) => {
                         promptTemplate: created.job?.promptTemplate
                     }
                 });
-                await ctx.reply(
-                    `✅ Automation created.\nJob ID: ${created.job.id}\nSchedule: ${created.job.schedule}${dryRunSummary}`,
-                    callbackReplyOptions
+                await replyFromOrchestrator(
+                    `Automation created.\nJob ID: ${created.job.id}\nSchedule: ${created.job.schedule}${dryRunSummary}`,
+                    `Automation created.\nJob ID: ${created.job.id}\nSchedule: ${created.job.schedule}${dryRunSummary}`,
                 );
                 await transitionWaitingReactionToDone(ctx, callbackData);
             } else {
@@ -998,7 +1069,7 @@ bot.on('callback_query', async (ctx) => {
                         createStatus: created.status
                     }
                 });
-                await ctx.reply("⚠️ Automation approval received, but job creation did not complete.", callbackReplyOptions);
+                await replyFromOrchestrator("Automation approval received, but job creation did not complete.");
                 await transitionWaitingReactionToDone(ctx, callbackData);
             }
         } catch (error) {
@@ -1014,18 +1085,16 @@ bot.on('callback_query', async (ctx) => {
                     error: error instanceof Error ? error.message : String(error)
                 }
             });
-            await ctx.reply(`❌ Failed to create automation: ${error.message}`, callbackReplyOptions);
+            await replyFromOrchestrator(
+                `Failed to create automation: ${error.message}`,
+                `Failed to create automation: ${error.message}`,
+            );
             await transitionWaitingReactionToDone(ctx, callbackData);
         }
     } else if (callbackData.startsWith('auto_rej:')) {
         const parts = callbackData.split(':');
         const proposalId = parts[1];
         await controlPlane.rejectAutomationProposal(proposalId);
-        const sessionContext = await resolvePolarSessionContext(ctx).catch(() => ({
-            sessionId: `telegram:chat:${ctx.callbackQuery?.message?.chat?.id ?? "unknown"}`,
-            threadId: undefined,
-            replyToMessageId: undefined
-        }));
         await recordAutomationProposalDecision({
             proposalId,
             toStatus: "done",
@@ -1039,7 +1108,7 @@ bot.on('callback_query', async (ctx) => {
         });
         await ctx.answerCbQuery("Automation proposal rejected.");
         await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
-        await ctx.reply("❌ Automation proposal rejected.", callbackReplyOptions);
+        await replyFromOrchestrator("Automation proposal rejected.");
         await transitionWaitingReactionToDone(ctx, callbackData);
 
     } else if (callbackData.startsWith('repair_sel:')) {
@@ -1050,38 +1119,30 @@ bot.on('callback_query', async (ctx) => {
             ? parts.slice(2, parts.length - 1).join(':')
             : parts.slice(2).join(':');
 
-        // Resolve session ID from the chat
-        let sessionId;
-        try {
-            sessionId = (await resolvePolarSessionContext(ctx)).sessionId;
-        } catch {
-            sessionId = `telegram:chat:${ctx.callbackQuery.message?.chat?.id}`;
-        }
-
         await ctx.answerCbQuery(`Selected option ${selection}...`);
         await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
 
         try {
             const result = await controlPlane.handleRepairSelection({
-                sessionId,
+                sessionId: sessionContext.sessionId,
                 selection,
                 correlationId
             });
 
             if (result.status === 'completed') {
-                await ctx.reply(`✅ ${result.text}`, callbackReplyOptions);
+                await replyFromOrchestrator(result.text || "Selection processed.");
                 if (originMessageId !== null && ctx.callbackQuery?.message?.chat?.id !== undefined) {
                     await setReactionState(ctx, ctx.callbackQuery.message.chat.id, originMessageId, 'done');
                 } else {
                     await transitionWaitingReactionToDone(ctx, callbackData);
                 }
             } else {
-                await ctx.reply(`⚠️ ${result.text || 'Could not process selection.'}`, callbackReplyOptions);
+                await replyFromOrchestrator(result.text || "Could not process selection.");
                 await transitionWaitingReactionToDone(ctx, callbackData);
             }
         } catch (repairErr) {
             console.error('[REPAIR_SELECTION_ERROR]', repairErr);
-            await ctx.reply('⚠️ Something went wrong processing your selection.', callbackReplyOptions);
+            await replyFromOrchestrator('Something went wrong processing your selection.');
             await transitionWaitingReactionToDone(ctx, callbackData);
         }
     }

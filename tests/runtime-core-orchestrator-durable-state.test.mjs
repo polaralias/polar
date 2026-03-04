@@ -183,7 +183,7 @@ test("durable pending workflow survives orchestrator restart and can execute", a
       if (extensionId === "email") {
         return {
           extensionId: "email",
-          lifecycleState: "installed",
+          lifecycleState: "enabled",
           capabilities: [
             {
               capabilityId: "send_email",
@@ -200,7 +200,7 @@ test("durable pending workflow survives orchestrator restart and can execute", a
       return [
         {
           extensionId: "email",
-          lifecycleState: "installed",
+          lifecycleState: "enabled",
           capabilities: [{ capabilityId: "send_email", riskLevel: "write", sideEffects: "external", dataEgress: "network" }],
         },
       ];
@@ -225,4 +225,3 @@ test("durable pending workflow survives orchestrator restart and can execute", a
   const executed = await second.executeWorkflow(proposed.workflowId);
   assert.notEqual(executed.text, "Workflow not found");
 });
-

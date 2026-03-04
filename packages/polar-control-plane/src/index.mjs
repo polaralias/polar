@@ -2301,6 +2301,14 @@ export function createControlPlaneService(config = {}) {
      * @param {unknown} [request]
      * @returns {Promise<Record<string, unknown>>}
      */
+    async getThreadStateDiagnostics(request = {}) {
+      return orchestrator.getThreadStateDiagnostics(request);
+    },
+
+    /**
+     * @param {unknown} [request]
+     * @returns {Promise<Record<string, unknown>>}
+     */
     async listTelemetryAlerts(request = {}) {
       return telemetryAlertGateway.listAlerts(request);
     },

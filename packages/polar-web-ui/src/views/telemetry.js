@@ -1,10 +1,16 @@
 import { fetchApi } from '../api.js';
+import {
+  normalizeUsageSummary,
+  summarizeProposalValidationEvents,
+} from './telemetry-normalization.js';
 
 export async function renderTelemetry(container) {
   try {
     const alertsReq = await fetchApi('listTelemetryAlerts', { maxResults: 100 }).catch(() => ({ alerts: [] }));
     const usageReq = await fetchApi('listUsageTelemetry', { maxResults: 20 })
       .catch(() => ({ events: [], summary: {} }));
+    const lineageReq = await fetchApi('listExecutionLineage', { limit: 400 })
+      .catch(() => ({ items: [] }));
     const healthReq = await fetchApi('checkIngressHealth', {}).catch(() => ({ components: [] }));
 
     // Check global budget status
@@ -13,7 +19,8 @@ export async function renderTelemetry(container) {
 
     const alerts = alertsReq.alerts || [];
     const usage = usageReq.events || [];
-    const summary = usageReq.summary || {};
+    const summary = normalizeUsageSummary(usageReq.summary || {});
+    const proposalSummary = summarizeProposalValidationEvents(lineageReq.items || []);
     const healthComponents = healthReq.components || [];
     const unhealthyCount = healthComponents.filter(c => c.status !== 'ok').length;
 
@@ -84,18 +91,22 @@ export async function renderTelemetry(container) {
             Token Estimates & Usage Stream
           </h3>
           
-          <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 24px; margin-top: 16px;">
+          <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 24px; margin-top: 16px;">
             <div class="glass-box">
                <div style="font-size:12px; color:var(--text-muted); font-weight:600; text-transform:uppercase; letter-spacing: 0.5px;">Calls</div>
                <div style="font-size:28px; font-weight:700; color: #fff; margin-top: 4px;">${summary.totalOperations || 0}</div>
             </div>
             <div class="glass-box">
                <div style="font-size:12px; color:var(--text-muted); font-weight:600; text-transform:uppercase; letter-spacing: 0.5px;">Fallbacks</div>
-               <div style="font-size:28px; font-weight:700; color:var(--warning); margin-top: 4px;">${summary.totalFallbacks || 0}</div>
+               <div style="font-size:28px; font-weight:700; color:var(--warning); margin-top: 4px;">${summary.fallbackCount || 0}</div>
             </div>
             <div class="glass-box">
                <div style="font-size:12px; color:var(--text-muted); font-weight:600; text-transform:uppercase; letter-spacing: 0.5px;">Est Cost</div>
                <div style="font-size:28px; font-weight:700; color:var(--success); margin-top: 4px;">$${(summary.totalEstimatedCostUsd || 0).toFixed(3)}</div>
+            </div>
+            <div class="glass-box">
+               <div style="font-size:12px; color:var(--text-muted); font-weight:600; text-transform:uppercase; letter-spacing: 0.5px;">Invalid Proposals</div>
+               <div style="font-size:28px; font-weight:700; color:${proposalSummary.invalid > 0 ? 'var(--danger)' : 'var(--success)'}; margin-top: 4px;">${proposalSummary.invalid}</div>
             </div>
           </div>
           

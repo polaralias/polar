@@ -1336,7 +1336,7 @@ export function createOrchestrator({
     const REPAIR_TTL_MS = 5 * 60 * 1000;
     const PENDING_ROUTING_STATES = new Map();
     const ROUTING_STATE_TTL_MS = 10 * 60 * 1000;
-    const cleanupInterval = setInterval(() => {
+    function purgeTransientState() {
         const currentTime = now();
         for (const [id, entry] of PENDING_WORKFLOWS) {
             if (currentTime - entry.createdAt > WORKFLOW_TTL_MS) {
@@ -1369,6 +1369,9 @@ export function createOrchestrator({
                 PENDING_ROUTING_STATES.delete(id);
             }
         }
+    }
+    const cleanupInterval = setInterval(() => {
+        purgeTransientState();
     }, 5 * 60 * 1000);
     if (typeof cleanupInterval.unref === 'function') {
         cleanupInterval.unref();
@@ -4011,6 +4014,96 @@ ${routingRecommendation || ""}`;
             }
 
             return { status: "not_found", workflowId };
+        },
+
+        /**
+         * @param {unknown} [request]
+         * @returns {Promise<Record<string, unknown>>}
+         */
+        async getThreadStateDiagnostics(request = {}) {
+            const parsed =
+                typeof request === "object" &&
+                request !== null &&
+                Object.getPrototypeOf(request) === Object.prototype
+                    ? request
+                    : {};
+            const sessionId =
+                typeof parsed.sessionId === "string" && parsed.sessionId.trim().length > 0
+                    ? parsed.sessionId.trim()
+                    : undefined;
+            const includeThreads = parsed.includeThreads !== false;
+            const includeRoutingPending = parsed.includeRoutingPending !== false;
+            const includePendingWorkflows = parsed.includePendingWorkflows !== false;
+            const includeCancellationRequests = parsed.includeCancellationRequests !== false;
+
+            purgeTransientState();
+            if (sessionId) {
+                await hydrateSessionThreadsState(sessionId);
+            }
+
+            const sessionIds = sessionId ? [sessionId] : [...SESSION_THREADS.keys()];
+            const sessions = includeThreads
+                ? sessionIds.map((id) => {
+                    const state = normalizeSessionStateValue(SESSION_THREADS.get(id));
+                    return Object.freeze({
+                        sessionId: id,
+                        activeThreadId: state.activeThreadId,
+                        threadCount: state.threads.length,
+                        threads: toJsonSafeValue(state.threads),
+                    });
+                })
+                : [];
+
+            const pendingRoutingStates = includeRoutingPending
+                ? [...PENDING_ROUTING_STATES.entries()]
+                    .filter(([key]) => !sessionId || key.startsWith(`${sessionId}::`))
+                    .map(([key, pendingState]) => {
+                        const separatorIndex = key.indexOf("::");
+                        const keySessionId = separatorIndex >= 0 ? key.slice(0, separatorIndex) : key;
+                        const laneThreadKey = separatorIndex >= 0 ? key.slice(separatorIndex + 2) : "";
+                        return Object.freeze({
+                            sessionId: keySessionId,
+                            laneThreadKey,
+                            pendingState: toJsonSafeValue(pendingState),
+                        });
+                    })
+                : [];
+
+            const pendingWorkflows = includePendingWorkflows
+                ? [...PENDING_WORKFLOWS.entries()]
+                    .filter(([, entry]) => !sessionId || entry?.polarSessionId === sessionId)
+                    .map(([workflowId, entry]) =>
+                        Object.freeze({
+                            workflowId,
+                            sessionId: entry?.polarSessionId,
+                            threadId: entry?.threadId,
+                            runId: entry?.runId,
+                            createdAt: entry?.createdAt,
+                        }),
+                    )
+                : [];
+
+            const cancellationRequests = includeCancellationRequests
+                ? [...WORKFLOW_CANCEL_REQUESTS.entries()].map(([workflowId, entry]) =>
+                    Object.freeze({
+                        workflowId,
+                        requestedAt: entry?.requestedAt,
+                    }),
+                )
+                : [];
+
+            return Object.freeze({
+                status: "ok",
+                generatedAtMs: now(),
+                sessionCount: sessions.length,
+                pendingRoutingCount: pendingRoutingStates.length,
+                pendingWorkflowCount: pendingWorkflows.length,
+                cancellationRequestCount: cancellationRequests.length,
+                sessions: Object.freeze(sessions),
+                pendingRoutingStates: Object.freeze(pendingRoutingStates),
+                pendingWorkflows: Object.freeze(pendingWorkflows),
+                cancellationRequests: Object.freeze(cancellationRequests),
+            });
         },
 
         /**

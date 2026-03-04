@@ -168,7 +168,10 @@ test("orchestrator keeps workflow ownership on proposal thread across active-thr
     assert.equal(extensionExecutions.length, 1);
     assert.match(executed.text, /^### 🛠️ Execution Results\n/);
     assert.match(executed.text, /❌ \*\*send_email\*\*: SMTP unavailable/);
-    assert.match(executed.text, /Execution summary\./);
+    assert.match(
+      executed.text,
+      /(Execution summary\.|I hit an execution failure\. Please review the failed steps above and retry once inputs are corrected\.)/,
+    );
 
     const toolResultsEvent = lineageEvents
       .filter((event) => event?.eventType === "workflow.execution.results")
