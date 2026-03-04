@@ -12,7 +12,7 @@ import {
     isRuntimeDevMode
 } from './durable-lineage-store.mjs';
 import { validateForwardSkills, validateModelOverride, computeCapabilityScope } from './capability-scope.mjs';
-import { classifyUserMessage, applyUserTurn, selectReplyAnchor, detectOfferInText, setOpenOffer, computeRepairDecision, handleRepairSelection, enforceRoutingProposalPolicy } from './routing-policy-engine.mjs';
+import { classifyUserMessage, applyUserTurn, selectReplyAnchor, detectOfferInText, setOpenOffer, computeRepairDecision, handleRepairSelection, enforceRoutingProposalPolicy, enforceFocusResolverProposal } from './routing-policy-engine.mjs';
 import { evaluateCapabilityApprovalRequirement } from './extension-gateway.mjs';
 import { parseModelProposal, expandTemplate, validateSteps, validateDynamicWorkflowSteps } from './workflow-engine.mjs';
 import { normalizeToolWorkflowError } from './tool-workflow-error-normalizer.mjs';
@@ -22,6 +22,7 @@ import {
     automationPlannerSchema,
     validateWorkflowPlannerProposal,
     failureExplainerSchema,
+    focusThreadResolverSchema,
     normalizeConfidence,
 } from './proposal-contracts.mjs';
 
@@ -422,6 +423,57 @@ async function requestWorkflowPlannerProposal(input) {
         return { valid: false, clampReasons: ["schema_invalid"] };
     }
     return validateWorkflowPlannerProposal(parsed);
+}
+
+/**
+ * @param {{ id: string, laneThreadKey?: string, pendingQuestion?: Record<string, unknown>, openOffer?: Record<string, unknown>, summary?: string, lastActivityTs?: number }} thread
+ * @returns {{ anchorId: string, threadKey: string, snippet: string, source: "pending"|"lane_recency"|"latest" }}
+ */
+function buildFocusCandidateFromThread(thread) {
+    const snippet =
+        typeof thread?.pendingQuestion?.text === "string" && thread.pendingQuestion.text.trim().length > 0
+            ? thread.pendingQuestion.text.trim()
+            : typeof thread?.openOffer?.target === "string" && thread.openOffer.target.trim().length > 0
+                ? thread.openOffer.target.trim()
+                : typeof thread?.summary === "string" && thread.summary.trim().length > 0
+                    ? thread.summary.trim()
+                    : "latest conversation context";
+    return {
+        anchorId: String(thread.id),
+        threadKey: typeof thread?.laneThreadKey === "string" ? thread.laneThreadKey : "unknown",
+        snippet,
+        source: typeof thread?.pendingQuestion === "object" && thread.pendingQuestion !== null ? "pending" : "lane_recency",
+    };
+}
+
+/**
+ * @param {{
+ *   providerGateway: { generate: (input: Record<string, unknown>) => Promise<{ text?: string }|Record<string, unknown>> },
+ *   providerId: string,
+ *   model: string,
+ *   text: string,
+ *   laneThreadKey: string,
+ *   focusContext: Record<string, unknown>|undefined,
+ *   candidates: readonly { anchorId: string, threadKey: string, snippet: string, source: string }[],
+ *   temporalAttention: Record<string, unknown>,
+ * }} input
+ */
+async function requestFocusResolverProposal(input) {
+    const response = await input.providerGateway.generate({
+        executionType: "handoff",
+        providerId: input.providerId,
+        model: input.model,
+        system: "You are a focus/thread resolver model. Output strict JSON only.",
+        prompt:
+            `Rank focus candidates for this ambiguous follow-up JSON only. ${JSON.stringify({
+                userText: input.text,
+                laneThreadKey: input.laneThreadKey,
+                focusContext: input.focusContext || null,
+                candidates: input.candidates,
+                temporalAttention: input.temporalAttention,
+            })}`,
+    });
+    return parseJsonProposalText(response?.text || "{}", focusThreadResolverSchema);
 }
 
 /**
@@ -2017,6 +2069,108 @@ export function createOrchestrator({
                 nowMs: now(),
             });
 
+            let resolvedFocusContext = classification?.focusContext || null;
+            let focusResolverInvoked = false;
+            let focusProposalValid = false;
+            let focusResolverClampReasons = [];
+            let focusResolverTopCandidate = null;
+            let focusResolverCandidateRanking = [];
+            const shouldRunFocusResolver =
+                classification?.type === "new_request" &&
+                hasAmbiguousReferenceText;
+            if (shouldRunFocusResolver) {
+                const laneCandidates = [...sessionState.threads]
+                    .filter((thread) => thread?.laneThreadKey === laneThreadKey)
+                    .sort((left, right) => (right?.lastActivityTs || 0) - (left?.lastActivityTs || 0))
+                    .slice(0, 4)
+                    .map((thread) => buildFocusCandidateFromThread(thread));
+
+                const selectedFocusThread =
+                    resolvedFocusContext?.focusThreadId &&
+                    sessionState.threads.find((thread) => thread.id === resolvedFocusContext.focusThreadId);
+                if (selectedFocusThread && !laneCandidates.some((entry) => entry.anchorId === selectedFocusThread.id)) {
+                    laneCandidates.unshift(buildFocusCandidateFromThread(selectedFocusThread));
+                }
+                const uniqueCandidates = [];
+                const seenAnchorIds = new Set();
+                for (const candidate of laneCandidates) {
+                    if (!seenAnchorIds.has(candidate.anchorId)) {
+                        seenAnchorIds.add(candidate.anchorId);
+                        uniqueCandidates.push(candidate);
+                    }
+                }
+
+                if (uniqueCandidates.length > 1) {
+                    focusResolverInvoked = true;
+                    try {
+                        const resolverValidation = await requestFocusResolverProposal({
+                            providerGateway,
+                            providerId,
+                            model,
+                            text,
+                            laneThreadKey,
+                            focusContext: resolvedFocusContext || undefined,
+                            candidates: uniqueCandidates,
+                            temporalAttention: {
+                                summary: temporalAttentionHint.summary,
+                                unresolved: temporalAttentionHint.unresolved,
+                                focusCandidates: temporalAttentionHint.focusCandidates,
+                            },
+                        });
+                        const enforcement = enforceFocusResolverProposal(
+                            resolverValidation.valid ? resolverValidation.value : null,
+                            uniqueCandidates.map((entry) => entry.anchorId),
+                        );
+                        focusProposalValid = enforcement.proposalValid;
+                        focusResolverClampReasons = [...(resolverValidation.valid ? enforcement.clampReasons : resolverValidation.clampReasons)];
+                        const ranked = Array.isArray(enforcement.value?.candidates)
+                            ? [...enforcement.value.candidates].sort(
+                                (left, right) => Number(right?.score || 0) - Number(left?.score || 0),
+                            )
+                            : [];
+                        focusResolverCandidateRanking = ranked.map((entry) => ({
+                            anchorId: entry.anchorId,
+                            score: Number.isFinite(entry.score) ? Number(entry.score) : 0,
+                        }));
+                        if (ranked.length > 0) {
+                            focusResolverTopCandidate = ranked[0].anchorId;
+                            const matchedThread = sessionState.threads.find((thread) => thread.id === ranked[0].anchorId);
+                            if (matchedThread) {
+                                resolvedFocusContext = {
+                                    source: "focus_resolver",
+                                    focusThreadId: matchedThread.id,
+                                    focusAnchorInternalId:
+                                        matchedThread.pendingQuestion?.askedAtMessageId ||
+                                        matchedThread.openOffer?.askedAtMessageId ||
+                                        matchedThread.lastError?.messageId ||
+                                        null,
+                                    focusAnchorChannelId:
+                                        matchedThread.pendingQuestion?.channelMessageId ||
+                                        matchedThread.openOffer?.channelMessageId ||
+                                        matchedThread.lastError?.channelMessageId ||
+                                        null,
+                                    focusAnchorTextSnippet:
+                                        matchedThread.pendingQuestion?.text ||
+                                        matchedThread.openOffer?.target ||
+                                        matchedThread.summary ||
+                                        "",
+                                };
+                            }
+                        }
+                    } catch {
+                        focusProposalValid = false;
+                        focusResolverClampReasons = ["resolver_unavailable"];
+                    }
+                }
+            }
+
+            if (resolvedFocusContext) {
+                classification = {
+                    ...classification,
+                    focusContext: resolvedFocusContext,
+                };
+            }
+
             let routerDecision = null;
             let routerInvoked = false;
             let fallbackReason = null;
@@ -2034,6 +2188,12 @@ export function createOrchestrator({
                             `Route this message using JSON schema only: ${JSON.stringify({
                                 text,
                                 focusContext: classification.focusContext || null,
+                                focusResolver: {
+                                    invoked: focusResolverInvoked,
+                                    proposalValid: focusProposalValid,
+                                    topAnchorId: focusResolverTopCandidate,
+                                    candidateRanking: focusResolverCandidateRanking,
+                                },
                                 temporalAttention: {
                                     summary: temporalAttentionHint.summary,
                                     unresolved: temporalAttentionHint.unresolved,
@@ -2144,6 +2304,11 @@ export function createOrchestrator({
                 proposal_valid: proposalValid,
                 router_invoked: routerInvoked,
                 router_affirmed_decision: routerAffirmedDecision,
+                focus_resolver_invoked: focusResolverInvoked,
+                focus_resolver_proposal_valid: focusProposalValid,
+                focus_resolver_clamp_reasons: focusResolverClampReasons,
+                focus_resolver_top_candidate: focusResolverTopCandidate,
+                focus_resolver_candidate_ranking: focusResolverCandidateRanking,
                 policy_vetoes: policyVetoes,
                 fallback_reason: fallbackReason,
                 decisionMargin: fusedTop.margin,
