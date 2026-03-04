@@ -47,7 +47,17 @@ test("orchestrator proposes chat-configured automation and requires explicit con
       providerGateway: {
         async generate() {
           providerGenerateCalls += 1;
-          return { text: "should not be called for deterministic automation proposal" };
+          return {
+            text: JSON.stringify({
+              decision: "propose",
+              confidence: 0.91,
+              summary: "stretch",
+              schedule: { kind: "daily", expression: "daily at 18:00" },
+              runScope: { scope: "session" },
+              limits: { maxNotificationsPerDay: 3 },
+              riskHints: { requiresApproval: false, mayWrite: false },
+            }),
+          };
         },
       },
       extensionGateway: {
@@ -80,7 +90,7 @@ test("orchestrator proposes chat-configured automation and requires explicit con
     assert.equal(proposal.status, "automation_proposed");
     assert.equal(proposal.proposal.schedule, "daily at 18:00");
     assert.match(proposal.proposal.promptTemplate, /^Reminder:/);
-    assert.equal(providerGenerateCalls, 0);
+    assert.equal(providerGenerateCalls, 1);
 
     const consumed = await orchestrator.consumeAutomationProposal(proposal.proposalId);
     assert.equal(consumed.status, "found");
@@ -219,5 +229,88 @@ test("orchestrator proposes inbox-check automation with safe defaults", async ()
     assert.equal(proposal.proposal.limits.maxNotificationsPerDay, 3);
     assert.deepEqual(proposal.proposal.limits.inbox.capabilities, ["mail.search_headers"]);
     assert.equal(proposal.proposal.quietHours.timezone, "UTC");
+  });
+});
+
+test("orchestrator emits automation planner proposal telemetry metadata", async () => {
+  await withUnrefedIntervals(async () => {
+    const lineageEvents = [];
+    const orchestrator = createOrchestrator({
+      profileResolutionGateway: {
+        async resolve() {
+          return {
+            profileConfig: {
+              systemPrompt: "You are a test assistant.",
+              modelPolicy: { providerId: "test-provider", modelId: "test-model" },
+            },
+          };
+        },
+      },
+      chatManagementGateway: {
+        async appendMessage() {
+          return { status: "appended" };
+        },
+        async getSessionHistory() {
+          return { items: [] };
+        },
+      },
+      providerGateway: {
+        async generate() {
+          return {
+            text: JSON.stringify({
+              decision: "clarify",
+              confidence: 0.44,
+              summary: "Need a quick confirmation",
+              schedule: { kind: "daily", expression: "daily at 09:00" },
+              runScope: { scope: "session" },
+              limits: { maxNotificationsPerDay: 3 },
+              riskHints: { requiresApproval: false, mayWrite: false },
+              clarificationQuestion: "Should I create this automation with conservative limits?",
+            }),
+          };
+        },
+      },
+      extensionGateway: {
+        getState() {
+          return undefined;
+        },
+        listStates() {
+          return [];
+        },
+        async execute() {
+          return { status: "completed", output: "ok" };
+        },
+      },
+      approvalStore: createApprovalStore(),
+      gateway: {
+        async getConfig() {
+          return { status: "not_found" };
+        },
+      },
+      lineageStore: {
+        async append(event) {
+          lineageEvents.push(event);
+        },
+      },
+      now: Date.now,
+    });
+
+    const result = await orchestrator.orchestrate({
+      sessionId: "session-auto-telemetry",
+      userId: "user-auto-telemetry",
+      text: "Set up an automation to remind me every day",
+      messageId: "m-auto-telemetry",
+      metadata: { threadKey: "root:auto" },
+    });
+
+    assert.equal(result.type, "automation_clarification");
+    const event = lineageEvents.find((entry) => entry?.eventType === "proposal.validation" && entry?.proposal_type === "automation");
+    assert.ok(event);
+    assert.equal(event.proposal_type, "automation");
+    assert.equal(typeof event.llm_confidence, "number");
+    assert.equal(event.proposal_valid, true);
+    assert.equal(event.final_decision, "clarify");
+    assert.equal(event.outcome_status, "automation_clarification");
+    assert.equal(event.planner_invoked, true);
   });
 });

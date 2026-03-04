@@ -391,6 +391,133 @@ test("hybrid router integrates focus resolver ranking into routing telemetry", a
   assert.equal(routingEvent.focus_resolver_candidate_ranking.length >= 1, true);
 });
 
+test("hybrid router clarifies when focus candidates are too close under low confidence", async () => {
+  const lineageEvents = [];
+
+  const orchestrator = createOrchestrator({
+    profileResolutionGateway: {
+      async resolve() {
+        return {
+          status: "resolved",
+          profileConfig: {
+            systemPrompt: "You are a parent profile.",
+            modelPolicy: { providerId: "openai", modelId: "gpt-4.1-mini" },
+          },
+        };
+      },
+    },
+    chatManagementGateway: {
+      async appendMessage() {
+        return { status: "appended" };
+      },
+      async getSessionHistory() {
+        return { items: [] };
+      },
+    },
+    providerGateway: {
+      async generate(input) {
+        if (typeof input?.system === "string" && input.system.includes("focus/thread resolver")) {
+          const payload = JSON.parse(input.prompt.slice(input.prompt.indexOf("{")));
+          return {
+            text: JSON.stringify({
+              confidence: 0.58,
+              refersTo: "temporal_attention",
+              candidates: [
+                {
+                  anchorId: payload.candidates[0].anchorId,
+                  threadKey: payload.candidates[0].threadKey,
+                  score: 0.62,
+                  reason: "close candidate A",
+                },
+                {
+                  anchorId: payload.candidates[1].anchorId,
+                  threadKey: payload.candidates[1].threadKey,
+                  score: 0.58,
+                  reason: "close candidate B",
+                },
+              ],
+              needsClarification: false,
+            }),
+          };
+        }
+        if (typeof input?.system === "string" && input.system.includes("routing model")) {
+          return {
+            text: JSON.stringify({
+              decision: "delegate",
+              target: { agentId: "@writer" },
+              confidence: 0.88,
+              rationale: "delegate requested",
+              references: { refersTo: "focus_anchor", refersToReason: "ambiguous follow-up" },
+              scores: { respond: 0.1, delegate: 0.88, tool: 0.05, workflow: 0.08, clarify: 0.1 },
+            }),
+          };
+        }
+        return { text: "ok" };
+      },
+    },
+    extensionGateway: {
+      getState() { return undefined; },
+      listStates() { return []; },
+      async execute() { return { status: "completed", output: "ok" }; },
+    },
+    gateway: {
+      readConfigRecord(resourceType, resourceId) {
+        if (resourceType === "policy" && resourceId === "agent-registry:default") {
+          return {
+            resourceType,
+            resourceId,
+            version: 1,
+            config: {
+              version: 1,
+              agents: [{ agentId: "@writer", profileId: "profile.writer", description: "Writer" }],
+            },
+          };
+        }
+        return undefined;
+      },
+    },
+    approvalStore: createApprovalStore(),
+    lineageStore: {
+      async append(event) {
+        lineageEvents.push(event);
+      },
+    },
+    now: Date.now,
+  });
+
+  await orchestrator.orchestrate({
+    sessionId: "session-focus-ambiguity",
+    userId: "user-focus-ambiguity",
+    text: "draft project update",
+    messageId: "m-focus-amb-1",
+    metadata: { threadKey: "root:focus-ambiguity" },
+  });
+
+  await orchestrator.orchestrate({
+    sessionId: "session-focus-ambiguity",
+    userId: "user-focus-ambiguity",
+    text: "collect notes",
+    messageId: "m-focus-amb-2",
+    metadata: { threadKey: "root:focus-ambiguity" },
+  });
+
+  const result = await orchestrator.orchestrate({
+    sessionId: "session-focus-ambiguity",
+    userId: "user-focus-ambiguity",
+    text: "do that again",
+    messageId: "m-focus-amb-3",
+    metadata: { threadKey: "root:focus-ambiguity" },
+  });
+
+  assert.equal(result.type, "clarification_needed");
+  const routingEvent = lineageEvents.filter((entry) => entry?.eventType === "routing.arbitration").at(-1);
+  assert.ok(routingEvent);
+  assert.equal(routingEvent.focus_resolver_ambiguous, true);
+  assert.equal(routingEvent.fallback_reason, "focus_ambiguity");
+  assert.equal(typeof routingEvent.focus_resolver_score_gap, "number");
+  assert.equal(routingEvent.focus_resolver_score_gap < 0.2, true);
+});
+
 test("hybrid router falls back safely on malformed router output and records fallback telemetry", async () => {
   const lineageEvents = [];
 

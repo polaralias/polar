@@ -2837,3 +2837,39 @@ Commands run and outcomes:
 
 ### Next
 - Add resolver ambiguity-threshold tuning (candidate score-gap + confidence) to deterministically trigger clarification when focus candidates are too close, with replay calibration fixtures.
+
+## 2026-03-04 (UTC) - Prompt Ad-hoc: Close telemetry and focus ambiguity follow-ups
+
+**Branch:** `main`  
+**Commit:** `not committed`  
+**Prompt reference:** `Implement logged follow-up gaps for automation/failure telemetry and focus ambiguity thresholds`
+
+### Summary
+- Implemented automation planner lineage telemetry in orchestrator with explicit proposal-cycle fields for dashboard rollups:
+  - `proposal_type`, `llm_confidence`, `proposal_valid`, `clampReasons`, `final_decision`, `outcome_status`, `planner_invoked`.
+- Added failure-explainer proposal lineage metadata for rollups with explicit:
+  - `final_decision` and `outcome_status`.
+- Added deterministic focus ambiguity threshold tuning using candidate score-gap + resolver confidence to force clarification when focus anchors are too close.
+- Extended routing arbitration lineage metadata with focus ambiguity diagnostics (`focus_resolver_confidence`, `focus_resolver_score_gap`, `focus_resolver_ambiguous`).
+- Updated automation proposal test expectations to align with the LLM-first automation planner flow (planner call is expected on automation-intent turns).
+
+### Files changed
+- `packages/polar-runtime-core/src/orchestrator.mjs`
+- `tests/runtime-core-orchestrator-automation-proposal.test.mjs`
+- `tests/runtime-core-orchestrator-hybrid-routing.test.mjs`
+- `tests/runtime-core-orchestrator-workflow-validation.test.mjs`
+- `docs/IMPLEMENTATION_LOG.md`
+
+### Tests and validation
+- `node --test tests/runtime-core-orchestrator-automation-proposal.test.mjs`
+- `node --test tests/runtime-core-orchestrator-hybrid-routing.test.mjs`
+- `node --test tests/runtime-core-orchestrator-workflow-validation.test.mjs`
+- `node --test tests/runtime-core-orchestrator-hybrid-routing.test.mjs tests/runtime-core-orchestrator-workflow-validation.test.mjs tests/runtime-core-orchestrator-automation-proposal.test.mjs`
+- `npm run check:boundaries`
+
+### Blockers
+- Full `npm test` was not re-run in this prompt because historical runs in this environment may not exit automatically due lingering test-runner handles.
+
+### Next
+- Validate dashboard consumers read both existing camelCase and new snake_case telemetry fields without schema drift.
+- Run full `npm test` in CI to confirm end-to-end suite health and process exit behavior.

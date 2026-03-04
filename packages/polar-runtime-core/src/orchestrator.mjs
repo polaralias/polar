@@ -519,6 +519,8 @@ const DEFAULT_GENERIC_AGENT_ID = "@generic_sub_agent";
 const DEFAULT_GENERIC_PROFILE_ID = "profile.generic_sub_agent";
 const ROUTER_CONFIDENCE_THRESHOLD = 0.65;
 const ROUTER_DECISION_MARGIN_THRESHOLD = 0.12;
+const FOCUS_RESOLVER_AMBIGUITY_SCORE_GAP_THRESHOLD = 0.2;
+const FOCUS_RESOLVER_AMBIGUITY_CONFIDENCE_THRESHOLD = 0.72;
 const TEMPORAL_ATTENTION_WINDOW_MS = 30 * 60 * 1000;
 const TEMPORAL_ATTENTION_RECENT_ACTION_LIMIT = 5;
 
@@ -2075,6 +2077,8 @@ export function createOrchestrator({
             let focusResolverClampReasons = [];
             let focusResolverTopCandidate = null;
             let focusResolverCandidateRanking = [];
+            let focusResolverConfidence = null;
+            let focusResolverScoreGap = null;
             const shouldRunFocusResolver =
                 classification?.type === "new_request" &&
                 hasAmbiguousReferenceText;
@@ -2132,6 +2136,12 @@ export function createOrchestrator({
                             anchorId: entry.anchorId,
                             score: Number.isFinite(entry.score) ? Number(entry.score) : 0,
                         }));
+                        focusResolverConfidence = normalizeConfidence(enforcement.value?.confidence);
+                        if (ranked.length >= 2) {
+                            const topScore = Number.isFinite(ranked[0]?.score) ? Number(ranked[0].score) : 0;
+                            const secondScore = Number.isFinite(ranked[1]?.score) ? Number(ranked[1].score) : 0;
+                            focusResolverScoreGap = Math.max(0, topScore - secondScore);
+                        }
                         if (ranked.length > 0) {
                             focusResolverTopCandidate = ranked[0].anchorId;
                             const matchedThread = sessionState.threads.find((thread) => thread.id === ranked[0].anchorId);
@@ -2266,8 +2276,23 @@ export function createOrchestrator({
                     fusedTop.margin < ROUTER_DECISION_MARGIN_THRESHOLD ||
                     (llmRouting.decision && heuristicTop.topDecision !== llmRouting.decision && policyFlags.highRisk)
                 );
+            const shouldClarifyByFocusAmbiguity =
+                !forcedRoutingDecision &&
+                focusResolverInvoked &&
+                focusResolverScoreGap !== null &&
+                focusResolverScoreGap < FOCUS_RESOLVER_AMBIGUITY_SCORE_GAP_THRESHOLD &&
+                (
+                    focusResolverConfidence === null ||
+                    focusResolverConfidence < FOCUS_RESOLVER_AMBIGUITY_CONFIDENCE_THRESHOLD
+                );
             if (!forcedRoutingDecision && shouldClarifyByConflict) {
                 finalRoutingDecision = "clarify";
+            }
+            if (shouldClarifyByFocusAmbiguity) {
+                finalRoutingDecision = "clarify";
+                if (!fallbackReason) {
+                    fallbackReason = "focus_ambiguity";
+                }
             }
             if (
                 !forcedRoutingDecision &&
@@ -2309,6 +2334,9 @@ export function createOrchestrator({
                 focus_resolver_clamp_reasons: focusResolverClampReasons,
                 focus_resolver_top_candidate: focusResolverTopCandidate,
                 focus_resolver_candidate_ranking: focusResolverCandidateRanking,
+                focus_resolver_confidence: focusResolverConfidence,
+                focus_resolver_score_gap: focusResolverScoreGap,
+                focus_resolver_ambiguous: shouldClarifyByFocusAmbiguity,
                 policy_vetoes: policyVetoes,
                 fallback_reason: fallbackReason,
                 decisionMargin: fusedTop.margin,
@@ -2511,7 +2539,15 @@ ${routingRecommendation || ""}`;
 
             let automationProposal = null;
             let automationPlannerDecision = null;
+            let automationPlannerInvoked = false;
+            let automationPlannerProposalValid = false;
+            let automationPlannerClampReasons = [];
+            let automationPlannerConfidence = null;
+            let automationPlannerFinalDecision = "skip";
+            let automationPlannerOutcomeStatus = "automation_not_applicable";
             if (!suppressAutomationWrites && isAutomationIntentCandidate(text)) {
+                automationPlannerOutcomeStatus = "automation_intent_detected";
+                automationPlannerInvoked = true;
                 const plannerValidation = await requestAutomationPlannerProposal({
                     providerGateway,
                     providerId,
@@ -2520,8 +2556,13 @@ ${routingRecommendation || ""}`;
                     sessionId: polarSessionId,
                     userId: userId.toString(),
                 }).catch(() => ({ valid: false, value: null }));
+                automationPlannerProposalValid = plannerValidation?.valid === true;
+                if (!automationPlannerProposalValid) {
+                    automationPlannerClampReasons = ["schema_invalid_or_unavailable"];
+                }
 
                 const plannerConfidence = normalizeConfidence(plannerValidation?.value?.confidence);
+                automationPlannerConfidence = plannerConfidence;
                 const plannerDecision = plannerValidation?.valid ? plannerValidation.value.decision : null;
                 const lowConfidence = plannerConfidence === null || plannerConfidence < 0.55;
                 const normalizedSchedule = plannerValidation?.valid
@@ -2532,6 +2573,7 @@ ${routingRecommendation || ""}`;
                 );
 
                 if (plannerValidation?.valid && plannerDecision === "propose" && normalizedSchedule && !lowConfidence) {
+                    automationPlannerFinalDecision = "propose";
                     const promptTemplateCandidate =
                         typeof plannerValidation.value.summary === "string" && plannerValidation.value.summary.trim().length > 0
                             ? `Reminder: ${plannerValidation.value.summary.trim()}`
@@ -2553,6 +2595,10 @@ ${routingRecommendation || ""}`;
                             plannerValidation.value?.riskHints?.mayWrite === true,
                     };
                 } else if (plannerValidation?.valid && (plannerDecision === "clarify" || lowConfidence)) {
+                    automationPlannerFinalDecision = "clarify";
+                    if (lowConfidence) {
+                        automationPlannerClampReasons = [...automationPlannerClampReasons, "low_confidence"];
+                    }
                     automationPlannerDecision = {
                         status: "clarify",
                         question:
@@ -2561,18 +2607,22 @@ ${routingRecommendation || ""}`;
                         confidence: plannerConfidence,
                     };
                 } else if (plannerValidation?.valid && plannerDecision === "skip") {
+                    automationPlannerFinalDecision = "skip";
                     automationPlannerDecision = {
                         status: "skip",
                     };
                 }
 
                 if (!automationProposal && !automationPlannerDecision) {
+                    automationPlannerFinalDecision = "propose_fallback";
+                    automationPlannerClampReasons = [...automationPlannerClampReasons, "fallback_deterministic"];
                     automationProposal =
                         detectInboxAutomationProposal(text) ??
                         detectAutomationProposal(text);
                 }
             }
             if (automationProposal) {
+                automationPlannerOutcomeStatus = "automation_proposed";
                 const proposalId = `auto_prop_${crypto.randomUUID()}`;
                 const assistantMessageId = `msg_a_${crypto.randomUUID()}`;
                 const proposalText =
@@ -2609,6 +2659,25 @@ ${routingRecommendation || ""}`;
                         ...(inboundMetadata !== undefined ? { metadata: inboundMetadata } : {}),
                     });
                 }
+                await emitLineageEvent({
+                    eventType: "proposal.validation",
+                    sessionId: polarSessionId,
+                    userId,
+                    laneThreadKey,
+                    proposalType: "automation",
+                    proposal_type: "automation",
+                    llmConfidence: automationPlannerConfidence,
+                    llm_confidence: automationPlannerConfidence,
+                    proposalValid: automationPlannerProposalValid,
+                    proposal_valid: automationPlannerProposalValid,
+                    clampReasons: automationPlannerClampReasons,
+                    finalDecision: automationPlannerFinalDecision,
+                    final_decision: automationPlannerFinalDecision,
+                    outcomeStatus: automationPlannerOutcomeStatus,
+                    outcome_status: automationPlannerOutcomeStatus,
+                    planner_invoked: automationPlannerInvoked,
+                    timestampMs: now(),
+                });
 
                 return {
                     status: "automation_proposed",
@@ -2630,6 +2699,7 @@ ${routingRecommendation || ""}`;
             }
 
             if (automationPlannerDecision?.status === "clarify") {
+                automationPlannerOutcomeStatus = "automation_clarification";
                 const assistantMessageId = `msg_a_${crypto.randomUUID()}`;
                 const clarificationText = automationPlannerDecision.question;
                 if (!suppressResponsePersist) {
@@ -2644,6 +2714,25 @@ ${routingRecommendation || ""}`;
                         ...(inboundMetadata !== undefined ? { metadata: inboundMetadata } : {}),
                     });
                 }
+                await emitLineageEvent({
+                    eventType: "proposal.validation",
+                    sessionId: polarSessionId,
+                    userId,
+                    laneThreadKey,
+                    proposalType: "automation",
+                    proposal_type: "automation",
+                    llmConfidence: automationPlannerConfidence,
+                    llm_confidence: automationPlannerConfidence,
+                    proposalValid: automationPlannerProposalValid,
+                    proposal_valid: automationPlannerProposalValid,
+                    clampReasons: automationPlannerClampReasons,
+                    finalDecision: automationPlannerFinalDecision,
+                    final_decision: automationPlannerFinalDecision,
+                    outcomeStatus: automationPlannerOutcomeStatus,
+                    outcome_status: automationPlannerOutcomeStatus,
+                    planner_invoked: automationPlannerInvoked,
+                    timestampMs: now(),
+                });
                 return {
                     status: "completed",
                     type: "automation_clarification",
@@ -2652,6 +2741,28 @@ ${routingRecommendation || ""}`;
                     useInlineReply: currentTurnAnchor ?? false,
                     anchorMessageId: currentAnchorMessageId,
                 };
+            }
+            if (automationPlannerInvoked) {
+                automationPlannerOutcomeStatus = "automation_skipped";
+                await emitLineageEvent({
+                    eventType: "proposal.validation",
+                    sessionId: polarSessionId,
+                    userId,
+                    laneThreadKey,
+                    proposalType: "automation",
+                    proposal_type: "automation",
+                    llmConfidence: automationPlannerConfidence,
+                    llm_confidence: automationPlannerConfidence,
+                    proposalValid: automationPlannerProposalValid,
+                    proposal_valid: automationPlannerProposalValid,
+                    clampReasons: automationPlannerClampReasons,
+                    finalDecision: automationPlannerFinalDecision,
+                    final_decision: automationPlannerFinalDecision,
+                    outcomeStatus: automationPlannerOutcomeStatus,
+                    outcome_status: automationPlannerOutcomeStatus,
+                    planner_invoked: automationPlannerInvoked,
+                    timestampMs: now(),
+                });
             }
 
             const historyData = await chatManagementGateway.getSessionHistory({
@@ -3679,7 +3790,10 @@ ${routingRecommendation || ""}`;
                 let shapedFailureSummary = "Execution complete.";
                 let failureProposalValid = false;
                 let failureClampReasons = [];
+                let failureFinalDecision = "skip";
+                let failureOutcomeStatus = hasAnyFailure ? "workflow_failed" : "workflow_completed";
                 if (hasAnyFailure) {
+                    failureFinalDecision = "clarify";
                     const deterministicFailureFallback = normalizedFailures.length > 0
                         ? normalizedFailures.map((failure) => `- ${failure.output}`).join('\n')
                         : "I hit an execution failure. Please review the failed steps above and retry once inputs are corrected.";
@@ -3713,8 +3827,14 @@ ${routingRecommendation || ""}`;
                         shapedFailureSummary = validation.valid
                             ? validation.value.summary
                             : deterministicFailureFallback;
+                        failureFinalDecision = validation.valid ? "respond" : "fallback_safe_summary";
+                        failureOutcomeStatus = validation.valid
+                            ? "workflow_failed_summary"
+                            : "workflow_failed_fallback_summary";
                     } catch {
                         shapedFailureSummary = deterministicFailureFallback;
+                        failureFinalDecision = "fallback_safe_summary";
+                        failureOutcomeStatus = "workflow_failed_fallback_summary";
                     }
                 }
                 await emitLineageEvent({
@@ -3726,6 +3846,10 @@ ${routingRecommendation || ""}`;
                     proposalType: "failure_explain",
                     proposalValid: failureProposalValid,
                     clampReasons: failureClampReasons,
+                    finalDecision: failureFinalDecision,
+                    final_decision: failureFinalDecision,
+                    outcomeStatus: failureOutcomeStatus,
+                    outcome_status: failureOutcomeStatus,
                     timestampMs: now(),
                 });
                 const cleanText = shapedFailureSummary.replace(/<polar_action>[\s\S]*?<\/polar_action>/, '').replace(/<thread_state>[\s\S]*?<\/thread_state>/, '').trim();

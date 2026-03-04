@@ -757,6 +757,7 @@ test("tool unavailable returns stable response and clears pending slot state", a
 test("workflow failure summary uses validated failure explainer proposal", async () => {
   await withUnrefedIntervals(async () => {
     let callIndex = 0;
+    const lineageEvents = [];
     const orchestrator = createOrchestrator({
       profileResolutionGateway: {
         async resolve() {
@@ -815,6 +816,11 @@ test("workflow failure summary uses validated failure explainer proposal", async
           return { status: "not_found" };
         },
       },
+      lineageStore: {
+        async append(event) {
+          lineageEvents.push(event);
+        },
+      },
       now: Date.now,
     });
 
@@ -827,6 +833,10 @@ test("workflow failure summary uses validated failure explainer proposal", async
 
     assert.equal(result.status, "completed");
     assert.match(result.text, /weather capability isn't available here/i);
+    const failureEvent = lineageEvents.find((entry) => entry?.eventType === "proposal.validation" && entry?.proposalType === "failure_explain");
+    assert.ok(failureEvent);
+    assert.equal(failureEvent.final_decision, "respond");
+    assert.equal(failureEvent.outcome_status, "workflow_failed_summary");
   });
 });
 
