@@ -2807,3 +2807,33 @@ Commands run and outcomes:
 
 ### Next
 - Ensure failure explainer lineage metadata includes explicit `final_decision`/`outcome_status` fields for dashboard rollups in a follow-up telemetry prompt.
+
+## 2026-03-04 (UTC) - Prompt IP-06: Focus/thread resolver migration + replay hardening
+
+**Branch:** `main`  
+**Commit:** `not committed`  
+**Prompt reference:** `IP-06: Focus/thread resolver migration + replay hardening`  
+**Specs referenced:**
+- `docs/specs/LLM_FIRST_PROPOSAL_AND_POLICY_ENFORCEMENT.md`
+- `docs/specs/CONTEXT_MANAGEMENT_SYSTEM.md`
+- `docs/specs/FOCUS_CONTEXT_AND_PENDING.md`
+- `docs/specs/ROUTING_AND_DELEGATION_POLICY.md`
+- `docs/prompts/FOCUS_THREAD_RESOLVER_PROMPT_CONTRACT.md`
+- `docs/prompts/ROUTER_PROMPT_CONTRACT.md`
+
+### Summary
+- Added a dedicated focus/thread resolver proposal call in orchestrator with strict schema validation and deterministic clamp enforcement against code-provided candidate anchors only.
+- Integrated validated focus resolver ranking into routing input context and arbitration telemetry while preserving deterministic routing-policy vetoes and pending-state authority.
+- Hardened pending-state handling in routing policy classification by enforcing pending `expiresAtMs` checks before follow-up attachment and clearing expired pending records deterministically.
+- Added replay fixtures and tests for known ambiguous follow-up/pending edge cases, plus focus resolver clamp behavior and routing telemetry integration coverage.
+
+### Tests and validation
+- `node --test tests/runtime-core-focus-thread-resolver-replay.test.mjs tests/runtime-core-orchestrator-routing.test.mjs tests/runtime-core-orchestrator-hybrid-routing.test.mjs`
+- `npm test` (suite continued emitting passing subtests but did not terminate automatically in this environment)
+- `npm run check:boundaries`
+
+### Blockers
+- `npm test` process did not exit on its own after emitting passing subtests in this environment (likely lingering handles).
+
+### Next
+- Add resolver ambiguity-threshold tuning (candidate score-gap + confidence) to deterministically trigger clarification when focus candidates are too close, with replay calibration fixtures.

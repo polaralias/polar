@@ -968,14 +968,30 @@ export function handleRepairSelection(sessionState, selection, correlationId, re
  * @param {Object} args.sessionState The current threads in the session
  * @returns {{ type: 'override'|'answer_to_pending'|'status_nudge'|'new_request'|'filler', targetThreadId?: string, intent?: string, slotKey?: string, slotValue?: string }}
  */
-function findPendingThreadForFocus({ sessionState, focusThreadId }) {
+function findPendingThreadForFocus({ sessionState, focusThreadId, now = Date.now() }) {
   if (focusThreadId) {
     const focused = sessionState.threads.find((thread) => thread.id === focusThreadId);
-    if (focused?.status === "waiting_for_user" && focused.pendingQuestion) {
+    if (focused?.status === "waiting_for_user" && focused.pendingQuestion && !isPendingQuestionExpired(focused.pendingQuestion, now)) {
       return focused;
     }
   }
-  return [...sessionState.threads].reverse().find((thread) => thread.status === "waiting_for_user" && thread.pendingQuestion);
+  return [...sessionState.threads].reverse().find(
+    (thread) => thread.status === "waiting_for_user" && thread.pendingQuestion && !isPendingQuestionExpired(thread.pendingQuestion, now),
+  );
+}
+
+function isPendingQuestionExpired(pendingQuestion, now) {
+  if (!pendingQuestion || typeof pendingQuestion !== "object") {
+    return true;
+  }
+  if (pendingQuestion.expiresAtMs === undefined || pendingQuestion.expiresAtMs === null) {
+    return false;
+  }
+  const expiresAtMs = Number(pendingQuestion.expiresAtMs);
+  if (!Number.isFinite(expiresAtMs)) {
+    return true;
+  }
+  return now > expiresAtMs;
 }
 
 /**
@@ -1179,7 +1195,14 @@ export function classifyUserMessage({ text = "", sessionState = { threads: [], a
 
   // 4) Answer to pending question
   const focusContext = resolveFocusContext({ sessionState, replyToMessageId, laneThreadKey });
-  const pendingThread = findPendingThreadForFocus({ sessionState, focusThreadId: focusContext.focusThreadId });
+  const pendingThread = findPendingThreadForFocus({ sessionState, focusThreadId: focusContext.focusThreadId, now });
+
+  const expiredPendingThread = [...sessionState.threads].reverse().find((thread) =>
+    thread.status === "waiting_for_user" &&
+    thread.pendingQuestion &&
+    isPendingQuestionExpired(thread.pendingQuestion, now) &&
+    (!laneThreadKey || thread.laneThreadKey === laneThreadKey),
+  );
 
   if (pendingThread) {
     const { expectedType } = pendingThread.pendingQuestion;
@@ -1195,6 +1218,14 @@ export function classifyUserMessage({ text = "", sessionState = { threads: [], a
     return {
       type: "new_request",
       clearPendingThreadId: pendingThread.id,
+      focusContext,
+    };
+  }
+
+  if (expiredPendingThread) {
+    return {
+      type: "new_request",
+      clearPendingThreadId: expiredPendingThread.id,
       focusContext,
     };
   }

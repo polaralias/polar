@@ -1,0 +1,59 @@
+[
+  {
+    "id": "ambiguous-pronoun-prefers-lane-recency",
+    "input": {
+      "text": "do that via sub-agent",
+      "laneThreadKey": "topic:99",
+      "now": 1700000005000,
+      "sessionState": {
+        "activeThreadId": "retry",
+        "threads": [
+          {
+            "id": "retry",
+            "status": "waiting_for_user",
+            "laneThreadKey": "topic:99",
+            "pendingQuestion": { "key": "confirm", "expectedType": "yes_no", "text": "Retry weather lookup?", "expiresAtMs": 1700000100000 },
+            "lastActivityTs": 1700000000000
+          },
+          {
+            "id": "latest",
+            "status": "in_progress",
+            "laneThreadKey": "topic:99",
+            "summary": "Draft partner update email",
+            "lastActivityTs": 1700000004000
+          }
+        ]
+      }
+    },
+    "expected": {
+      "type": "new_request",
+      "focusThreadId": "latest",
+      "clearPendingThreadId": "retry"
+    }
+  },
+  {
+    "id": "expired-pending-clears-before-attachment",
+    "input": {
+      "text": "yes",
+      "laneThreadKey": "topic:7",
+      "now": 1700000005000,
+      "sessionState": {
+        "activeThreadId": "pending-expired",
+        "threads": [
+          {
+            "id": "pending-expired",
+            "status": "waiting_for_user",
+            "laneThreadKey": "topic:7",
+            "pendingQuestion": { "key": "confirm", "expectedType": "yes_no", "text": "Proceed?", "expiresAtMs": 1699999999000 },
+            "lastActivityTs": 1700000000000
+          }
+        ]
+      }
+    },
+    "expected": {
+      "type": "new_request",
+      "focusThreadId": "pending-expired",
+      "clearPendingThreadId": "pending-expired"
+    }
+  }
+]
