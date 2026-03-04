@@ -78,6 +78,11 @@ If top focus candidates are too close by decision margin:
 - return `clarification_needed` candidate
 - do not execute tool/delegation decisions yet
 
+LLM may propose candidate ranking/disambiguation, but code remains authoritative for:
+- lane boundaries
+- pending-state type/TTL checks
+- final focus candidate set and ambiguity handling
+
 ---
 
 ## Contract with router/arbitration
@@ -90,6 +95,9 @@ Focus resolver output is authoritative input to routing arbitration:
   2) router-provided target
   3) explicit user-mentioned agent in turn text
   4) deterministic fallback agent
+
+Prompt contract artifact:
+- `docs/prompts/FOCUS_THREAD_RESOLVER_PROMPT_CONTRACT.md`
 
 ---
 

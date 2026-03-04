@@ -168,6 +168,7 @@ LLM-leaning responsibilities:
 - routing mode proposal
 - workflow shaping
 - post-tool interpretation/synthesis
+- thread/focus disambiguation proposals when short/ambiguous follow-ups occur
 
 Deterministic responsibilities (absolute):
 - thread/lane derivation and isolation
@@ -175,6 +176,10 @@ Deterministic responsibilities (absolute):
 - capability and approval enforcement
 - installed tool/agent existence checks
 - policy vetoes and execution gating
+
+Reference architecture:
+- `docs/specs/LLM_FIRST_PROPOSAL_AND_POLICY_ENFORCEMENT.md`
+- `docs/prompts/FOCUS_THREAD_RESOLVER_PROMPT_CONTRACT.md`
 
 ---
 

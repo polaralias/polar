@@ -11,6 +11,19 @@ Classify tool/workflow failures into clear categories, stop unsafe retries, clea
 
 ---
 
+## LLM-first explanation stance
+Failure classification remains deterministic and typed.
+
+User-facing failure messaging should be orchestrator-generated from normalized failure envelopes:
+- sub-agent/tool/workflow reports typed failure details
+- orchestrator LLM explains what happened in user-facing language
+- if user asks for more detail, orchestrator can reveal controlled diagnostic fields (exact normalized message/category, no unsafe stack dump by default)
+
+Prompt contract artifact:
+- `docs/prompts/FAILURE_EXPLAINER_PROMPT_CONTRACT.md`
+
+---
+
 ## Error categories
 ### ToolUnavailable
 Tool/extension not installed or not registered.
@@ -48,7 +61,7 @@ Your own gateways/contracts rejected a request.
 Signals:
 - `Invalid chat.management.gateway.message.append.request`
 Behaviour:
-- Return a stable user-facing error (“Something broke internally, I’ve logged it.”)
+- Return a stable safe baseline if LLM synthesis unavailable (“Something broke internally, I’ve logged it.”)
 - Record an internal error event for debugging.
 - Avoid cascading failures (do not attempt tool retries).
 
@@ -79,6 +92,7 @@ On ToolUnavailable / ToolMisconfigured / InternalContractBug:
 - ToolUnavailable classified correctly from gateway error string.
 - Pending state cleared for that lane.
 - User-facing response produced via orchestrator.
+- follow-up query for detail ("what error exactly?") returns controlled normalized diagnostic detail via orchestrator.
 
 ---
 

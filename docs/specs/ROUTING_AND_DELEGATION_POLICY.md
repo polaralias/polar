@@ -23,6 +23,20 @@ The assistant may reason semantically, but policy chooses the final safe action.
 
 ---
 
+## LLM-first stance
+Routing intent classification should be primarily LLM-proposed via strict schema output.
+
+Deterministic heuristic rules are retained for:
+- fallback when router call fails/unavailable
+- safety hints in high-risk turns
+- deterministic replay baselines
+
+They are not intended to be the long-term primary source of route selection semantics.
+
+Reference: `docs/specs/LLM_FIRST_PROPOSAL_AND_POLICY_ENFORCEMENT.md`
+
+---
+
 ## Core principle
 Use a **hybrid weighted router**:
 - LLM contributes semantic reasoning and ambiguity handling.
@@ -107,6 +121,17 @@ Routing should follow this high-level tree before arbitration details:
    - prefer `respond`
 
 If any branch remains ambiguous after weighted arbitration, return `clarify`.
+
+---
+
+## Prompt contract
+Routing proposal prompt and schema contract should live as a maintained artifact:
+- `docs/prompts/ROUTER_PROMPT_CONTRACT.md`
+
+Any change to routing prompt shape must update:
+- schema validator expectations in code
+- replay fixtures
+- this contract file
 
 ---
 
@@ -213,6 +238,7 @@ Operational requirements:
 - delegation approval requirement cannot be bypassed by router output
 - replay suite validates no regression on known ambiguous transcripts
 - explicit decision-tree cases ("external action", "multi-step", "specialist needed") map to expected candidate modes
+- router-unavailable fallback remains safe and deterministic without changing approvals/capability enforcement
 
 ---
 

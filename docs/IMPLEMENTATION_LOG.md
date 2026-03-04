@@ -2526,3 +2526,141 @@ Commands run and outcomes:
 ### Next
 - **Next prompt:** Add deterministic replay fixtures for durable-state restart scenarios (clarification + workflow proposal + cancellation) and expose typed thread-state diagnostics in control plane.
 - **Suggested starting point:** `tests/integration-vertical-slice.test.mjs`, `packages/polar-control-plane/src/index.mjs`.
+
+## 2026-03-04 (UTC) - Prompt Ad-hoc: LLM-first proposal contract + prompt artifacts alignment pass
+
+**Branch:** `main`  
+**Commit:** `not committed`  
+**Prompt reference:** `Document and prompt generation pass for LLM-propose / code-validate architecture across platform`  
+**Specs referenced:**
+- `docs/specs/LLM_FIRST_PROPOSAL_AND_POLICY_ENFORCEMENT.md` (new)
+- `docs/specs/ROUTING_AND_DELEGATION_POLICY.md`
+- `docs/specs/WORKFLOW_EXECUTION_INTEGRITY.md`
+- `docs/specs/AUTOMATION_RUNNER.md`
+- `docs/specs/TOOL_FAILURE_NORMALISATION.md`
+- `docs/specs/CONTEXT_MANAGEMENT_SYSTEM.md`
+- `docs/specs/FOCUS_CONTEXT_AND_PENDING.md`
+- `docs/specs/ORCHESTRATOR_OUTPUT_RULE.md`
+
+### Summary
+- Added a platform-level architectural contract for **LLM-first proposal + deterministic policy enforcement**.
+- Realigned routing, workflow, automation, context/threading, and failure-normalisation specs around this split:
+  - LLM proposes structured outputs (intent, plans, rankings, explanations)
+  - code validates, clamps, approves, executes, and audits.
+- Added a prompt-contract library under `docs/prompts/` to make structured output expectations explicit and reusable:
+  - router
+  - workflow planner
+  - automation planner
+  - failure explainer
+  - focus/thread resolver
+- Updated related specs to reference these prompt contracts and clarify that regex/heuristics are fallback/safety hints rather than long-term primary proposal logic.
+
+### Scope and decisions
+- **In scope:** docs + prompt-contract artifacts only.
+- **Out of scope:** runtime refactor to remove legacy regex heuristics and migrate all proposal paths to new contracts.
+- **Key decisions:**
+  - Codify a single cross-domain architecture: proposal quality from LLM, safety and execution authority from code.
+  - Treat prompt contracts as first-class artifacts that must remain synchronized with code validators and replay fixtures.
+  - Preserve deterministic fail-closed behavior when proposal generation is unavailable or schema-invalid.
+
+### Files changed
+- `docs/specs/LLM_FIRST_PROPOSAL_AND_POLICY_ENFORCEMENT.md` (new)
+- `docs/specs/ROUTING_AND_DELEGATION_POLICY.md`
+- `docs/specs/WORKFLOW_EXECUTION_INTEGRITY.md`
+- `docs/specs/AUTOMATION_RUNNER.md`
+- `docs/specs/TOOL_FAILURE_NORMALISATION.md`
+- `docs/specs/CONTEXT_MANAGEMENT_SYSTEM.md`
+- `docs/specs/FOCUS_CONTEXT_AND_PENDING.md`
+- `docs/specs/ORCHESTRATOR_OUTPUT_RULE.md`
+- `docs/MEMORY_AND_FEEDBACK.md`
+- `docs/prompts/README.md` (new)
+- `docs/prompts/ROUTER_PROMPT_CONTRACT.md` (new)
+- `docs/prompts/WORKFLOW_PLANNER_PROMPT_CONTRACT.md` (new)
+- `docs/prompts/AUTOMATION_PLANNER_PROMPT_CONTRACT.md` (new)
+- `docs/prompts/FAILURE_EXPLAINER_PROMPT_CONTRACT.md` (new)
+- `docs/prompts/FOCUS_THREAD_RESOLVER_PROMPT_CONTRACT.md` (new)
+- `docs/IMPLEMENTATION_LOG.md`
+
+### Data model / migrations (if applicable)
+- **Tables created/changed:** none
+- **Migration notes:** none
+- **Risk:** low (docs-only)
+
+### Security and safety checks
+- **Allowlist changes:** none
+- **Capabilities/middleware affected:** none (docs-only)
+- **Sensitive operations:** none
+
+### Tests and validation
+Commands run and outcomes:
+- Not run (docs/prompt-contract pass only).
+
+### Blockers
+- None.
+
+### Next
+- **Next prompt:** Implement runtime migration from regex-first proposal paths to prompt-contract-first structured proposal paths (routing, workflow planner, automation planner, failure explainer, focus resolver) with replay coverage.
+- **Suggested starting point:** `packages/polar-runtime-core/src/orchestrator.mjs`, `packages/polar-runtime-core/src/routing-policy-engine.mjs`, `packages/polar-runtime-core/src/automation-gateway.mjs`.
+
+## 2026-03-04 (UTC) - Prompt Ad-hoc: Implementation prompt pack for LLM-first runtime migration
+
+**Branch:** `main`  
+**Commit:** `not committed`  
+**Prompt reference:** `Write implementation prompts to execute LLM-propose/code-validate migration across routing, workflow, automation, failure explanation, and focus resolution`  
+**Specs referenced:**
+- `docs/specs/LLM_FIRST_PROPOSAL_AND_POLICY_ENFORCEMENT.md`
+- `docs/specs/ROUTING_AND_DELEGATION_POLICY.md`
+- `docs/specs/WORKFLOW_EXECUTION_INTEGRITY.md`
+- `docs/specs/AUTOMATION_RUNNER.md`
+- `docs/specs/TOOL_FAILURE_NORMALISATION.md`
+- `docs/specs/CONTEXT_MANAGEMENT_SYSTEM.md`
+- `docs/specs/FOCUS_CONTEXT_AND_PENDING.md`
+- `docs/specs/ORCHESTRATOR_OUTPUT_RULE.md`
+- `docs/MEMORY_AND_FEEDBACK.md`
+
+### Summary
+- Added an implementation prompt pack under `docs/prompts/implementation/` to drive staged runtime delivery.
+- Each prompt explicitly requires:
+  - reading `AGENTS.md`
+  - implementing code (not analysis-only)
+  - running `npm test` and `npm run check:boundaries`
+  - appending to `docs/IMPLEMENTATION_LOG.md`
+- Each prompt includes a per-topic required-doc list and a global reference set covering all new specs and prompt contracts.
+
+### Scope and decisions
+- **In scope:** implementation prompt artifacts only.
+- **Out of scope:** runtime code changes.
+- **Key decisions:**
+  - Sequence work as 6 implementation prompts to reduce risk and preserve replayability.
+  - Keep every prompt anchored to the full shared contract set to prevent spec drift between domains.
+
+### Files changed
+- `docs/prompts/implementation/README.md` (new)
+- `docs/prompts/implementation/IP-01_PROMPT_CONTRACT_SCHEMAS_AND_GATES.md` (new)
+- `docs/prompts/implementation/IP-02_ROUTING_LLM_FIRST_MIGRATION.md` (new)
+- `docs/prompts/implementation/IP-03_DYNAMIC_WORKFLOW_PLANNER.md` (new)
+- `docs/prompts/implementation/IP-04_AUTOMATION_PLANNER_LLM_FIRST.md` (new)
+- `docs/prompts/implementation/IP-05_FAILURE_EXPLAINER_AND_DIAGNOSTICS.md` (new)
+- `docs/prompts/implementation/IP-06_FOCUS_THREAD_RESOLVER_AND_REPLAY.md` (new)
+- `docs/IMPLEMENTATION_LOG.md`
+
+### Data model / migrations (if applicable)
+- **Tables created/changed:** none
+- **Migration notes:** none
+- **Risk:** low (docs-only)
+
+### Security and safety checks
+- **Allowlist changes:** none
+- **Capabilities/middleware affected:** none (docs-only)
+- **Sensitive operations:** none
+
+### Tests and validation
+Commands run and outcomes:
+- Not run (docs prompt-pack pass only).
+
+### Blockers
+- None.
+
+### Next
+- **Next prompt:** Execute `docs/prompts/implementation/IP-01_PROMPT_CONTRACT_SCHEMAS_AND_GATES.md`.
+- **Suggested starting point:** `packages/polar-runtime-core/src/orchestrator.mjs`, `packages/polar-runtime-core/src/routing-policy-engine.mjs`, `packages/polar-runtime-core/src/automation-gateway.mjs`.

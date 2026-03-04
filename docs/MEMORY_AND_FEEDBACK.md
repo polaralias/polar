@@ -12,6 +12,8 @@ The memory system is a hybrid context stack:
 - typed pending/runtime state for short follow-ups and control flow
 - dynamic retrieval that is lane-first and only widens scope when justified
 
+Proposal-quality interpretation of memory context is LLM-driven; memory safety, retrieval bounds, and persistence policy are deterministic.
+
 ## Current state
 - SQLite-backed memory provider exists (with text search/FTS where available).
 - Telegram runner writes reactions to a markdown file (flat append).

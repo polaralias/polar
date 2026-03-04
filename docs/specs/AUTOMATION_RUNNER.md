@@ -9,6 +9,8 @@ This document specifies:
 - how results are delivered back to a surface (Telegram first)
 - what must be logged for audit and continuous improvement
 
+This surface should be LLM-first for intent/schedule proposal, with deterministic validation before persistence and execution.
+
 Related:
 - `docs/AUTOMATIONS.md` (product intent)
 - `docs/specs/DATA_MODEL.md` (tables)
@@ -52,6 +54,28 @@ This envelope is passed into:
 
 No alternate “background LLM call” path is allowed.
 
+---
+
+## LLM-first automation planning
+Automation drafting should default to LLM structured proposal from natural language intent:
+- intent classification
+- suggested schedule semantics
+- scope and limits hints
+- risk/approval hints
+
+If confidence is low or ambiguity remains:
+- ask a concise confirmation question (for example: "Do you want an automation for that?").
+
+Deterministic code remains authoritative for:
+- capability bounds
+- schedule validity
+- quiet-hours and run caps
+- approval gating
+- tenant/session ownership
+
+Prompt contract artifact:
+- `docs/prompts/AUTOMATION_PLANNER_PROMPT_CONTRACT.md`
+
 ### Due calculation
 MVP options:
 1) Use an internal runner loop that wakes every N seconds and checks schedules.
@@ -64,6 +88,8 @@ If using option (1):
 - compute whether job is due at current time
 - apply quiet hours
 - enforce per-job run caps
+
+Even with LLM-proposed schedules, persisted schedule representation must be normalized to deterministic internal forms.
 
 ### Quiet hours and limits
 Default recommendations (can be overridden per job):
@@ -136,6 +162,7 @@ Also ensure normal auditSink events are emitted.
 - Delivery posts to Telegram (via delivery queue or adapter).
 - Runs are recorded in `polar_run_events`.
 - No direct provider calls from runner.
+- low-confidence automation proposals trigger explicit confirmation instead of silent creation.
 
 ## Tests
 At minimum:

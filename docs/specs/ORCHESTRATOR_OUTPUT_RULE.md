@@ -54,7 +54,12 @@ Required behavior flags (names may vary):
 ## Hybrid v2 response requirements
 - Orchestrator can use temporal attention and typed pending context to phrase clarifications/results.
 - If routing arbitration selected `clarification_needed`, final question text still comes from orchestrator path (unless hard fallback).
-- If workflow/tool execution returns normalized failure, user-facing wording is deterministic-safe and never exposes internal stack traces.
+- If workflow/tool execution returns normalized failure, user-facing wording should be orchestrator-generated from typed error envelope.
+- Default failure wording must remain safe (no raw stack trace).
+- If user explicitly asks for details, orchestrator may provide normalized exact error message/category in a controlled format.
+
+Prompt contract artifact:
+- `docs/prompts/FAILURE_EXPLAINER_PROMPT_CONTRACT.md`
 
 ---
 
@@ -72,6 +77,7 @@ Tag orchestrator-mediated system outputs with:
 - automation delivery sends orchestrator output text only
 - callback ack is minimal and final visible result is orchestrator-mediated
 - clarification-needed flow produces one coherent orchestrator-visible question
+- explicit "what error exactly?" follow-up yields controlled diagnostic detail, not raw internal dump
 
 ---
 
