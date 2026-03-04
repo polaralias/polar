@@ -59,6 +59,79 @@ export function enforceFocusResolverProposal(proposal, allowedAnchorIds = []) {
   };
 }
 
+/**
+ * Enforces deterministic routing policy constraints against a router proposal.
+ * @param {{
+ *   proposal: Record<string, unknown>|null,
+ *   installedAgentIds: Set<string>,
+ *   installedToolPairs: readonly { extensionId: string, capabilityId: string }[],
+ *   riskClass: "low"|"medium"|"high"|"destructive",
+ * }} input
+ * @returns {{ value: Record<string, unknown>|null, policyVetoes: readonly string[], fallbackReason: string|null }}
+ */
+export function enforceRoutingProposalPolicy(input) {
+  let proposal =
+    input?.proposal && typeof input.proposal === "object"
+      ? { ...input.proposal }
+      : null;
+  const policyVetoes = [];
+  let fallbackReason = null;
+
+  if (!proposal) {
+    return { value: null, policyVetoes, fallbackReason };
+  }
+
+  if (input.riskClass === "destructive") {
+    policyVetoes.push("risk_destructive_force_clarify");
+    fallbackReason = "risk_policy";
+    return {
+      value: {
+        decision: "clarify",
+        confidence: 1,
+        rationale: "Risk policy requires explicit clarification before destructive actions.",
+      },
+      policyVetoes,
+      fallbackReason,
+    };
+  }
+
+  if (proposal.decision === "delegate") {
+    const requestedAgentId = proposal?.target?.agentId;
+    if (!input.installedAgentIds.has(requestedAgentId)) {
+      policyVetoes.push("unknown_delegate_target");
+      fallbackReason = "unknown_target";
+      proposal = {
+        ...proposal,
+        target: { agentId: "@generic_sub_agent" },
+      };
+    }
+  }
+
+  if (proposal.decision === "tool") {
+    const extensionId = proposal?.target?.extensionId;
+    const capabilityId = proposal?.target?.capabilityId;
+    const installed = input.installedToolPairs.some(
+      (entry) =>
+        entry.extensionId === extensionId && entry.capabilityId === capabilityId,
+    );
+    if (!installed) {
+      policyVetoes.push("unknown_tool_target");
+      fallbackReason = "unknown_target";
+      proposal = {
+        decision: "clarify",
+        confidence: 1,
+        rationale: "Requested tool is not installed.",
+      };
+    }
+  }
+
+  return {
+    value: proposal,
+    policyVetoes,
+    fallbackReason,
+  };
+}
+
 const routingRequestSchema = createStrictObjectSchema({
   schemaId: "agent.handoff.routing.request",
   fields: {
