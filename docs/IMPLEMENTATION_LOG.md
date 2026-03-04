@@ -2664,3 +2664,25 @@ Commands run and outcomes:
 ### Next
 - **Next prompt:** Execute `docs/prompts/implementation/IP-01_PROMPT_CONTRACT_SCHEMAS_AND_GATES.md`.
 - **Suggested starting point:** `packages/polar-runtime-core/src/orchestrator.mjs`, `packages/polar-runtime-core/src/routing-policy-engine.mjs`, `packages/polar-runtime-core/src/automation-gateway.mjs`.
+
+## 2026-03-04 (UTC) - Prompt IP-01: Prompt-contract schemas and enforcement gates
+
+**Branch:** `main`  
+**Commit:** `not committed`  
+**Prompt reference:** `IP-01: Prompt-contract schemas and enforcement gates`
+
+### Summary
+- Added a new proposal-contract module with strict validators for router, workflow planner, automation planner, failure explainer, and focus/thread resolver proposal payloads.
+- Integrated fail-closed enforcement into orchestrator routing/workflow/failure-summary paths with deterministic clamp behavior and proposal validation telemetry fields.
+- Integrated automation-planner adapter gates into automation gateway so low-confidence or malformed planner outputs clamp safely.
+- Added schema-focused unit tests and integration-style fail-closed tests for malformed proposals.
+
+### Tests and validation
+- `npm test`
+- `npm run check:boundaries`
+
+### Blockers
+- None.
+
+### Next
+- **Next prompt:** `IP-02: Routing LLM-first migration`.

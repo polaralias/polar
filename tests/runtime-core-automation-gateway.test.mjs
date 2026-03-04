@@ -429,3 +429,26 @@ test("automation gateway rejects invalid request shapes deterministically", asyn
       error.code === "POLAR_CONTRACT_VALIDATION_ERROR",
   );
 });
+
+test("automation draft fail-closes low-confidence planner proposal", async () => {
+  const { gateway } = setupAutomationGateway({
+    automationAuthoring: {
+      async draftFromIntent() {
+        return {
+          decision: "propose",
+          confidence: 0.1,
+          summary: "Schedule a run",
+          schedule: { kind: "daily", expression: "09:00" },
+          runScope: { sessionId: "session-1", userId: "user-1" },
+          limits: { maxNotificationsPerDay: 3, quietHours: { startHour: 22, endHour: 7, timezone: "UTC" } },
+          riskHints: { mayWrite: false, requiresApproval: false },
+          clarificationQuestion: "Should I enable this daily automation?",
+        };
+      },
+    },
+  });
+
+  const result = await gateway.draftFromIntent(createDraftRequest());
+  assert.equal(result.status, "drafted");
+  assert.match(result.reason, /Should I enable this daily automation/);
+});

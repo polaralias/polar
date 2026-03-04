@@ -89,7 +89,7 @@ function createOrchestratorHarness({ providerText }) {
   return { orchestrator, extensionExecutions, appendedMessages };
 }
 
-test("orchestrator accepts <polar_action> only: unknown template is rejected without tool execution", async () => {
+test("orchestrator fail-closes malformed workflow proposal without tool execution", async () => {
   await withUnrefedIntervals(async () => {
     const { orchestrator, extensionExecutions } = createOrchestratorHarness({
       providerText: `<polar_action>{"template":"hack_mainframe","args":{}}</polar_action>`,
@@ -102,11 +102,12 @@ test("orchestrator accepts <polar_action> only: unknown template is rejected wit
       messageId: "m-1",
     });
 
-    assert.equal(result.status, "error");
-    assert.match(result.text, /Failed to parse action proposal/);
+    assert.equal(result.status, "clarification_needed");
+    assert.match(result.text, /clearer workflow plan/i);
     assert.equal(extensionExecutions.length, 0);
   });
 });
+
 
 test("orchestrator does not execute tools when template args are invalid", async () => {
   await withUnrefedIntervals(async () => {
@@ -696,3 +697,4 @@ test("workflow execution remains stable when chat appends reject internal system
     assert.match(result.text, /Execution Results/);
   });
 });
+

@@ -10,6 +10,54 @@ import {
   stringArrayField,
   stringField,
 } from "@polar/domain";
+import {
+  validateSchemaProposal,
+  focusThreadResolverSchema,
+  normalizeConfidence,
+} from "./proposal-contracts.mjs";
+
+/**
+ * Deterministically validates/clamps focus resolver proposals.
+ * @param {unknown} proposal
+ * @param {readonly string[]} allowedAnchorIds
+ * @returns {{ proposalValid: boolean, clampReasons: readonly string[], value: Record<string, unknown>|null }}
+ */
+export function enforceFocusResolverProposal(proposal, allowedAnchorIds = []) {
+  const validation = validateSchemaProposal(proposal, focusThreadResolverSchema);
+  if (!validation.valid) {
+    return {
+      proposalValid: false,
+      clampReasons: validation.clampReasons,
+      value: null,
+    };
+  }
+  const confidence = normalizeConfidence(validation.value.confidence);
+  const candidates = Array.isArray(validation.value.candidates)
+    ? validation.value.candidates
+    : [];
+  const clampedCandidates = candidates.filter(
+    (entry) =>
+      typeof entry?.anchorId === "string" &&
+      allowedAnchorIds.includes(entry.anchorId),
+  );
+  const clamped =
+    clampedCandidates.length !== candidates.length ||
+    confidence === null;
+  return {
+    proposalValid: !clamped,
+    clampReasons: clamped
+      ? [
+          ...(confidence === null ? ["invalid_confidence"] : []),
+          ...(clampedCandidates.length !== candidates.length ? ["unknown_anchor"] : []),
+        ]
+      : [],
+    value: {
+      ...validation.value,
+      confidence: confidence ?? 0,
+      candidates: clampedCandidates,
+    },
+  };
+}
 
 const routingRequestSchema = createStrictObjectSchema({
   schemaId: "agent.handoff.routing.request",

@@ -16,6 +16,13 @@ import { classifyUserMessage, applyUserTurn, selectReplyAnchor, detectOfferInTex
 import { evaluateCapabilityApprovalRequirement } from './extension-gateway.mjs';
 import { parseModelProposal, expandTemplate, validateSteps } from './workflow-engine.mjs';
 import { normalizeToolWorkflowError } from './tool-workflow-error-normalizer.mjs';
+import {
+    parseJsonProposalText,
+    routerProposalSchema,
+    validateWorkflowPlannerProposal,
+    failureExplainerSchema,
+    normalizeConfidence,
+} from './proposal-contracts.mjs';
 
 const repairPhrasingSchema = createStrictObjectSchema({
     schemaId: 'orchestrator.repair.phrasing',
@@ -50,18 +57,6 @@ const delegationStateSchema = createStrictObjectSchema({
         forward_skills: stringArrayField({ minItems: 0, required: false }),
         model_override: stringField({ minLength: 1, required: false }),
         pinnedProvider: stringField({ minLength: 1, required: false })
-    }
-});
-
-const routerDecisionSchema = createStrictObjectSchema({
-    schemaId: 'orchestrator.router.decision',
-    fields: {
-        decision: enumField(["respond", "delegate", "tool", "workflow", "clarify"]),
-        target: jsonField({ required: false }),
-        confidence: jsonField(),
-        rationale: stringField({ minLength: 1 }),
-        references: jsonField({ required: false }),
-        scores: jsonField({ required: false }),
     }
 });
 
@@ -1827,10 +1822,12 @@ export function createOrchestrator({
                                 confidenceThreshold: ROUTER_CONFIDENCE_THRESHOLD,
                             })}`,
                     });
-                    const parsed = parseJsonWithSchema(routerResponse?.text || "{}", routerDecisionSchema);
-                    const confidence = typeof parsed.confidence === "number" ? parsed.confidence : Number(parsed.confidence);
-                    if (Number.isFinite(confidence)) {
-                        routerDecision = { ...parsed, confidence };
+                    const routerValidation = parseJsonProposalText(routerResponse?.text || "{}", routerProposalSchema);
+                    if (routerValidation.valid) {
+                        const confidence = normalizeConfidence(routerValidation.value.confidence);
+                        if (confidence !== null) {
+                            routerDecision = { ...routerValidation.value, confidence };
+                        }
                     }
                 } catch {
                     routerDecision = null;
@@ -1918,6 +1915,9 @@ export function createOrchestrator({
                 llmScores: llmRouting.scores,
                 fusedScores,
                 llmConfidence: llmRouting.confidence,
+                proposalType: "routing",
+                proposalValid: hasValidRouterDecision,
+                clampReasons: hasValidRouterDecision ? [] : ["schema_invalid_or_unavailable"],
                 decisionMargin: fusedTop.margin,
                 forcedByPending: forcedRoutingDecision !== null,
                 timestampMs: now(),
@@ -2520,10 +2520,37 @@ ${routingRecommendation || ""}`;
                 }
 
                 if (actionMatch) {
-                    const proposal = parseModelProposal(actionMatch[0]);
-                    if (!proposal || proposal.error) return { status: 'error', text: "⚠️ Failed to parse action proposal" };
+                    let workflowSteps = null;
+                    let proposalValidation = { proposalType: "workflow", proposalValid: true, clampReasons: [] };
+                    const actionJson = actionMatch[1]?.trim();
+                    try {
+                        const parsedAction = JSON.parse(actionJson);
+                        const workflowPlannerValidation = validateWorkflowPlannerProposal(parsedAction);
+                        if (workflowPlannerValidation.valid) {
+                            workflowSteps = workflowPlannerValidation.value.steps.map((step) => ({
+                                extensionId: step.extensionId,
+                                capabilityId: step.capabilityId,
+                                args: step.args,
+                            }));
+                        } else {
+                            proposalValidation = {
+                                proposalType: "workflow",
+                                proposalValid: false,
+                                clampReasons: workflowPlannerValidation.clampReasons,
+                            };
+                            const legacyProposal = parseModelProposal(actionMatch[0]);
+                            if (!legacyProposal || legacyProposal.error) {
+                                return { status: 'clarification_needed', text: "I need a clearer workflow plan before I can run tools safely." };
+                            }
+                            workflowSteps = expandTemplate(legacyProposal.templateId, legacyProposal.args);
+                        }
+                    } catch {
+                        const proposal = parseModelProposal(actionMatch[0]);
+                        if (!proposal || proposal.error) return { status: 'clarification_needed', text: "I need a clearer workflow plan before I can run tools safely." };
+                        proposalValidation = { proposalType: "workflow", proposalValid: false, clampReasons: ["schema_invalid"] };
+                        workflowSteps = expandTemplate(proposal.templateId, proposal.args);
+                    }
 
-                    const workflowSteps = expandTemplate(proposal.templateId, proposal.args);
                     const risk = evaluateWorkflowRisk(workflowSteps);
                     const principal = { userId, sessionId: polarSessionId };
                     const pendingRequirements = checkGrants(risk.requirements, principal);
@@ -2572,6 +2599,7 @@ ${routingRecommendation || ""}`;
                             dataEgress: risk.dataEgress,
                             requirements: pendingRequirements
                         },
+                        ...proposalValidation,
                         useInlineReply: currentTurnAnchor ?? false,
                         anchorMessageId: currentAnchorMessageId
                     };
@@ -3100,19 +3128,47 @@ ${routingRecommendation || ""}`;
                 );
                 const normalizedFailures = toolResults.filter((result) => result.status === 'error' && typeof result.category === 'string');
                 const shouldUseDeterministicFailureText = normalizedFailures.length > 0;
-                const responseText = shouldUseDeterministicFailureText
-                    ? normalizedFailures
+                let shapedFailureSummary = "Execution complete.";
+                let failureProposalValid = false;
+                let failureClampReasons = [];
+                if (shouldUseDeterministicFailureText) {
+                    shapedFailureSummary = normalizedFailures
                         .map((failure) => `- ${failure.output}`)
-                        .join('\n')
-                    : (await providerGateway.generate({
+                        .join('\n');
+                    failureProposalValid = true;
+                } else {
+                    const failureResponse = await providerGateway.generate({
                         executionType: "handoff",
                         providerId: activeDelegation?.pinnedProvider || profile.profileConfig?.modelPolicy?.providerId || "openai",
                         model: activeDelegation?.model_override || profile.profileConfig?.modelPolicy?.modelId || "gpt-4.1-mini",
                         system: finalSystemPrompt,
                         messages: historyData?.items ? historyData.items.map(m => ({ role: m.role, content: m.text })) : [],
-                        prompt: `Analyze these execution results and summarize for the user. Do NOT hide any failures listed in the header.\n\n${deterministicHeader}`
-                    }))?.text || "Execution complete.";
-                const cleanText = responseText.replace(/<polar_action>[\s\S]*?<\/polar_action>/, '').replace(/<thread_state>[\s\S]*?<\/thread_state>/, '').trim();
+                        prompt: `Analyze these execution results and summarize for the user. Return strict JSON only with keys summary,suggestedNextStep,canRetry,detailLevel,detailedDiagnostic. Do NOT hide failures listed in the header.\n\n${deterministicHeader}`
+                    });
+                    shapedFailureSummary = typeof failureResponse?.text === 'string' ? failureResponse.text : "Execution complete.";
+                    const validation = parseJsonProposalText(shapedFailureSummary, failureExplainerSchema);
+                    failureProposalValid = validation.valid;
+                    failureClampReasons = validation.clampReasons;
+                    if (validation.valid) {
+                        shapedFailureSummary = validation.value.summary;
+                    } else {
+                        shapedFailureSummary = shapedFailureSummary.trim().length > 0
+                            ? shapedFailureSummary
+                            : "I hit an execution failure. Please review the failed steps above and retry once inputs are corrected.";
+                    }
+                }
+                await emitLineageEvent({
+                    eventType: "proposal.validation",
+                    sessionId: polarSessionId,
+                    userId,
+                    workflowId,
+                    runId,
+                    proposalType: "failure_explain",
+                    proposalValid: failureProposalValid,
+                    clampReasons: failureClampReasons,
+                    timestampMs: now(),
+                });
+                const cleanText = shapedFailureSummary.replace(/<polar_action>[\s\S]*?<\/polar_action>/, '').replace(/<thread_state>[\s\S]*?<\/thread_state>/, '').trim();
 
                 const assistantMessageId = `msg_ast_${crypto.randomUUID()}`;
                 await chatManagementGateway.appendMessage({

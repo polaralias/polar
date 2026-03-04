@@ -13,6 +13,11 @@ import {
   numberField,
   stringField,
 } from "@polar/domain";
+import {
+  validateSchemaProposal,
+  automationPlannerSchema,
+  normalizeConfidence,
+} from "./proposal-contracts.mjs";
 
 const automationDraftRequestSchema = createStrictObjectSchema({
   schemaId: "automation.gateway.draft.request",
@@ -287,6 +292,55 @@ function mergeDraft(base, override) {
   return next;
 }
 
+function adaptAutomationPlannerProposal(baseDraft, proposal) {
+  const validation = validateSchemaProposal(proposal, automationPlannerSchema);
+  if (!validation.valid) {
+    return {
+      draft: {
+        ...baseDraft,
+      },
+    };
+  }
+
+  const proposed = validation.value;
+  const confidence = normalizeConfidence(proposed.confidence);
+  const decision = proposed.decision;
+  const shouldClampToClarify = confidence === null || (decision === "propose" && confidence < 0.35);
+  if (shouldClampToClarify) {
+    return {
+      draft: {
+        ...baseDraft,
+        status: "drafted",
+        summary: proposed.summary,
+        reason: proposed.clarificationQuestion || "Need confirmation before creating automation.",
+      },
+    };
+  }
+
+  if (decision === "skip") {
+    return {
+      draft: {
+        ...baseDraft,
+        status: "rejected",
+        reason: proposed.summary,
+      },
+    };
+  }
+
+  return {
+    draft: {
+      ...baseDraft,
+      status: "drafted",
+      summary: proposed.summary,
+      triggerType: proposed.schedule?.kind === "event" ? "event" : "schedule",
+      schedule: proposed.schedule,
+      runScope: proposed.runScope,
+      selectedModelLane: baseDraft.selectedModelLane,
+      approvalRequired: proposed.riskHints?.requiresApproval === true,
+    },
+  };
+}
+
 /**
  * @param {unknown} executionPlan
  * @returns {number}
@@ -543,6 +597,13 @@ export function createAutomationGateway({
             ...input,
             baseDraft,
           });
+          if (
+            isPlainObject(authoringResult) &&
+            (Object.prototype.hasOwnProperty.call(authoringResult, "decision") ||
+              Object.prototype.hasOwnProperty.call(authoringResult, "riskHints"))
+          ) {
+            return adaptAutomationPlannerProposal(baseDraft, authoringResult).draft;
+          }
           return mergeDraft(baseDraft, authoringResult);
         },
       );
