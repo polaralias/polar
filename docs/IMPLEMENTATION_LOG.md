@@ -2777,3 +2777,33 @@ Commands run and outcomes:
 
 ### Next
 - Wire structured telemetry fields (`proposal_type`, `llm_confidence`, `proposal_valid`, `final_decision`) for automation planner decisions into lineage/usage telemetry for dashboard visibility.
+
+## 2026-03-04 (UTC) - Prompt IP-05: Failure explainer and user-requested diagnostics
+
+**Branch:** `main`  
+**Commit:** `not committed`  
+**Prompt reference:** `IP-05: Failure explainer and user-requested diagnostics`  
+**Specs referenced:**
+- `docs/specs/LLM_FIRST_PROPOSAL_AND_POLICY_ENFORCEMENT.md`
+- `docs/specs/TOOL_FAILURE_NORMALISATION.md`
+- `docs/specs/ORCHESTRATOR_OUTPUT_RULE.md`
+- `docs/specs/WORKFLOW_EXECUTION_INTEGRITY.md`
+- `docs/prompts/FAILURE_EXPLAINER_PROMPT_CONTRACT.md`
+
+### Summary
+- Added safe diagnostic fields to normalized tool/workflow error envelopes (`safeDiagnostic`) with category + retry flags + normalized first-line message, while preserving typed error categories.
+- Updated workflow failure synthesis to use a failure-explainer proposal call with schema validation against normalized envelopes and deterministic fallback when proposal generation/validation fails.
+- Added explicit follow-up handling for error inquiry turns that request exact diagnostics; responses now return controlled normalized detail from stored safe diagnostics.
+- Preserved pending-state cleanup behavior by keeping deterministic normalization-based clearPending handling in workflow execution paths.
+- Expanded tests for default-safe failure behavior, schema-backed failure explainer summaries, and exact-error follow-up diagnostics.
+
+### Tests and validation
+- `node --test tests/runtime-core-tool-workflow-error-normalizer.test.mjs tests/runtime-core-orchestrator-workflow-validation.test.mjs`
+- `npm test` (suite output showed passing subtests; process remained alive in this environment after test output)
+- `npm run check:boundaries`
+
+### Blockers
+- `npm test` process did not exit automatically in this environment (likely lingering handles); verification based on emitted passing subtest output.
+
+### Next
+- Ensure failure explainer lineage metadata includes explicit `final_decision`/`outcome_status` fields for dashboard rollups in a follow-up telemetry prompt.

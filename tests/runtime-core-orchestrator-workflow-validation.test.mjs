@@ -752,6 +752,171 @@ test("tool unavailable returns stable response and clears pending slot state", a
   });
 });
 
+
+
+test("workflow failure summary uses validated failure explainer proposal", async () => {
+  await withUnrefedIntervals(async () => {
+    let callIndex = 0;
+    const orchestrator = createOrchestrator({
+      profileResolutionGateway: {
+        async resolve() {
+          return {
+            profileConfig: {
+              systemPrompt: "You are a test assistant.",
+              modelPolicy: { providerId: "test-provider", modelId: "test-model" },
+            },
+          };
+        },
+      },
+      chatManagementGateway: {
+        async appendMessage() {
+          return { status: "appended" };
+        },
+        async getSessionHistory() {
+          return { items: [] };
+        },
+      },
+      providerGateway: {
+        async generate() {
+          callIndex += 1;
+          if (callIndex === 1) {
+            return {
+              text: '<polar_action>{"template":"lookup_weather","args":{"location":"Swansea"}}</polar_action>',
+            };
+          }
+          return {
+            text: JSON.stringify({
+              summary: "I couldn't finish because the weather capability isn't available here.",
+              suggestedNextStep: "Install or enable the weather extension and retry.",
+              canRetry: false,
+              detailLevel: "safe",
+            }),
+          };
+        },
+      },
+      extensionGateway: {
+        getState() {
+          return {
+            extensionId: "weather",
+            lifecycleState: "enabled",
+            capabilities: [{ capabilityId: "lookup_weather", riskLevel: "read", sideEffects: "none" }],
+          };
+        },
+        listStates() {
+          return [];
+        },
+        async execute() {
+          throw new Error("Invalid extension.gateway.execute.request");
+        },
+      },
+      approvalStore: createApprovalStore(),
+      gateway: {
+        async getConfig() {
+          return { status: "not_found" };
+        },
+      },
+      now: Date.now,
+    });
+
+    const result = await orchestrator.orchestrate({
+      sessionId: "session-failure-explainer",
+      userId: "user-failure-explainer",
+      text: "run weather",
+      messageId: "m-failure-explainer",
+    });
+
+    assert.equal(result.status, "completed");
+    assert.match(result.text, /weather capability isn't available here/i);
+  });
+});
+
+test("error inquiry with exact detail request returns controlled diagnostics", async () => {
+  await withUnrefedIntervals(async () => {
+    const appendedMessages = [];
+    let callIndex = 0;
+    const orchestrator = createOrchestrator({
+      profileResolutionGateway: {
+        async resolve() {
+          return {
+            profileConfig: {
+              systemPrompt: "You are a test assistant.",
+              modelPolicy: { providerId: "test-provider", modelId: "test-model" },
+            },
+          };
+        },
+      },
+      chatManagementGateway: {
+        async appendMessage(message) {
+          appendedMessages.push(message);
+          return { status: "appended" };
+        },
+        async getSessionHistory() {
+          return { items: [] };
+        },
+      },
+      providerGateway: {
+        async generate() {
+          callIndex += 1;
+          if (callIndex === 1) {
+            return {
+              text: '<polar_action>{"template":"lookup_weather","args":{"location":"Swansea"}}</polar_action>',
+            };
+          }
+          return {
+            text: JSON.stringify({
+              summary: "Safe explanation.",
+              canRetry: false,
+              detailLevel: "safe",
+            }),
+          };
+        },
+      },
+      extensionGateway: {
+        getState() {
+          return {
+            extensionId: "weather",
+            lifecycleState: "enabled",
+            capabilities: [{ capabilityId: "lookup_weather", riskLevel: "read", sideEffects: "none" }],
+          };
+        },
+        listStates() {
+          return [];
+        },
+        async execute() {
+          throw new Error("Invalid extension.gateway.execute.request\n at stack line");
+        },
+      },
+      approvalStore: createApprovalStore(),
+      gateway: {
+        async getConfig() {
+          return { status: "not_found" };
+        },
+      },
+      now: Date.now,
+    });
+
+    await orchestrator.orchestrate({
+      sessionId: "session-exact-error",
+      userId: "user-exact-error",
+      text: "run weather",
+      messageId: "m-exact-error-1",
+    });
+
+    const result = await orchestrator.orchestrate({
+      sessionId: "session-exact-error",
+      userId: "user-exact-error",
+      text: "show exact error",
+      messageId: "m-exact-error-2",
+    });
+
+    assert.equal(result.status, "completed");
+    assert.match(result.text, /Category: ToolUnavailable/);
+    assert.match(result.text, /Normalized error: Invalid extension.gateway.execute.request/);
+    const hasLlmFollowupCall = appendedMessages.filter((message) => message.role === "assistant").some((message) => /controlled diagnostic detail/i.test(message.text));
+    assert.equal(hasLlmFollowupCall, true);
+  });
+});
+
 test("workflow execution remains stable when chat appends reject internal system markers", async () => {
   await withUnrefedIntervals(async () => {
     const orchestrator = createOrchestrator({

@@ -732,7 +732,8 @@ const LOW_INFO = /^(more|that|yeah|ye|ok|okay|sure|yep|yh|ya|go on|\?|please|rig
 /** Short error-inquiry words: must be exact match to prevent false positives on normal questions. */
 const ERROR_INQUIRY_SHORT = /^(why|huh|wtf|wth)$/i;
 /** Multi-word error inquiry phrases: leading-anchored, allow trailing prepositions ("for", "about"). */
-const ERROR_INQUIRY_LONG = /^(what\s*happened|what\s*went\s*wrong|what the|explain the (error|crash|failure)|what was that|what\s*error|show me the error|what was the workflow|what did you (try|do|run)|what failed|what crashed|what broke)/i;
+const ERROR_INQUIRY_LONG = /^(what\s*happened|what\s*went\s*wrong|what the|explain the (error|crash|failure)|what was that|what\s*error|show me the error|show exact error|show the exact error|what was the workflow|what did you (try|do|run)|what failed|what crashed|what broke)/i;
+const ERROR_DETAIL_REQUEST = /(show|give|include|tell)\s+(me\s+)?(the\s+)?(exact|full|raw)\s+(error|diagnostic|message|details)|exact\s+error|raw\s+error|full\s+error|full\s+diagnostic/i;
 
 /**
  * Maximum age (ms) for a lastError to be considered "recent" for auto-attachment.
@@ -1160,6 +1161,7 @@ export function classifyUserMessage({ text = "", sessionState = { threads: [], a
   // Note: "?" normalizes to "" after punctuation strip, so check raw text as fallback
   const isErrorInquiry = ERROR_INQUIRY_SHORT.test(normalized) || ERROR_INQUIRY_LONG.test(normalized) || (text.trim() === '?');
   if (isErrorInquiry) {
+    const detailRequested = ERROR_DETAIL_REQUEST.test(text);
     // Find the most recent thread with a lastError within TTL
     const errorThread = [...sessionState.threads].reverse().find(t => {
       if (!t.lastError) return false;
@@ -1169,7 +1171,8 @@ export function classifyUserMessage({ text = "", sessionState = { threads: [], a
       return {
         type: 'error_inquiry',
         targetThreadId: errorThread.id,
-        errorDetail: errorThread.lastError
+        errorDetail: errorThread.lastError,
+        detailRequested,
       };
     }
   }

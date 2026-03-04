@@ -71,6 +71,49 @@ function normalizeJsonText(rawText) {
 
 /**
  * @param {string} text
+ * @returns {boolean}
+ */
+function isExactErrorDetailRequest(text) {
+    if (typeof text !== "string") {
+        return false;
+    }
+    return /(show|give|include|tell)\s+(me\s+)?(the\s+)?(exact|full|raw)\s+(error|diagnostic|message|details)|exact\s+error|raw\s+error|full\s+error|full\s+diagnostic/i.test(text);
+}
+
+/**
+ * @param {Record<string, unknown>} errorDetail
+ * @returns {string|null}
+ */
+function buildControlledDiagnosticText(errorDetail) {
+    if (!errorDetail || typeof errorDetail !== "object") {
+        return null;
+    }
+    const safeDiagnostic =
+        errorDetail.safeDiagnostic && typeof errorDetail.safeDiagnostic === "object"
+            ? errorDetail.safeDiagnostic
+            : null;
+    const category = typeof errorDetail.category === "string"
+        ? errorDetail.category
+        : typeof safeDiagnostic?.category === "string"
+            ? safeDiagnostic.category
+            : null;
+    const normalizedMessage = typeof safeDiagnostic?.normalizedErrorMessage === "string"
+        ? safeDiagnostic.normalizedErrorMessage
+        : typeof errorDetail.output === "string"
+            ? errorDetail.output
+            : null;
+    if (!category && !normalizedMessage) {
+        return null;
+    }
+    return [
+        "Here is the controlled diagnostic detail for the last failure:",
+        category ? `- Category: ${category}` : null,
+        normalizedMessage ? `- Normalized error: ${normalizedMessage}` : null,
+    ].filter(Boolean).join("\n");
+}
+
+/**
+ * @param {string} text
  * @returns {{ hour: number, minute: number } | null}
  */
 function parseTimeOfDay(text) {
@@ -1905,6 +1948,34 @@ export function createOrchestrator({
                     }
                     routingRecommendation = `${routingRecommendation ? `${routingRecommendation}\n` : ""}[FOCUS_HINT] ${focusHints.join(" ")}`;
                 }
+
+                if (classification.type === "error_inquiry") {
+                    const detailRequested = classification.detailRequested === true || isExactErrorDetailRequest(text);
+                    const controlledDiagnosticText = detailRequested
+                        ? buildControlledDiagnosticText(classification.errorDetail || {})
+                        : null;
+                    if (controlledDiagnosticText) {
+                        const assistantMessageId = `msg_a_${crypto.randomUUID()}`;
+                        if (!suppressResponsePersist) {
+                            await chatManagementGateway.appendMessage({
+                                sessionId: polarSessionId,
+                                userId: "assistant",
+                                messageId: assistantMessageId,
+                                role: "assistant",
+                                text: controlledDiagnosticText,
+                                timestampMs: now(),
+                                ...(inboundThreadId !== undefined ? { threadId: inboundThreadId } : {}),
+                                ...(inboundMetadata !== undefined ? { metadata: inboundMetadata } : {}),
+                            });
+                        }
+                        return {
+                            status: "completed",
+                            text: controlledDiagnosticText,
+                            assistantMessageId,
+                            useInlineReply: anchor.useInlineReply,
+                        };
+                    }
+                }
             }
 
             const agentRegistry = await loadAgentRegistry();
@@ -3319,6 +3390,7 @@ ${routingRecommendation || ""}`;
                             output: normalized.userMessage,
                             category: normalized.category,
                             retryEligible: normalized.retryEligible,
+                            safeDiagnostic: normalized.safeDiagnostic,
                         });
                         if (normalized.clearPending) {
                             clearTerminalPendingState(polarSessionId, targetThreadId);
@@ -3343,6 +3415,9 @@ ${routingRecommendation || ""}`;
                                     runId, workflowId, threadId: targetThreadId,
                                     extensionId, capabilityId,
                                     output: normalized.userMessage,
+                                    category: normalized.category,
+                                    retryEligible: normalized.retryEligible,
+                                    safeDiagnostic: normalized.safeDiagnostic,
                                     messageId: `msg_err_${crypto.randomUUID()}`, timestampMs: now()
                                 };
                                 thread.status = 'failed';
@@ -3435,34 +3510,46 @@ ${routingRecommendation || ""}`;
                     effectivePersonality,
                 );
                 const normalizedFailures = toolResults.filter((result) => result.status === 'error' && typeof result.category === 'string');
-                const shouldUseDeterministicFailureText = normalizedFailures.length > 0;
+                const hasAnyFailure = toolResults.some((result) => result.status === 'failed' || result.status === 'error');
                 let shapedFailureSummary = "Execution complete.";
                 let failureProposalValid = false;
                 let failureClampReasons = [];
-                if (shouldUseDeterministicFailureText) {
-                    shapedFailureSummary = normalizedFailures
-                        .map((failure) => `- ${failure.output}`)
-                        .join('\n');
-                    failureProposalValid = true;
-                } else {
-                    const failureResponse = await providerGateway.generate({
-                        executionType: "handoff",
-                        providerId: activeDelegation?.pinnedProvider || profile.profileConfig?.modelPolicy?.providerId || "openai",
-                        model: activeDelegation?.model_override || profile.profileConfig?.modelPolicy?.modelId || "gpt-4.1-mini",
-                        system: finalSystemPrompt,
-                        messages: historyData?.items ? historyData.items.map(m => ({ role: m.role, content: m.text })) : [],
-                        prompt: `Analyze these execution results and summarize for the user. Return strict JSON only with keys summary,suggestedNextStep,canRetry,detailLevel,detailedDiagnostic. Do NOT hide failures listed in the header.\n\n${deterministicHeader}`
-                    });
-                    shapedFailureSummary = typeof failureResponse?.text === 'string' ? failureResponse.text : "Execution complete.";
-                    const validation = parseJsonProposalText(shapedFailureSummary, failureExplainerSchema);
-                    failureProposalValid = validation.valid;
-                    failureClampReasons = validation.clampReasons;
-                    if (validation.valid) {
-                        shapedFailureSummary = validation.value.summary;
-                    } else {
-                        shapedFailureSummary = shapedFailureSummary.trim().length > 0
-                            ? shapedFailureSummary
-                            : "I hit an execution failure. Please review the failed steps above and retry once inputs are corrected.";
+                if (hasAnyFailure) {
+                    const deterministicFailureFallback = normalizedFailures.length > 0
+                        ? normalizedFailures.map((failure) => `- ${failure.output}`).join('\n')
+                        : "I hit an execution failure. Please review the failed steps above and retry once inputs are corrected.";
+                    const normalizedEnvelope = normalizedFailures.map((failure) => ({
+                        category: failure.category,
+                        retryEligible: failure.retryEligible === true,
+                        clearPending: true,
+                        normalizedErrorMessage:
+                            typeof failure.safeDiagnostic?.normalizedErrorMessage === 'string'
+                                ? failure.safeDiagnostic.normalizedErrorMessage
+                                : failure.output,
+                        extensionId: failure.safeDiagnostic?.extensionId,
+                        capabilityId: failure.safeDiagnostic?.capabilityId,
+                    }));
+                    try {
+                        const failureResponse = await providerGateway.generate({
+                            executionType: "handoff",
+                            providerId: activeDelegation?.pinnedProvider || profile.profileConfig?.modelPolicy?.providerId || "openai",
+                            model: activeDelegation?.model_override || profile.profileConfig?.modelPolicy?.modelId || "gpt-4.1-mini",
+                            system: finalSystemPrompt,
+                            messages: historyData?.items ? historyData.items.map(m => ({ role: m.role, content: m.text })) : [],
+                            prompt:
+                                `You are the failure explainer. Return strict JSON only with keys summary,suggestedNextStep,canRetry,detailLevel,detailedDiagnostic. ` +
+                                `Default to safe detail level. Use only these normalized error envelopes: ${JSON.stringify(normalizedEnvelope)}. ` +
+                                `Do not include stack traces or secret values.\n\n${deterministicHeader}`
+                        });
+                        shapedFailureSummary = typeof failureResponse?.text === 'string' ? failureResponse.text : deterministicFailureFallback;
+                        const validation = parseJsonProposalText(shapedFailureSummary, failureExplainerSchema);
+                        failureProposalValid = validation.valid;
+                        failureClampReasons = validation.clampReasons;
+                        shapedFailureSummary = validation.valid
+                            ? validation.value.summary
+                            : deterministicFailureFallback;
+                    } catch {
+                        shapedFailureSummary = deterministicFailureFallback;
                     }
                 }
                 await emitLineageEvent({
@@ -3513,6 +3600,9 @@ ${routingRecommendation || ""}`;
                             runId, workflowId, threadId: targetThreadId,
                             extensionId: 'orchestrator', capabilityId: 'executeWorkflow',
                             output: normalized.userMessage,
+                            category: normalized.category,
+                            retryEligible: normalized.retryEligible,
+                            safeDiagnostic: normalized.safeDiagnostic,
                             messageId: `msg_err_${crypto.randomUUID()}`, timestampMs: now()
                         };
                         internalMessageId = thread.lastError.messageId;
