@@ -31,3 +31,18 @@ test("normalizer classifies append contract failures as internal contract bugs",
   assert.equal(normalized.retryEligible, false);
   assert.match(normalized.userMessage, /Something broke internally/);
 });
+
+
+test("normalizer exposes controlled safe diagnostics without stack trace", () => {
+  const normalized = normalizeToolWorkflowError({
+    error: new Error("Invalid extension.gateway.execute.request\n at secret stack line"),
+    extensionId: "weather",
+    capabilityId: "lookup_weather",
+  });
+
+  assert.equal(normalized.safeDiagnostic.category, "ToolUnavailable");
+  assert.equal(
+    normalized.safeDiagnostic.normalizedErrorMessage,
+    "Invalid extension.gateway.execute.request",
+  );
+});

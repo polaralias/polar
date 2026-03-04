@@ -23,6 +23,25 @@ function errorMessage(error) {
 }
 
 /**
+ * @param {string} message
+ * @returns {string}
+ */
+function normalizeDiagnosticMessage(message) {
+  if (typeof message !== "string") {
+    return "Unknown error";
+  }
+  const firstLine = message
+    .replace(/\r/g, "\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .find((line) => line.length > 0);
+  if (!firstLine) {
+    return "Unknown error";
+  }
+  return firstLine.slice(0, 240);
+}
+
+/**
  * @param {unknown} error
  * @returns {ToolWorkflowErrorCategory}
  */
@@ -79,6 +98,7 @@ function classify(error) {
 export function normalizeToolWorkflowError(params) {
   const category = classify(params.error);
   const message = errorMessage(params.error);
+  const normalizedDiagnosticMessage = normalizeDiagnosticMessage(message);
   const retryEligible = category === "ToolTransientError";
   const clearPending = category !== "ToolTransientError" && category !== "ToolValidationError";
 
@@ -111,6 +131,14 @@ export function normalizeToolWorkflowError(params) {
           : undefined,
       errorMessage: message.slice(0, 300),
       timestampMs: Date.now(),
+    },
+    safeDiagnostic: {
+      category,
+      retryEligible,
+      clearPending,
+      normalizedErrorMessage: normalizedDiagnosticMessage,
+      extensionId: params.extensionId,
+      capabilityId: params.capabilityId,
     },
   };
 }
