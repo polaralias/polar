@@ -109,12 +109,20 @@ export function normalizeToolWorkflowError(params) {
     ToolValidationError: "I couldn't run that because required inputs were invalid or missing.",
     InternalContractBug: "Something broke internally while running that workflow step. I've logged it.",
   };
+  const target =
+    params.extensionId && params.capabilityId
+      ? `${params.extensionId}.${params.capabilityId}`
+      : params.capabilityId || params.extensionId || "workflow step";
+  const diagnosticSuffix =
+    normalizedDiagnosticMessage && normalizedDiagnosticMessage !== "Unknown error"
+      ? ` (${normalizedDiagnosticMessage})`
+      : "";
 
   return {
     category,
     retryEligible,
     clearPending,
-    userMessage: userMessageByCategory[category],
+    userMessage: `${userMessageByCategory[category]} [${target}]${diagnosticSuffix}`,
     auditMetadata: {
       category,
       retryEligible,

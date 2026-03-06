@@ -122,6 +122,15 @@ test("orchestrator includes registered agents in context and clamps delegated mo
 
   const executed = await orchestrator.executeWorkflow(proposed.workflowId);
   assert.equal(executed.status, "completed");
+  const diagnostics = await orchestrator.getThreadStateDiagnostics({
+    sessionId: "session-agent-1",
+  });
+  const workflowRun = diagnostics.workflowRuns.find(
+    (run) => run.workflowId === proposed.workflowId,
+  );
+  assert.ok(workflowRun);
+  assert.equal(workflowRun.status, "completed");
+  assert.equal(workflowRun.progress, 100);
 
   const delegationEvent = lineageEvents.find(
     (event) => event?.eventType === "delegation.activated",

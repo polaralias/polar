@@ -1357,6 +1357,7 @@ export function createOrchestrator({
     const PENDING_WORKFLOWS = new Map();
     const IN_FLIGHT_WORKFLOWS = new Map();
     const WORKFLOW_CANCEL_REQUESTS = new Map();
+    const WORKFLOW_RUN_STATUS = new Map();
     const WORKFLOW_TTL_MS = 30 * 60 * 1000;
     const WORKFLOW_MAX_SIZE = 100;
     const PENDING_AUTOMATION_PROPOSALS = new Map();
@@ -1378,6 +1379,11 @@ export function createOrchestrator({
         for (const [id, entry] of WORKFLOW_CANCEL_REQUESTS) {
             if (currentTime - entry.requestedAt > WORKFLOW_TTL_MS) {
                 WORKFLOW_CANCEL_REQUESTS.delete(id);
+            }
+        }
+        for (const [id, entry] of WORKFLOW_RUN_STATUS) {
+            if (currentTime - (entry.updatedAt || entry.startedAt || 0) > WORKFLOW_TTL_MS) {
+                WORKFLOW_RUN_STATUS.delete(id);
             }
         }
         for (const [id, entry] of PENDING_AUTOMATION_PROPOSALS) {
@@ -3528,11 +3534,40 @@ ${routingRecommendation || ""}`;
                     return String(value).slice(0, 300);
                 }
             };
+            const updateWorkflowRunStatus = (patch = {}) => {
+                const existing = WORKFLOW_RUN_STATUS.get(workflowId) || {};
+                const merged = {
+                    workflowId,
+                    runId,
+                    sessionId: polarSessionId,
+                    threadId: targetThreadId,
+                    startedAt: existing.startedAt || now(),
+                    updatedAt: now(),
+                    totalSteps: workflowSteps.length,
+                    completedSteps: existing.completedSteps || 0,
+                    failedSteps: existing.failedSteps || 0,
+                    progress: existing.progress || 0,
+                    status: existing.status || 'in_progress',
+                    lastStep: existing.lastStep || null,
+                    lastError: existing.lastError || null,
+                    ...patch,
+                };
+                WORKFLOW_RUN_STATUS.set(workflowId, merged);
+                return merged;
+            };
             const destructiveRequirementKeys = new Set(
                 (Array.isArray(risk?.requirements) ? risk.requirements : [])
                     .filter(req => req.riskLevel === 'destructive')
                     .map(req => `${req.extensionId}::${req.capabilityId}`)
             );
+            updateWorkflowRunStatus({
+                status: 'in_progress',
+                completedSteps: 0,
+                failedSteps: 0,
+                progress: workflowSteps.length > 0 ? 0 : 100,
+                lastStep: null,
+                lastError: null,
+            });
 
             // Mark thread as in-flight and ensure it's active
             if (st && targetThreadId) {
@@ -3623,12 +3658,22 @@ ${routingRecommendation || ""}`;
                 const toolResults = [];
                 let wasCancelled = isCancellationRequested();
 
-                for (const step of workflowSteps) {
+                for (const [stepIndex, step] of workflowSteps.entries()) {
                     if (wasCancelled || isCancellationRequested()) {
                         wasCancelled = true;
                         break;
                     }
                     const { capabilityId, extensionId, args: parsedArgs = {}, extensionType = "mcp" } = step;
+                    updateWorkflowRunStatus({
+                        status: 'in_progress',
+                        lastStep: {
+                            index: stepIndex,
+                            capabilityId,
+                            extensionId,
+                            status: 'running',
+                            at: now(),
+                        },
+                    });
 
                     if (capabilityId === "delegate_to_agent") {
                         const agentId = typeof parsedArgs.agentId === "string" ? parsedArgs.agentId : "";
@@ -3745,6 +3790,19 @@ ${routingRecommendation || ""}`;
                             (rejectedSkills.length ? ` Clamped skills: ${rejectedSkills.join(", ")}.` : "") +
                             (modelRejectedReason ? ` ${modelRejectedReason}` : "");
                         toolResults.push({ tool: capabilityId, status: "delegated", output });
+                        const completedSteps = toolResults.filter((result) => result.status !== 'failed' && result.status !== 'error').length;
+                        updateWorkflowRunStatus({
+                            completedSteps,
+                            failedSteps: 0,
+                            progress: workflowSteps.length > 0 ? Math.round((completedSteps / workflowSteps.length) * 100) : 100,
+                            lastStep: {
+                                index: stepIndex,
+                                capabilityId,
+                                extensionId,
+                                status: 'delegated',
+                                at: now(),
+                            },
+                        });
 
                         await emitLineageEvent({
                             eventType: "delegation.activated",
@@ -3776,6 +3834,19 @@ ${routingRecommendation || ""}`;
                             authorityStates: listAuthorityStates()
                         });
                         toolResults.push({ tool: capabilityId, status: "completed", output: "Task completed." });
+                        const completedSteps = toolResults.filter((result) => result.status !== 'failed' && result.status !== 'error').length;
+                        updateWorkflowRunStatus({
+                            completedSteps,
+                            failedSteps: 0,
+                            progress: workflowSteps.length > 0 ? Math.round((completedSteps / workflowSteps.length) * 100) : 100,
+                            lastStep: {
+                                index: stepIndex,
+                                capabilityId,
+                                extensionId,
+                                status: 'completed',
+                                at: now(),
+                            },
+                        });
                         await emitLineageEvent({
                             eventType: "delegation.cleared",
                             sessionId: polarSessionId,
@@ -3812,6 +3883,31 @@ ${routingRecommendation || ""}`;
                         });
                         const stepStatus = output?.status || "completed";
                         toolResults.push({ tool: capabilityId, status: stepStatus, output: output?.output || output?.error || "Done." });
+                        const failedSteps = toolResults.filter((result) => result.status === 'failed' || result.status === 'error').length;
+                        const completedSteps = toolResults.length - failedSteps;
+                        updateWorkflowRunStatus({
+                            completedSteps,
+                            failedSteps,
+                            progress: workflowSteps.length > 0 ? Math.round((toolResults.length / workflowSteps.length) * 100) : 100,
+                            status: failedSteps > 0 ? 'failed' : 'in_progress',
+                            lastStep: {
+                                index: stepIndex,
+                                capabilityId,
+                                extensionId,
+                                status: stepStatus,
+                                at: now(),
+                            },
+                            ...(failedSteps > 0
+                                ? {
+                                      lastError: {
+                                          capabilityId,
+                                          extensionId,
+                                          message: toErrorSnippet(output?.error || output?.output, 'Unknown error'),
+                                          at: now(),
+                                      },
+                                  }
+                                : {}),
+                        });
 
                         // Record lastError on owning thread if step failed
                         if (stepStatus === 'failed' || stepStatus === 'error') {
@@ -3847,6 +3943,28 @@ ${routingRecommendation || ""}`;
                             category: normalized.category,
                             retryEligible: normalized.retryEligible,
                             safeDiagnostic: normalized.safeDiagnostic,
+                        });
+                        const failedSteps = toolResults.filter((result) => result.status === 'failed' || result.status === 'error').length;
+                        updateWorkflowRunStatus({
+                            status: 'failed',
+                            completedSteps: toolResults.length - failedSteps,
+                            failedSteps,
+                            progress: workflowSteps.length > 0 ? Math.round((toolResults.length / workflowSteps.length) * 100) : 100,
+                            lastStep: {
+                                index: stepIndex,
+                                capabilityId,
+                                extensionId,
+                                status: 'error',
+                                at: now(),
+                            },
+                            lastError: {
+                                capabilityId,
+                                extensionId,
+                                category: normalized.category,
+                                retryEligible: normalized.retryEligible,
+                                message: normalized.safeDiagnostic?.normalizedErrorMessage || normalized.userMessage,
+                                at: now(),
+                            },
                         });
                         if (normalized.clearPending) {
                             clearTerminalPendingState(polarSessionId, targetThreadId);
@@ -3914,6 +4032,10 @@ ${routingRecommendation || ""}`;
                     await persistSessionThreadsState(polarSessionId);
                 }
                 if (wasCancelled) {
+                    updateWorkflowRunStatus({
+                        status: 'cancelled',
+                        progress: 100,
+                    });
                     await emitLineageEvent({
                         eventType: "workflow.execution.cancelled",
                         sessionId: polarSessionId,
@@ -3943,6 +4065,12 @@ ${routingRecommendation || ""}`;
                     };
                 }
 
+                updateWorkflowRunStatus({
+                    status: anyFailed ? 'failed' : 'completed',
+                    completedSteps: toolResults.filter((result) => result.status !== 'failed' && result.status !== 'error').length,
+                    failedSteps: toolResults.filter((result) => result.status === 'failed' || result.status === 'error').length,
+                    progress: 100,
+                });
                 const deterministicHeader = "### 🛠️ Execution Results\n" + toolResults.map(r => (r.status === "failed" || r.status === "error" ? "❌ " : "✅ ") + `**${r.tool}**: ${typeof r.output === 'string' ? r.output.slice(0, 100) : 'Done.'}`).join("\n") + "\n\n";
                 await emitLineageEvent({
                     eventType: "workflow.execution.results",
@@ -4099,6 +4227,18 @@ ${routingRecommendation || ""}`;
                     capabilityId: 'executeWorkflow',
                     metadata: normalized.auditMetadata,
                 });
+                updateWorkflowRunStatus({
+                    status: 'failed',
+                    progress: 100,
+                    lastError: {
+                        capabilityId: 'executeWorkflow',
+                        extensionId: 'orchestrator',
+                        category: normalized.category,
+                        retryEligible: normalized.retryEligible,
+                        message: normalized.safeDiagnostic?.normalizedErrorMessage || normalized.userMessage,
+                        at: now(),
+                    },
+                });
                 return { status: 'error', text: normalized.userMessage, internalMessageId };
             } finally {
                 IN_FLIGHT_WORKFLOWS.delete(workflowId);
@@ -4212,6 +4352,7 @@ ${routingRecommendation || ""}`;
             const includeRoutingPending = parsed.includeRoutingPending !== false;
             const includePendingWorkflows = parsed.includePendingWorkflows !== false;
             const includeCancellationRequests = parsed.includeCancellationRequests !== false;
+            const includeWorkflowRuns = parsed.includeWorkflowRuns !== false;
 
             purgeTransientState();
             if (sessionId) {
@@ -4268,6 +4409,11 @@ ${routingRecommendation || ""}`;
                     }),
                 )
                 : [];
+            const workflowRuns = includeWorkflowRuns
+                ? [...WORKFLOW_RUN_STATUS.entries()]
+                    .filter(([, entry]) => !sessionId || entry?.sessionId === sessionId)
+                    .map(([, entry]) => Object.freeze(toJsonSafeValue(entry)))
+                : [];
 
             return Object.freeze({
                 status: "ok",
@@ -4276,10 +4422,12 @@ ${routingRecommendation || ""}`;
                 pendingRoutingCount: pendingRoutingStates.length,
                 pendingWorkflowCount: pendingWorkflows.length,
                 cancellationRequestCount: cancellationRequests.length,
+                workflowRunCount: workflowRuns.length,
                 sessions: Object.freeze(sessions),
                 pendingRoutingStates: Object.freeze(pendingRoutingStates),
                 pendingWorkflows: Object.freeze(pendingWorkflows),
                 cancellationRequests: Object.freeze(cancellationRequests),
+                workflowRuns: Object.freeze(workflowRuns),
             });
         },
 

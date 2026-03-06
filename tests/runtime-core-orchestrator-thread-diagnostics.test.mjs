@@ -107,5 +107,27 @@ test("thread diagnostics expose pending workflow and session thread snapshots", 
     assert.equal(afterCancel.status, "ok");
     assert.equal(afterCancel.pendingWorkflowCount, 0);
     assert.equal(afterCancel.sessionCount, 1);
+
+    const proposedSecond = await orchestrator.orchestrate({
+      sessionId: "session-thread-diag",
+      userId: "user-thread-diag",
+      text: "send status email",
+      messageId: "m-thread-diag-2",
+    });
+    assert.equal(proposedSecond.status, "workflow_proposed");
+
+    const completed = await orchestrator.executeWorkflow(proposedSecond.workflowId);
+    assert.equal(completed.status, "completed");
+
+    const afterExecution = await orchestrator.getThreadStateDiagnostics({
+      sessionId: "session-thread-diag",
+    });
+    assert.equal(afterExecution.workflowRunCount >= 1, true);
+    const completedRun = afterExecution.workflowRuns.find(
+      (run) => run.workflowId === proposedSecond.workflowId,
+    );
+    assert.ok(completedRun);
+    assert.equal(completedRun.status, "completed");
+    assert.equal(completedRun.progress, 100);
   });
 });

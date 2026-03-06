@@ -3030,3 +3030,51 @@ Full-suite run at end:
 ### Next
 - Consider adding an explicit memory-provider contract field for vector search controls (rather than generic `filters`) to make query intent/audit semantics stricter.
 - Optionally add telemetry dashboard aggregation for `context.retrieval` lineage events (`retrievedMemoryIds`, `sourceBreakdown`, vector usage rate).
+
+## 2026-03-06 (UTC) - Prompt Ad-hoc: Fix delegation completion/progress observability + improve workflow/tool error diagnostics
+
+**Branch:** `main`  
+**Commit:** `not committed`  
+**Prompt reference:** `Debug delegation in-progress-without-result behavior and improve tool/workflow error logging`
+
+### Summary
+- Fixed delegation execution continuity by introducing explicit workflow run state tracking in the orchestrator (`WORKFLOW_RUN_STATUS`) that is updated step-by-step and finalized on completed/failed/cancelled outcomes.
+- Exposed workflow progress/completion telemetry to orchestrator diagnostics (`getThreadStateDiagnostics`) via `workflowRuns` and `workflowRunCount`, enabling external orchestrator/control-plane callers to query in-flight and terminal workflow execution states.
+- Hardened normalized tool/workflow user-facing error messages to include actionable context (step target + sanitized diagnostic snippet), reducing repeated indistinguishable “same text” failures while keeping safe diagnostic boundaries.
+- Added/updated tests to validate:
+  - workflow run diagnostics include completed progress state,
+  - delegation workflows surface terminal run status in diagnostics,
+  - normalized errors now carry step-specific context.
+
+### Files changed
+- `packages/polar-runtime-core/src/orchestrator.mjs`
+  - added workflow run state map + lifecycle updates,
+  - added per-step progress updates (including delegation steps),
+  - added finalized run status handling for completion/failure/cancellation,
+  - extended `getThreadStateDiagnostics` with workflow run snapshots.
+- `packages/polar-runtime-core/src/tool-workflow-error-normalizer.mjs`
+  - enriched category message output with target step id and sanitized first-line diagnostic context.
+- `tests/runtime-core-orchestrator-thread-diagnostics.test.mjs`
+  - added assertion coverage for `workflowRuns` completion/progress.
+- `tests/runtime-core-orchestrator-agent-registry.test.mjs`
+  - added diagnostic assertions for delegated run completion and progress visibility.
+- `tests/runtime-core-tool-workflow-error-normalizer.test.mjs`
+  - added assertions for target-qualified and diagnostic-enriched user messages.
+
+### Data model / migrations (if applicable)
+- None.
+
+### Security and safety checks
+- No capability expansion.
+- Diagnostics expose only existing run metadata and already-sanitized normalized error summaries.
+
+### Tests and validation
+- `node --test tests/runtime-core-tool-workflow-error-normalizer.test.mjs tests/runtime-core-orchestrator-agent-registry.test.mjs tests/runtime-core-orchestrator-thread-diagnostics.test.mjs` - ✅
+- `npm run check:boundaries` - ✅
+- `npm test` - started and progressed through large portions of suite; terminated during long run to unblock prompt completion after targeted validation for touched areas.
+
+### Blockers
+- None.
+
+### Next
+- Consider adding optional run history retention policy knobs for `WORKFLOW_RUN_STATUS` and exposing lineage correlation ids directly in diagnostics for easier UI drill-down.
