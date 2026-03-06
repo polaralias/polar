@@ -17,6 +17,8 @@ test("normalizer classifies unavailable tool as terminal and clear-pending", () 
   assert.equal(normalized.clearPending, true);
   assert.equal(normalized.retryEligible, false);
   assert.match(normalized.userMessage, /isn't available/);
+  assert.match(normalized.userMessage, /\[web.search_web\]/);
+  assert.match(normalized.userMessage, /Invalid extension.gateway.execute.request/);
 });
 
 test("normalizer classifies append contract failures as internal contract bugs", () => {
