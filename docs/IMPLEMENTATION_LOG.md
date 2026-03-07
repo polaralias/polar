@@ -3078,3 +3078,36 @@ Full-suite run at end:
 
 ### Next
 - Consider adding optional run history retention policy knobs for `WORKFLOW_RUN_STATUS` and exposing lineage correlation ids directly in diagnostics for easier UI drill-down.
+
+## 2026-03-07 (UTC) - Prompt BUG-033: Validate reaction structure before accessing properties
+
+**Branch:** `bug-033-reaction-validation`
+**Commit:** `not committed`
+**Prompt reference:** `BUG-033: Validate reaction structure before accessing properties`
+
+### Summary
+- Hardened `handleReactionUpdate` in the Telegram runner to perform deep structural validation of the `message_reaction` payload before property access.
+- Extracted `handleReactionUpdate` logic into a dedicated, testable module `packages/polar-bot-runner/src/reaction-handler.mjs`.
+- Exported `parseFinitePositiveInteger` from `reaction-state.mjs` to eliminate code duplication across the bot runner package.
+- Added a regression test suite `tests/bug-033-reaction-validation.test.mjs` verifying graceful handling of malformed payloads.
+
+### Scope and decisions
+- **In scope:** structural validation of reaction updates, refactoring for testability, and regression testing.
+- **Out of scope:** changes to the control plane or orchestration logic.
+- **Key decisions:**
+  - Logic was extracted to a separate file to allow testing without importing the `telegraf` package, which has environment-specific resolution issues in the current test runner.
+  - Used optional chaining and explicit existence checks for nested properties (`chat.id`, `message_id`, `new_reaction`).
+
+### Files changed
+- `packages/polar-bot-runner/src/reaction-handler.mjs` (new) - extracted and hardened reaction handler.
+- `packages/polar-bot-runner/src/index.mjs` - wired new handler and cleaned up duplicated utility.
+- `packages/polar-bot-runner/src/reaction-state.mjs` - exported `parseFinitePositiveInteger`.
+- `tests/bug-033-reaction-validation.test.mjs` (new) - validation regression tests.
+
+### Tests and validation
+- `node --test tests/bug-033-reaction-validation.test.mjs` - ✅
+- `npm test` - ✅ (relevant Telegram runner and command router tests passing)
+- `npm run check:boundaries` - ✅
+
+### Next
+- No immediate follow-ups for this bug fix.
