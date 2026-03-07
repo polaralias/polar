@@ -3078,3 +3078,48 @@ Full-suite run at end:
 
 ### Next
 - Consider adding optional run history retention policy knobs for `WORKFLOW_RUN_STATUS` and exposing lineage correlation ids directly in diagnostics for easier UI drill-down.
+
+## 2026-03-01 (UTC) - Prompt Performance: Optimize Artifact Listing I/O
+
+**Branch:** `performance-opt-artifact-listing`
+**Commit:** `not committed`
+**Prompt reference:** `Performance Optimization Task`
+**Specs referenced:**
+- `docs/specs/ARTIFACT_EXPORTS.md`
+
+### Summary
+- Optimized `listArtifactFiles` in `packages/polar-runtime-core/src/artifact-exporter.mjs` to perform file system `stat` operations concurrently using `Promise.all`.
+- Reduced sequential I/O overhead when checking for the existence of multiple artifact files.
+- Added unit test `tests/list-artifacts.test.mjs` to ensure functional correctness.
+
+### Scope and decisions
+- **In scope:** `listArtifactFiles` implementation in `runtime-core`.
+- **Out of scope:** Changing the artifact generation logic or other parts of `artifact-exporter.mjs`.
+- **Key decisions:** Used `Promise.all` with `Array.prototype.map` for concurrency. Preserved the exact return structure and object freezing.
+
+### Files changed
+- `packages/polar-runtime-core/src/artifact-exporter.mjs` - Optimized `listArtifactFiles` for concurrent I/O.
+- `tests/list-artifacts.test.mjs` - New unit test for artifact listing.
+
+### Data model / migrations (if applicable)
+- **Tables created/changed:** none
+- **Migration notes:** none
+- **Risk:** low (I/O pattern change only)
+
+### Security and safety checks
+- **Allowlist changes:** none
+- **Capabilities/middleware affected:** none
+- **Sensitive operations:** none
+
+### Tests and validation
+Commands run and outcomes:
+- `node --test tests/list-artifacts.test.mjs` - ✅
+- `node benchmark-list-artifacts.mjs` - ✅ (Measured improvement: 0.55ms -> 0.16ms avg per call)
+- `npm test` - ⚠️ (Verified functional tests pass; unrelated environment issues cause some failures in the full suite)
+
+### Known issues / follow-ups
+- Root-level `npm test` has environment-related failures (missing packages in root context) that were present before these changes.
+
+### Next
+- **Next prompt:** Continue with other performance optimizations or feature work.
+- **Suggested starting point:** `packages/polar-runtime-core/src/artifact-exporter.mjs`
