@@ -314,3 +314,93 @@ test("orchestrator emits automation planner proposal telemetry metadata", async 
     assert.equal(event.planner_invoked, true);
   });
 });
+
+test("orchestrator repairs malformed automation planner output before clarifying", async () => {
+  await withUnrefedIntervals(async () => {
+    const providerCalls = [];
+    const lineageEvents = [];
+    let callIndex = 0;
+    const orchestrator = createOrchestrator({
+      profileResolutionGateway: {
+        async resolve() {
+          return {
+            profileConfig: {
+              systemPrompt: "You are a test assistant.",
+              modelPolicy: { providerId: "test-provider", modelId: "test-model" },
+            },
+          };
+        },
+      },
+      chatManagementGateway: {
+        async appendMessage() {
+          return { status: "appended" };
+        },
+        async getSessionHistory() {
+          return { items: [] };
+        },
+      },
+      providerGateway: {
+        async generate(request) {
+          providerCalls.push(request);
+          callIndex += 1;
+          if (callIndex === 1) {
+            return {
+              text: JSON.stringify({
+                decision: "clarify",
+                confidence: 0.33,
+                summary: "Need a quick confirmation",
+              }),
+            };
+          }
+          return {
+            text: JSON.stringify({
+              decision: "clarify",
+              confidence: 0.33,
+              summary: "Need a quick confirmation",
+              clarificationQuestion: "Should I create this automation with conservative limits?",
+            }),
+          };
+        },
+      },
+      extensionGateway: {
+        getState() {
+          return undefined;
+        },
+        listStates() {
+          return [];
+        },
+        async execute() {
+          return { status: "completed", output: "ok" };
+        },
+      },
+      approvalStore: createApprovalStore(),
+      gateway: {
+        async getConfig() {
+          return { status: "not_found" };
+        },
+      },
+      lineageStore: {
+        async append(event) {
+          lineageEvents.push(event);
+        },
+      },
+      now: Date.now,
+    });
+
+    const result = await orchestrator.orchestrate({
+      sessionId: "session-auto-repair",
+      userId: "user-auto-repair",
+      text: "Create a reminder automation for me",
+      messageId: "m-auto-repair",
+    });
+
+    assert.equal(result.type, "automation_clarification");
+    assert.match(result.text, /conservative limits/i);
+    assert.equal(providerCalls[0]?.responseFormat?.type, "json_schema");
+    assert.match(String(providerCalls[1]?.system || ""), /automation planner JSON repairer/i);
+    const event = lineageEvents.find((entry) => entry?.eventType === "proposal.validation" && entry?.proposal_type === "automation");
+    assert.ok(event);
+    assert.equal(event.planner_repair_attempted, true);
+    assert.equal(event.planner_repair_succeeded, true);
+  });
+});

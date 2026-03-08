@@ -262,6 +262,20 @@ Source examples:
 - `url:<...>` (only if you implement safe fetch)
 - `paste` (only if you implement safe multi-message capture)
 
+Review semantics:
+- If `SKILL.md` includes a manifest, `/skills install` stages that manifest for review instead of installing immediately.
+- If `SKILL.md` does not include a manifest, `/skills install` generates one from available MCP inventory, then stages the generated manifest for review.
+- Installation completes only after explicit human approval.
+
+#### `/skills pending`
+Lists skill install proposals awaiting review.
+
+#### `/skills approve <skillId> [reason]`
+Approves a pending skill manifest and completes installation.
+
+#### `/skills reject <skillId> [reason]`
+Rejects a pending skill manifest and removes the pending install state.
+
 #### `/skills block <skillId>`
 #### `/skills unblock <skillId>`
 
@@ -321,7 +335,12 @@ See `docs/specs/AGENT_PROFILES.md`.
 
 - `/agents` (list available sub-agent profiles)
 - `/agents show <agentId>`
+- `/agents export-yaml <agentId>`
+- `/agents apply-yaml <yaml>`
 - `/agents register <agentId> | <profileId> | <description>` (operator/admin)
+- `/agents set-model <agentId> | <providerId> | <modelId>` (operator/admin)
+- `/agents set-tools <agentId> | <skillA,skillB|none>` (operator/admin)
+- `/agents set-prompt <agentId> | <systemPrompt>` (operator/admin)
 - `/agents unregister <agentId>` (operator/admin)
 - `/agents pin <agentId> [--session|--user|--global]`
 - `/agents unpin [--session|--user|--global]`
@@ -329,8 +348,14 @@ See `docs/specs/AGENT_PROFILES.md`.
 
 Notes:
 - `register` maps an `agentId` to an existing `profileId` plus metadata.
+- `show` may include the backing YAML file path when the platform manages an agent config directory.
+- `export-yaml` / `apply-yaml` operate on the combined validated agent configuration document, not raw unvalidated policy text.
+- `set-model` updates delegated profile `modelPolicy`.
+- `set-tools` updates both delegated profile `allowedSkills` and registry forwarding constraints.
+- `set-prompt` updates the delegated profile system prompt.
 - `pin` resolves agentId → profileId and writes the appropriate `profile-pin:*` policy record.
 - Registry storage key: `resourceType=policy`, `resourceId=agent-registry:default`.
+- Telegram is the first implemented chat surface; other chat surfaces (for example Discord/Slack) should expose the same deterministic `/agents ...` grammar when added.
 
 
 ### 10) Config records (operator/admin; optional)

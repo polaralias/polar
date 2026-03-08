@@ -19,7 +19,7 @@ Surfaces must obtain it via:
 - Telegram runner: call `orchestrate` for chat turns. Do not call `generateOutput` directly.
 - Web UI: only exposes allowlisted methods via Vite plugin. Anything not allowlisted is inaccessible.
 
-## Current method set (existing)
+## Current method set
 ### Health and config
 - `health()`
 - `getConfig(request)`
@@ -45,6 +45,10 @@ Surfaces must obtain it via:
 - `listTaskEvents(request)`
 - `replayTaskRunLinks(request)`
 
+### Feedback
+- `recordFeedbackEvent(request)`
+- `listFeedbackEvents(request)`
+
 ### Telemetry (while it exists)
 - `listHandoffRoutingTelemetry(request)`
 - `listUsageTelemetry(request)`
@@ -69,6 +73,7 @@ Surfaces must obtain it via:
 - `applyExtensionLifecycle(request)`
 - `listExtensionStates(request)`
 - `installSkill(request)`
+- `listPendingSkillInstallProposals()`
 - `reviewSkillInstallProposal(request)`
 - `syncMcpServer(request)`
 - `installPlugin(request)`
@@ -76,11 +81,23 @@ Surfaces must obtain it via:
 - `listBlockedSkills()`
 - `listCapabilityAuthorityStates()` (non-async)
 
+Skill install review contract:
+- `installSkill(request)` stages a skill manifest for human review. If `SKILL.md` already contains a manifest, the parsed manifest becomes the pending proposal. If the manifest is missing, the control plane generates a proposal from available MCP inventory first.
+- `listPendingSkillInstallProposals()` returns the pending proposals that still require approval or rejection.
+- `reviewSkillInstallProposal(request)` is the approval/rejection step that finalizes installation (and optional enablement) after the manifest has been reviewed.
+
 ### Memory
 - `searchMemory(request)`
 - `getMemory(request)`
 - `upsertMemory(request)`
 - `compactMemory(request)`
+
+### Automations
+- `createAutomationJob(request)`
+- `listAutomationJobs(request)`
+- `updateAutomationJob(request)`
+- `disableAutomationJob(request)`
+- `deleteAutomationJob(request)`
 
 ### Agent registry and pinning
 - `getAgentRegistry(request?)`
@@ -95,23 +112,29 @@ Surfaces must obtain it via:
 ### Orchestration and UX callbacks (Telegram critical)
 - `orchestrate(envelope)`
 - `updateMessageChannelId(sessionId, internalId, channelId)`
-- `executeWorkflow(workflowId | { workflowId })`
+- `executeWorkflow(workflowId | { workflowId, approved?, authorizationMode? })`
 - `rejectWorkflow(workflowId | { workflowId })`
+- `cancelWorkflow(workflowId | { workflowId })`
+- `getWorkflowProposal(workflowId | { workflowId })`
+- `consumeAutomationProposal(proposalId | { proposalId })`
+- `rejectAutomationProposal(proposalId | { proposalId })`
 - `handleRepairSelection({ sessionId, selection, correlationId })`
 
-## Planned additions (must be added to allowlists when implemented)
-These are referenced in `docs/specs/DATA_MODEL.md` and `docs/AUTOMATIONS.md`:
+## Interactive proposal contract
+Interactive chat surfaces must call `orchestrate` with `metadata.executionType = "interactive"` so the runtime can distinguish surface-driven chat from non-interactive callers.
 
-Feedback events:
-- `recordFeedbackEvent(request)`
-- `listFeedbackEvents(request)`
+Workflow responses:
+- `workflow_proposed` with `proposalMode = "auto_start"` means the workflow may start immediately after the surface renders a reject/cancel affordance.
+- `workflow_proposed` with `proposalMode = "dry_run_approval"` means the workflow must not execute live until the surface calls `executeWorkflow({ workflowId, approved: true })`.
+- `approval_required` from `executeWorkflow(...)` means the caller attempted to run a dry-run-gated workflow without explicit approval.
+- `cancelWorkflow(...)` is the code-bound stop path for in-flight runs. Runtime semantics are: stop future steps, best-effort interrupt the current step, and report `succeeded` / `failed` / `not attempted` counts.
+- `getWorkflowProposal(...)` returns the stored proposal, including preview summary/payload for dry-run flows.
 
-Automations:
-- `createAutomationJob(request)`
-- `listAutomationJobs(request)`
-- `updateAutomationJob(request)`
-- `disableAutomationJob(request)` (or `deleteAutomationJob(request)`)
+Automation responses:
+- `automation_created` means the control plane has already created the job and the surface should render a reject/delete affordance in-thread.
+- `automation_proposed` remains a fallback if auto-creation fails; surfaces may still explicitly consume/reject the proposal.
 
+## Planned additions
 Run ledger:
 - `listAutomationRunLedger(request)`
 - `listHeartbeatRunLedger(request)`

@@ -250,6 +250,9 @@ export function computeCapabilityScope({
   };
   const rejectedSkills = [];
   scope.allowed.system = ["lookup_weather", "delegate_to_agent", "complete_task"];
+  if (!activeDelegation) {
+    scope.allowed.weather = ["lookup_weather"];
+  }
 
   const effectiveAllowedSkills = normalizeSkillList(
     activeDelegation?.forward_skills ||

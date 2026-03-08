@@ -197,7 +197,10 @@ test("reply metadata is rendered as a labelled reply context block", async () =>
     },
   });
 
-  const providerCall = providerCalls.at(-1);
+  const providerCall = [...providerCalls].reverse().find(
+    (call) => call?.prompt === "can you restate the rollout plan?" && Array.isArray(call?.messages),
+  );
+  assert.ok(providerCall);
   const replyContextEntry = providerCall.messages.find((entry) => entry.content.includes("[REPLY_CONTEXT]"));
   assert.ok(replyContextEntry);
   assert.match(replyContextEntry.content, /User replied to \(assistant \(Polar\)\): "I already explained the rollout plan yesterday\./);

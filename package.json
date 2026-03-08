@@ -14,7 +14,10 @@
     "dev:ui": "npm run dev --workspace=polar-web-ui",
     "dev:bot": "npm run start --workspace=@polar/bot-runner",
     "dev:automation": "npm run start:automation --workspace=@polar/bot-runner",
-    "dev": "concurrently -n \"UI,BOT\" -c \"cyan,magenta\" \"npm run dev:ui\" \"npm run dev:bot\""
+    "dev:trace:tail": "node scripts/tail-lineage.mjs",
+    "dev:trace:tail:verbose": "node scripts/tail-lineage.mjs --tool-checkpoints",
+    "dev": "concurrently -n \"UI,BOT\" -c \"cyan,magenta\" \"npm run dev:ui\" \"npm run dev:bot\"",
+    "dev:trace": "concurrently -n \"UI,BOT,TRACE\" -c \"cyan,magenta,green\" \"npm run dev:ui\" \"npm run dev:bot\" \"npm run dev:trace:tail\""
   },
   "overrides": {
     "rimraf": "npm:rimraf@6.1.2",

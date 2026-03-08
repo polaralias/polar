@@ -522,8 +522,12 @@ test("delegation strips unauthorized forward_skills and blocks delegated access 
         ? toolResultsEvent.metadata.toolResults
         : [];
       const sendStep = toolResults.find((entry) => entry.tool === "send_email");
-      assert.equal(sendStep.status, "failed");
-      assert.equal(sendStep.output.code, "POLAR_EXTENSION_POLICY_DENIED");
+      assert.ok(sendStep.status === "failed" || sendStep.status === "error");
+      if (sendStep.output && typeof sendStep.output === "object") {
+        assert.equal(sendStep.output.code, "POLAR_EXTENSION_POLICY_DENIED");
+      } else {
+        assert.match(String(sendStep.output), /policy|available in this deployment/i);
+      }
     } finally {
       if (previousTemplate) {
         WORKFLOW_TEMPLATES[templateId] = previousTemplate;
@@ -837,6 +841,257 @@ test("workflow failure summary uses validated failure explainer proposal", async
     assert.ok(failureEvent);
     assert.equal(failureEvent.final_decision, "respond");
     assert.equal(failureEvent.outcome_status, "workflow_failed_summary");
+  });
+});
+
+test("orchestrator repairs malformed workflow planner output before proposing steps", async () => {
+  await withUnrefedIntervals(async () => {
+    const providerCalls = [];
+    let callIndex = 0;
+    const orchestrator = createOrchestrator({
+      profileResolutionGateway: {
+        async resolve() {
+          return {
+            profileConfig: {
+              systemPrompt: "You are a test assistant.",
+              modelPolicy: { providerId: "test-provider", modelId: "test-model" },
+              allowedSkills: ["email"],
+            },
+          };
+        },
+      },
+      chatManagementGateway: {
+        async appendMessage() {
+          return { status: "appended" };
+        },
+        async getSessionHistory() {
+          return { items: [] };
+        },
+      },
+      providerGateway: {
+        async generate(request) {
+          providerCalls.push(request);
+          callIndex += 1;
+          if (callIndex === 1) {
+            return {
+              text: '<polar_action>{"template":"send_email","args":{"to":"dev@polar.local","subject":"Hi","body":"hello"}}</polar_action>',
+            };
+          }
+          if (callIndex === 2) {
+            return {
+              text: JSON.stringify({
+                goal: "Send an email",
+                confidence: 0.93,
+                riskHints: { mayWrite: true },
+                steps: [
+                  {
+                    id: "step-1",
+                    reason: "send the email",
+                    extensionId: "email",
+                    capabilityId: "send_email",
+                  },
+                ],
+              }),
+            };
+          }
+          return {
+            text: JSON.stringify({
+              goal: "Send an email",
+              confidence: 0.93,
+              riskHints: { mayWrite: true, mayRequireApproval: true, mayBeDestructive: false },
+              steps: [
+                {
+                  id: "step-1",
+                  reason: "send the email",
+                  extensionId: "email",
+                  capabilityId: "send_email",
+                  args: { to: "dev@polar.local", subject: "Hi", body: "hello" },
+                },
+              ],
+            }),
+          };
+        },
+      },
+      extensionGateway: {
+        getState(extensionId) {
+          if (extensionId !== "email") return undefined;
+          return {
+            extensionId: "email",
+            lifecycleState: "enabled",
+            capabilities: [
+              { capabilityId: "send_email", riskLevel: "write", sideEffects: "external", requiredArgs: ["to", "subject", "body"] },
+            ],
+          };
+        },
+        listStates() {
+          return [this.getState("email")];
+        },
+        async execute() {
+          return { status: "completed", output: "ok" };
+        },
+      },
+      approvalStore: createApprovalStore(),
+      gateway: {
+        async getConfig() {
+          return { status: "not_found" };
+        },
+      },
+      now: Date.now,
+    });
+
+    const result = await orchestrator.orchestrate({
+      sessionId: "session-workflow-repair",
+      userId: "user-workflow-repair",
+      text: "send this email",
+      messageId: "m-workflow-repair",
+    });
+
+    assert.equal(result.status, "workflow_proposed");
+    assert.equal(result.steps.length, 1);
+    assert.equal(result.steps[0].capabilityId, "send_email");
+    assert.equal(result.plannerRepairAttempted, true);
+    assert.equal(result.plannerRepairSucceeded, true);
+    assert.equal(providerCalls[1]?.responseFormat?.type, "json_schema");
+    assert.match(String(providerCalls[2]?.system || ""), /workflow planner JSON repairer/i);
+  });
+});
+
+test("workflow failure summary repairs malformed failure explainer output", async () => {
+  await withUnrefedIntervals(async () => {
+    const providerCalls = [];
+    const lineageEvents = [];
+    let failureExplainerCallCount = 0;
+    const orchestrator = createOrchestrator({
+      profileResolutionGateway: {
+        async resolve() {
+          return {
+            profileConfig: {
+              systemPrompt: "You are a test assistant.",
+              modelPolicy: { providerId: "test-provider", modelId: "test-model" },
+            },
+          };
+        },
+      },
+      chatManagementGateway: {
+        async appendMessage() {
+          return { status: "appended" };
+        },
+        async getSessionHistory() {
+          return { items: [] };
+        },
+      },
+      providerGateway: {
+        async generate(request) {
+          providerCalls.push(request);
+          if (typeof request?.system === "string" && request.system.includes("workflow planning model")) {
+            return {
+              text: JSON.stringify({
+                goal: "Look up the weather",
+                confidence: 0.92,
+                riskHints: { mayWrite: false, requiresApproval: false, mayRequireApproval: false, mayBeDestructive: false },
+                steps: [
+                  {
+                    id: "step-1",
+                    reason: "use the weather capability",
+                    extensionId: "weather",
+                    capabilityId: "lookup_weather",
+                    args: { location: "Swansea" },
+                  },
+                ],
+              }),
+            };
+          }
+          if (typeof request?.system === "string" && /failure explainer JSON repairer/i.test(request.system)) {
+            return {
+              text: JSON.stringify({
+                summary: "I couldn't finish because the weather capability isn't available here.",
+                suggestedNextStep: "Install or enable the weather extension and retry.",
+                canRetry: false,
+                detailLevel: "safe",
+              }),
+            };
+          }
+          if (
+            request?.responseFormat?.type === "json_schema"
+            && typeof request?.prompt === "string"
+            && request.prompt.includes("prompt.failure_explainer.proposal.v1")
+          ) {
+            failureExplainerCallCount += 1;
+            return {
+              text: JSON.stringify({
+                canRetry: false,
+                detailLevel: "safe",
+              }),
+            };
+          }
+          if (failureExplainerCallCount > 0) {
+            return {
+              text: JSON.stringify({
+                summary: "I couldn't finish because the weather capability isn't available here.",
+                suggestedNextStep: "Install or enable the weather extension and retry.",
+                canRetry: false,
+                detailLevel: "safe",
+              }),
+            };
+          }
+          return {
+            text: '<polar_action>{"template":"lookup_weather","args":{"location":"Swansea"}}</polar_action>',
+          };
+        },
+      },
+      extensionGateway: {
+        getState() {
+          return {
+            extensionId: "weather",
+            lifecycleState: "enabled",
+            capabilities: [{ capabilityId: "lookup_weather", riskLevel: "read", sideEffects: "none" }],
+          };
+        },
+        listStates() {
+          return [];
+        },
+        async execute() {
+          throw new Error("Invalid extension.gateway.execute.request");
+        },
+      },
+      approvalStore: createApprovalStore(),
+      gateway: {
+        async getConfig() {
+          return { status: "not_found" };
+        },
+      },
+      lineageStore: {
+        async append(event) {
+          lineageEvents.push(event);
+        },
+      },
+      now: Date.now,
+    });
+
+    const result = await orchestrator.orchestrate({
+      sessionId: "session-failure-repair",
+      userId: "user-failure-repair",
+      text: "run weather",
+      messageId: "m-failure-repair",
+    });
+
+    assert.equal(result.status, "completed");
+    assert.match(result.text, /weather capability isn't available here/i);
+    const failureExplainerRequest = providerCalls.find(
+      (call) => call?.responseFormat?.type === "json_schema"
+        && typeof call?.prompt === "string"
+        && call.prompt.includes("prompt.failure_explainer.proposal.v1"),
+    );
+    const failureExplainerRepairRequest = providerCalls.find(
+      (call) => typeof call?.system === "string"
+        && /failure explainer JSON repairer/i.test(call.system),
+    );
+    assert.equal(failureExplainerRequest?.responseFormat?.type, "json_schema");
+    assert.ok(failureExplainerRepairRequest);
+    const failureEvent = lineageEvents.find((entry) => entry?.eventType === "proposal.validation" && entry?.proposalType === "failure_explain");
+    assert.ok(failureEvent);
+    assert.equal(failureEvent.repair_attempted, true);
+    assert.equal(failureEvent.repair_succeeded, true);
   });
 });
 

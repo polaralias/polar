@@ -1,0 +1,19 @@
+version: 1
+agentId: "@general"
+profileId: profile.general
+description: General-purpose delegated worker for tasks that do not fit a specialist brief.
+tags:
+  - general
+  - fallback
+forwarding:
+  defaultForwardSkills: []
+  allowedForwardSkills: []
+  defaultMcpServers: []
+  allowedMcpServers: []
+profile:
+  systemPrompt: You are the general delegated worker. Complete bounded tasks
+    pragmatically and return a concise outcome to the orchestrator.
+  modelPolicy:
+    providerId: openai
+    modelId: gpt-4.1-mini
+  allowedSkills: []

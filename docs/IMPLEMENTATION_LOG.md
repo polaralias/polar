@@ -3031,6 +3031,92 @@ Full-suite run at end:
 - Consider adding an explicit memory-provider contract field for vector search controls (rather than generic `filters`) to make query intent/audit semantics stricter.
 - Optionally add telemetry dashboard aggregation for `context.retrieval` lineage events (`retrievedMemoryIds`, `sourceBreakdown`, vector usage rate).
 
+## 2026-03-08 (UTC) - Prompt Finalization: Ship delegated sub-agents + YAML-backed agent configuration
+
+**Branch:** `main`  
+**Commit:** `not committed`  
+**Prompt reference:** `Finalize sub-agent delegation, default profiles, and YAML/chat/CLI configuration`
+
+### Summary
+- Replaced the no-op `delegate_to_agent` path with a real delegated child execution flow:
+  - parent workflows now activate durable lane-scoped delegation state,
+  - execute a nested delegated orchestration turn under the delegated profile,
+  - and return either the delegated outcome, delegated clarification, or delegated approval-needed status.
+- Fixed delegated follow-up continuity by persisting `activeDelegations` structurally in session thread state instead of relying on removed chat-marker reconstruction.
+- Added a shipped fallback/default agent set centered on `@general` (`profile.general`) plus `@researcher`, `@writer`, and `@coder`, and normalized the legacy `@generic_sub_agent` alias onto `@general`.
+- Added combined agent configuration APIs with validated YAML import/export so agent metadata, forwarding rules, system prompt, model policy, and allowed tools can be edited coherently.
+- Added platform-managed on-disk YAML sync for agent configs under `config/agents/`, including bootstrap seeding of default agent files.
+- Added deterministic Telegram and CLI commands for agent configuration (`export-yaml`, `apply-yaml`, `set-model`, `set-tools`, `set-prompt`) and wired the Web UI allowlist to the new control-plane methods.
+- Fixed the weather workflow template to target the `weather` extension and kept direct low-risk weather lookup available for non-delegated orchestration runs.
+
+### Files changed
+- `packages/polar-runtime-core/src/orchestrator.mjs`
+  - implemented nested delegated execution,
+  - added durable lane-scoped active delegation storage/recovery,
+  - cleared stale routing pending state when delegation activates,
+  - preserved delegated clarification continuity across follow-up prompts,
+  - updated workflow preflight/execution handling for delegated scope enforcement.
+- `packages/polar-runtime-core/src/capability-scope.mjs`
+  - kept delegated runs strict while allowing direct low-risk weather lookup outside delegated scope.
+- `packages/polar-runtime-core/src/workflow-templates.mjs`
+  - corrected `lookup_weather` to `extensionId: "weather"` / `extensionType: "mcp"`.
+- `packages/polar-runtime-core/src/routing-policy-engine.mjs`
+  - normalized unknown delegated targets to `@general`.
+- `packages/polar-control-plane/src/index.mjs`
+  - added combined agent configuration and YAML round-trip methods.
+- `packages/polar-platform/src/agent-config-store.mjs` (new)
+  - added default-agent YAML seeding/sync helpers.
+- `packages/polar-platform/src/index.mjs`
+  - added platform bootstrap for agent config sync and default config directory resolution.
+- `packages/polar-bot-runner/src/commands.mjs`
+  - added deterministic `/agents` YAML/model/tool/prompt commands.
+- `packages/polar-bot-runner/src/index.mjs`
+  - awaited platform bootstrap and passed agent config store into the command router.
+- `packages/polar-bot-runner/src/automation-runner.mjs`
+  - awaited platform bootstrap.
+- `packages/polar-cli/bin/polar.mjs`
+  - added local platform-backed `agents` configuration commands.
+- `packages/polar-web-ui/vite.config.js`
+  - allowlisted the new agent configuration control-plane methods.
+- `tests/runtime-core-orchestrator-agent-registry.test.mjs`
+  - now asserts delegated child execution returns the delegated outcome and completion telemetry.
+- `tests/runtime-core-orchestrator-durable-state.test.mjs`
+  - added delegated-lane follow-up continuity coverage.
+- `tests/control-plane-service.test.mjs`
+  - added combined agent configuration + YAML round-trip coverage.
+- `tests/telegram-command-router.test.mjs`
+  - added agent YAML/model command coverage.
+- `tests/platform-agent-config-store.test.mjs` (new)
+  - added bootstrap seeding/sync coverage.
+- `docs/specs/AGENT_PROFILES.md`
+- `docs/specs/AGENT_REGISTRY_AND_PINNING_APIS.md`
+- `docs/specs/CHAT_COMMANDS.md`
+  - updated specs to match shipped delegated-execution and YAML configuration behavior.
+
+### Data model / migrations (if applicable)
+- **Tables created/changed:** none
+- **Migration notes:** none
+- **Non-DB persistence changes:** platform now seeds/syncs agent YAML files under `config/agents/`
+
+### Security and safety checks
+- Delegated children still execute through the existing middleware/gateway path; no surface now calls a provider or tool directly.
+- Delegated model/tool access remains code-enforced by delegated profile model policy plus forwarded-skill intersection/clamping.
+- Nested delegation inside delegated child runs is still blocked.
+- Agent YAML apply/export uses explicit validated control-plane methods rather than generic config mutation.
+
+### Tests and validation
+- `node --test tests/runtime-core-orchestrator-hybrid-routing.test.mjs tests/runtime-core-orchestrator-workflow-validation.test.mjs tests/runtime-core-orchestrator-agent-registry.test.mjs tests/runtime-core-orchestrator-durable-state.test.mjs` - ✅
+- `node --test tests/runtime-core-capability-scope-enforcement.test.mjs tests/control-plane-service.test.mjs tests/telegram-command-router.test.mjs tests/platform-agent-config-store.test.mjs tests/integration-vertical-slice.test.mjs tests/runtime-core-orchestrator-agent-registry.test.mjs tests/runtime-core-orchestrator-durable-state.test.mjs` - ✅
+- `npm run check:boundaries` - ✅
+- `npm test` - ✅ (488 passed, 0 failed)
+
+### Blockers
+- None.
+
+### Next
+- Consider exposing the combined agent YAML document in the Web UI as an operator editor rather than allowlist-only API access.
+- When a Discord/Slack chat command surface is added, mirror the same deterministic `/agents ...` grammar and control-plane methods instead of introducing a surface-specific config path.
+
 ## 2026-03-06 (UTC) - Prompt Ad-hoc: Fix delegation completion/progress observability + improve workflow/tool error diagnostics
 
 **Branch:** `main`  
@@ -3111,3 +3197,285 @@ Full-suite run at end:
 
 ### Next
 - No immediate follow-ups for this bug fix.
+## 2026-03-01 (UTC) - Prompt Performance: Optimize Artifact Listing I/O
+
+**Branch:** `performance-opt-artifact-listing`
+**Commit:** `not committed`
+**Prompt reference:** `Performance Optimization Task`
+**Specs referenced:**
+- `docs/specs/ARTIFACT_EXPORTS.md`
+
+### Summary
+- Optimized `listArtifactFiles` in `packages/polar-runtime-core/src/artifact-exporter.mjs` to perform file system `stat` operations concurrently using `Promise.all`.
+- Reduced sequential I/O overhead when checking for the existence of multiple artifact files.
+- Added unit test `tests/list-artifacts.test.mjs` to ensure functional correctness.
+
+### Scope and decisions
+- **In scope:** `listArtifactFiles` implementation in `runtime-core`.
+- **Out of scope:** Changing the artifact generation logic or other parts of `artifact-exporter.mjs`.
+- **Key decisions:** Used `Promise.all` with `Array.prototype.map` for concurrency. Preserved the exact return structure and object freezing.
+
+### Files changed
+- `packages/polar-runtime-core/src/artifact-exporter.mjs` - Optimized `listArtifactFiles` for concurrent I/O.
+- `tests/list-artifacts.test.mjs` - New unit test for artifact listing.
+
+### Data model / migrations (if applicable)
+- **Tables created/changed:** none
+- **Migration notes:** none
+- **Risk:** low (I/O pattern change only)
+
+### Security and safety checks
+- **Allowlist changes:** none
+- **Capabilities/middleware affected:** none
+- **Sensitive operations:** none
+
+### Tests and validation
+Commands run and outcomes:
+- `node --test tests/list-artifacts.test.mjs` - ✅
+- `node benchmark-list-artifacts.mjs` - ✅ (Measured improvement: 0.55ms -> 0.16ms avg per call)
+- `npm test` - ⚠️ (Verified functional tests pass; unrelated environment issues cause some failures in the full suite)
+
+### Known issues / follow-ups
+- Root-level `npm test` has environment-related failures (missing packages in root context) that were present before these changes.
+
+### Next
+- **Next prompt:** Continue with other performance optimizations or feature work.
+- **Suggested starting point:** `packages/polar-runtime-core/src/artifact-exporter.mjs`
+
+## 2026-03-08 (UTC) - Prompt Architecture: Rejectable workflow proposals, dry-run approval, and cancellable auto-start
+
+**Branch:** `main`  
+**Commit:** `not committed`  
+**Prompt reference:** `Implement rejectable proposals / dry-run approval / cancellable workflow execution`
+**Specs referenced:**
+- `docs/SECURITY.md`
+- `docs/specs/CONTROL_PLANE_API.md`
+- `docs/specs/TELEGRAM_SURFACE.md`
+- `docs/specs/WEB_UI_SURFACE.md`
+
+### Summary
+- Moved proposal-mode ownership into the orchestrator instead of leaving it as a Telegram/Web UI convention.
+- Added two workflow proposal modes:
+  - `auto_start` for standard non-bulk writes, which start immediately but remain rejectable/cancellable.
+  - `dry_run_approval` for destructive or bulk workflows, which expose a human preview plus optional detailed payload before live execution.
+- Added bulk inference in the orchestrator with a default threshold of `50`, while still honoring explicit capability-level bulk metadata.
+- Changed workflow execution grants to transient run-scoped grants so auto-start and dry-run-approved runs do not leave reusable approval state behind.
+- Added best-effort hard cancellation semantics: stop future workflow steps, request interruption of the current run, and report `succeeded` / `failed` / `not attempted` counts.
+- Added workflow proposal inspection via `getWorkflowProposal(...)` for surfaces that need preview details on demand.
+- Changed interactive Telegram/Web UI turns to mark `metadata.executionType = "interactive"` so surfaces receive core-owned proposal semantics.
+- Added dry-run UX in Telegram and Web UI:
+  - `Approve` executes the exact stored workflow inputs live.
+  - `Reject` closes the proposal and keeps the follow-up conversation in the same thread.
+  - `Details` exposes the stored preview payload on demand.
+- Changed automation proposals at the control-plane boundary to auto-create jobs when possible and return `automation_created`, with surfaces rendering reject/delete affordances instead of an up-front approval button.
+- Fixed a legacy rejection-state bug where `rejectWorkflow()` left the thread in `in_progress`; it now closes the proposal cleanly.
+
+### Files changed
+- `packages/polar-runtime-core/src/orchestrator.mjs`
+  - added bulk/dry-run proposal classification,
+  - added preview generation,
+  - added explicit approval gating for destructive/bulk runs,
+  - added transient run-scoped approval grants,
+  - added workflow proposal lookup,
+  - improved cancellation accounting and rejection thread-state handling.
+- `packages/polar-control-plane/src/index.mjs`
+  - extended workflow execution/cancellation/proposal APIs,
+  - auto-created automation jobs on `automation_proposed` success path and returned `automation_created`.
+- `packages/polar-bot-runner/src/index.mjs`
+  - added interactive execution metadata,
+  - added dry-run workflow approval/details UX,
+  - added auto-created automation rejection/delete UX.
+- `packages/polar-web-ui/src/views/chat.js`
+  - added interactive execution metadata,
+  - added dry-run workflow approval/details UX,
+  - added auto-created automation rejection/delete UX.
+- `packages/polar-web-ui/vite.config.js`
+  - allowlisted the new chat-surface control-plane actions.
+- `packages/polar-runtime-core/tests/orchestrator-plan-approvals.test.mjs`
+- `tests/runtime-core-orchestrator-workflow-cancellation.test.mjs`
+- `tests/runtime-core-orchestrator-workflow-validation.test.mjs`
+- `tests/channels-thin-client-enforcement.test.mjs`
+  - updated tests for transient grants, dry-run approval, cancellation, and thin-surface API usage.
+- `docs/SECURITY.md`
+- `docs/specs/CONTROL_PLANE_API.md`
+- `docs/specs/TELEGRAM_SURFACE.md`
+- `docs/specs/WEB_UI_SURFACE.md`
+  - updated docs/specs to match the new runtime-owned proposal contract.
+
+### Data model / migrations (if applicable)
+- **Tables created/changed:** none
+- **Migration notes:** none
+- **Non-DB persistence changes:** pending workflow state now stores `proposalMode` and optional dry-run preview payloads for proposal retrieval and restart continuity.
+
+### Security and safety checks
+- Proposal/approval policy is now enforced in the orchestrator, not synthesized by surfaces.
+- Destructive and inferred-bulk workflows are live-blocked until explicit dry-run approval.
+- Standard auto-start writes still execute through middleware and use transient run-scoped grants only.
+- Cancellation remains best-effort for the current in-flight step; future steps are prevented deterministically and the user receives outcome counts.
+- Automation rejection deletes the created job while preserving audit history in the existing run/event stores.
+
+### Tests and validation
+- `node --test tests/channels-thin-client-enforcement.test.mjs tests/runtime-core-orchestrator-workflow-cancellation.test.mjs tests/runtime-core-orchestrator-workflow-validation.test.mjs packages/polar-runtime-core/tests/orchestrator-plan-approvals.test.mjs` - ✅
+- `npm run check:boundaries` - ✅
+- `npm test` - ✅ (488 passed, 0 failed)
+
+### Blockers
+- None.
+
+### Next
+- Add adapter-level interruption hooks for tools/connectors that can honor in-flight cancellation more aggressively than the current best-effort stop model.
+- Consider surfacing bulk target estimates and cancellation outcome summaries more prominently in operator diagnostics and the Web UI.
+
+## 2026-03-08 (UTC) - Prompt Dev UX: Add live lineage tail startup command
+
+**Branch:** `main`  
+**Commit:** `not committed`  
+**Prompt reference:** `Add a startup command to observe delegation and tool-call log events`
+
+### Summary
+- Added a dedicated root `dev:trace` startup command that runs the Web UI, Telegram bot, and a live lineage tail side by side.
+- Added a small Node-based lineage tailer script so event observation no longer depends on a PowerShell-specific one-liner.
+- Defaulted the lineage tail to high-signal delegation/workflow events only; low-level `extension.execute` checkpoints are now opt-in to avoid unreadable console spam from UI telemetry polling.
+- Documented both `dev:trace` and `dev:trace:tail` in the development guide.
+
+### Files changed
+- `scripts/tail-lineage.mjs`
+  - tails `.polar-data/lineage/events.ndjson` (or `POLAR_LINEAGE_STORE_PATH`) and prints delegation, workflow execution, and tool middleware events in a concise live format.
+- `package.json`
+  - added `dev:trace:tail`
+  - added `dev:trace:tail:verbose`
+  - added `dev:trace`
+- `docs/DEVELOPMENT.md`
+  - documented the new startup commands.
+
+### Tests and validation
+- `node scripts/tail-lineage.mjs` (smoke via short-lived job) - ✅
+- `npm run check:boundaries` - ✅
+- `npm test` - not rerun (developer-script/docs change only)
+
+### Blockers
+- None.
+
+### Next
+- If needed, add richer filters or a `--json` mode so the lineage tail can be piped into external dashboards or local debugging tools.
+
+## 2026-03-08 (UTC) - Prompt Runtime Hardening: Structured outputs for planners, resolvers, analyzer, failure explainers, and memory extraction
+
+**Branch:** `main`  
+**Commit:** `not committed`  
+**Prompt reference:** `Harden structured LLM decisions for automation planner, workflow planner, focus resolver, skill install analyzer, failure explainer, and memory extractor`
+
+### Summary
+- Added a shared structured-output helper that applies provider-native JSON schema hints when available, retries without native enforcement when necessary, validates outputs centrally, and performs one repair pass with validation errors.
+- Tightened proposal contracts for router-adjacent runtime decisions so automation planning, workflow planning, focus resolution, and failure explanation now validate typed fields rather than permissive JSON blobs.
+- Hardened the skill installer analyzer and memory extraction middleware to use the same structured-output + repair path.
+- Narrowed the workflow identity fail-close behavior so only generic asks like `run a workflow` trigger the deterministic `Which workflow should I run?` clarification, while concrete workflow/delegation requests can still proceed through validated `<polar_action>` proposals.
+- Preserved operator-facing diagnostics by surfacing original provider failure messages through the structured-output helper for memory extraction warnings.
+
+### Files changed
+- `packages/polar-runtime-core/src/structured-output.mjs`
+  - new shared helper for JSON-schema response formats, validation, and one-shot repair.
+- `packages/polar-runtime-core/src/proposal-contracts.mjs`
+  - tightened schemas and added native response format descriptors for planner/resolver/failure proposal contracts.
+- `packages/polar-runtime-core/src/orchestrator.mjs`
+  - switched automation planner, workflow planner, focus resolver, and failure explainer requests to shared structured handling;
+  - emitted repair/fallback telemetry for those components;
+  - narrowed generic workflow fail-close gating to avoid blocking valid concrete proposals.
+- `packages/polar-runtime-core/src/skill-installer-gateway.mjs`
+  - hardened analyzer manifest generation with schema validation and repair.
+- `packages/polar-runtime-core/src/memory-extraction-middleware.mjs`
+  - hardened fact extraction with schema validation and repair while preserving underlying provider failure messages.
+- `tests/runtime-core-proposal-contracts.test.mjs`
+- `tests/runtime-core-orchestrator-automation-proposal.test.mjs`
+- `tests/runtime-core-orchestrator-context-management.test.mjs`
+- `tests/runtime-core-orchestrator-hybrid-routing.test.mjs`
+- `tests/runtime-core-orchestrator-workflow-validation.test.mjs`
+- `tests/runtime-core-phase-8-advanced-features.test.mjs`
+- `tests/runtime-core-skill-installer-gateway.test.mjs`
+  - expanded and corrected regression coverage for repair passes, response-format usage, telemetry, and lane/context behavior under the hardened paths.
+
+### Data model / migrations (if applicable)
+- **Tables created/changed:** none
+- **Migration notes:** none
+- **Non-DB persistence changes:** none
+
+### Security and safety checks
+- Structured decision surfaces now validate typed contracts before execution-facing logic consumes them.
+- Invalid planner/resolver/analyzer outputs get one constrained repair pass, then fail closed to existing deterministic fallbacks.
+- Memory extraction remains best-effort and non-blocking, but logs now preserve the underlying provider error when extraction infrastructure is unavailable.
+
+### Tests and validation
+- `node --test tests/runtime-core-proposal-contracts.test.mjs tests/runtime-core-orchestrator-automation-proposal.test.mjs tests/runtime-core-orchestrator-workflow-validation.test.mjs tests/runtime-core-orchestrator-hybrid-routing.test.mjs tests/runtime-core-skill-installer-gateway.test.mjs tests/runtime-core-phase-8-advanced-features.test.mjs` - ✅
+- `node --test tests/bug-fixes-comprehensive.test.mjs` - ✅
+- `node --test tests/runtime-core-orchestrator-context-management.test.mjs` - ✅
+- `node --test tests/runtime-core-orchestrator-workflow-cancellation.test.mjs` - ✅
+- `npm run check:boundaries` - ✅
+- `npm test` - ✅ (499 passed, 0 failed)
+
+### Blockers
+- None.
+
+### Next
+- Apply the same shared structured-output helper to router decisions themselves so routing no longer relies on a single plain-text JSON parse before fallback.
+- Consider tightening memory extraction failure telemetry further so repeated invalid non-JSON responses can be summarized rather than logged per-turn in large integration runs.
+
+## 2026-03-08 (UTC) - Prompt Skills HITL: Restore manifest-generation fallback and require approval before install completion
+
+**Branch:** `main`  
+**Commit:** `not committed`  
+**Prompt reference:** `Reinstate skill install fallback so missing manifests are generated, then human-approved before installation completes`
+
+### Summary
+- Changed surfaced skill installation so `installSkill()` now always stages a pending manifest review instead of completing installation immediately.
+- Restored the missing-manifest fallback by teaching the installer to generate a proposal from MCP inventory when `SKILL.md` lacks YAML frontmatter, while still preserving the explicit analyzer API.
+- Moved proposal approval onto the same provenance/policy-enforced finalization path as direct installs so review approval still honors source checks, permission-delta approval rules, and metadata enforcement before enabling the skill.
+- Added Telegram `/skills pending`, `/skills approve`, and `/skills reject` commands so the HITL path is reachable from the primary chat surface.
+- Updated Web UI allowlists and specs to reflect the new staged-install review contract.
+
+### Files changed
+- `packages/polar-domain/src/skill-installer-contracts.mjs`
+  - widened installer request/output contracts for review-required installs and pending proposal responses.
+- `packages/polar-runtime-core/src/skill-installer-gateway.mjs`
+  - added pending proposal staging for manifest-present installs;
+  - added manifest-generation fallback for manifest-missing installs;
+  - centralized final install validation so review approval reuses provenance/policy/capability checks.
+- `packages/polar-runtime-core/src/skill-registry.mjs`
+  - preserved extra proposal metadata needed to finalize approved installs later.
+- `packages/polar-control-plane/src/index.mjs`
+  - made surfaced `installSkill()` always request manifest review.
+- `packages/polar-bot-runner/src/commands.mjs`
+  - added `/skills pending`, `/skills approve`, and `/skills reject`;
+  - updated install/review summaries to show pending review state and next-step approval commands.
+- `packages/polar-web-ui/vite.config.js`
+  - allowlisted `listPendingSkillInstallProposals`.
+- `docs/SKILLS.md`
+- `docs/specs/CONTROL_PLANE_API.md`
+- `docs/specs/CHAT_COMMANDS.md`
+  - documented the staged review flow and new operator commands.
+- `tests/control-plane-direct-execution-approvals.test.mjs`
+- `tests/control-plane-skill-install-hitl.test.mjs`
+- `tests/runtime-core-skill-installer-gateway.test.mjs`
+- `tests/telegram-command-router.test.mjs`
+  - added regression coverage for manifest-present staging, missing-manifest generation, review approval, and Telegram review commands.
+
+### Data model / migrations (if applicable)
+- **Tables created/changed:** none
+- **Migration notes:** none
+- **Non-DB persistence changes:** pending skill proposals now retain install context metadata in-memory so approval can finalize through the normal install validator.
+
+### Security and safety checks
+- Human review is now mandatory on surfaced skill installs regardless of whether a manifest was supplied or generated.
+- Approval no longer bypasses provenance verification or install policy checks; those are enforced during review finalization.
+- Missing-manifest generation is constrained to explicit MCP inventory and still validates analyzer output before proposal storage.
+
+### Tests and validation
+- `node --test tests/runtime-core-skill-installer-gateway.test.mjs tests/control-plane-skill-install-hitl.test.mjs tests/control-plane-direct-execution-approvals.test.mjs tests/telegram-command-router.test.mjs` - ✅
+- `npm run check:boundaries` - ✅
+- `npm test` - ✅ (505 passed, 0 failed)
+
+### Blockers
+- None.
+
+### Next
+- Consider adding a richer proposal inspection surface that shows the staged manifest body/diff before approval, especially for generated manifests and upgrades.
+- Decide whether the explicit `proposeSkillManifest()` API should accept pinned revision/provenance fields for remote sources so manual analyzer proposals can be approved without relying on local paths.

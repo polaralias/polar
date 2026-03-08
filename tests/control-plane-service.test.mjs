@@ -1507,6 +1507,7 @@ test("control-plane service manages agent registry and profile pin helpers", asy
   const got = await service.getAgentProfile({ agentId: "@writer" });
   assert.equal(got.status, "found");
   assert.equal(got.agent.description, "Writes polished docs");
+  assert.deepEqual(got.profileConfig.allowedSkills, ["web"]);
 
   const pinned = await service.pinProfileForScope({
     scope: "session",
@@ -1535,6 +1536,45 @@ test("control-plane service manages agent registry and profile pin helpers", asy
     userId: "user-99",
   });
   assert.equal(afterUnpin.status, "not_found");
+});
+
+test("control-plane service round-trips combined agent configuration and YAML export", async () => {
+  const service = createControlPlaneService();
+
+  const applied = await service.applyAgentConfiguration({
+    configuration: {
+      version: 1,
+      agentId: "@researcher",
+      profileId: "profile.researcher",
+      description: "Investigates across sources",
+      tags: ["research"],
+      forwarding: {
+        defaultForwardSkills: ["web"],
+        allowedForwardSkills: ["web"],
+      },
+      profile: {
+        systemPrompt: "Research carefully.",
+        modelPolicy: { providerId: "openai", modelId: "gpt-4.1-mini" },
+        allowedSkills: ["web"],
+      },
+    },
+  });
+  assert.equal(applied.status, "applied");
+  assert.equal(applied.agent.agentId, "@researcher");
+
+  const got = await service.getAgentConfiguration({ agentId: "@researcher" });
+  assert.equal(got.status, "found");
+  assert.equal(got.configuration.profile.modelPolicy.providerId, "openai");
+  assert.deepEqual(got.configuration.profile.allowedSkills, ["web"]);
+
+  const exported = await service.exportAgentConfigurationYaml({ agentId: "@researcher" });
+  assert.equal(exported.status, "found");
+  assert.match(exported.yamlText, /agentId: "@researcher"/);
+  assert.match(exported.yamlText, /modelId: gpt-4.1-mini/);
+
+  const reapplied = await service.applyAgentConfigurationYaml({ yamlText: exported.yamlText });
+  assert.equal(reapplied.status, "applied");
+  assert.equal(reapplied.agent.agentId, "@researcher");
 });
 
 test("control-plane agent registry validation rejects invalid records", async () => {

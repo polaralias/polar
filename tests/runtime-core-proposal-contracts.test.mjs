@@ -4,11 +4,16 @@ import assert from "node:assert/strict";
 import {
   parseJsonProposalText,
   routerProposalSchema,
+  routerResponseFormat,
   validateWorkflowPlannerProposal,
   validateSchemaProposal,
   automationPlannerSchema,
+  automationPlannerResponseFormat,
+  workflowPlannerResponseFormat,
   failureExplainerSchema,
+  failureExplainerResponseFormat,
   focusThreadResolverSchema,
+  focusThreadResolverResponseFormat,
 } from "../packages/polar-runtime-core/src/proposal-contracts.mjs";
 import { enforceFocusResolverProposal } from "../packages/polar-runtime-core/src/routing-policy-engine.mjs";
 
@@ -24,6 +29,20 @@ test("router proposal validator accepts contract-compliant proposal", () => {
   );
   assert.equal(result.valid, true);
   assert.equal(result.value.decision, "delegate");
+});
+
+test("router proposal validator rejects target on respond decisions", () => {
+  const result = parseJsonProposalText(
+    JSON.stringify({
+      decision: "respond",
+      target: { agentId: "@writer" },
+      confidence: 0.8,
+      rationale: "direct answer",
+    }),
+    routerProposalSchema,
+  );
+  assert.equal(result.valid, false);
+  assert.match(result.errors.join("\n"), /target must be omitted/i);
 });
 
 test("workflow planner validator fails closed on malformed steps", () => {
@@ -54,12 +73,38 @@ test("automation planner validator requires strict schema", () => {
   assert.equal(result.valid, true);
 });
 
+test("automation planner clarify decision requires a clarification question", () => {
+  const result = validateSchemaProposal(
+    {
+      decision: "clarify",
+      confidence: 0.4,
+      summary: "Need a confirmation",
+    },
+    automationPlannerSchema,
+  );
+  assert.equal(result.valid, false);
+  assert.match(result.errors.join("\n"), /clarificationQuestion is required/i);
+});
+
 test("failure explainer validator rejects missing summary", () => {
   const result = validateSchemaProposal(
     { canRetry: false, detailLevel: "safe" },
     failureExplainerSchema,
   );
   assert.equal(result.valid, false);
+});
+
+test("failure explainer validator requires boolean canRetry", () => {
+  const result = validateSchemaProposal(
+    {
+      summary: "Retry later",
+      canRetry: "yes",
+      detailLevel: "safe",
+    },
+    failureExplainerSchema,
+  );
+  assert.equal(result.valid, false);
+  assert.match(result.errors.join("\n"), /canRetry/i);
 });
 
 test("focus resolver enforcement clamps unknown anchors", () => {
@@ -85,4 +130,25 @@ test("focus resolver schema parses valid payload", () => {
     focusThreadResolverSchema,
   );
   assert.equal(result.valid, true);
+});
+
+test("focus resolver schema rejects non-boolean clarification flag", () => {
+  const result = validateSchemaProposal(
+    {
+      confidence: 0.5,
+      refersTo: "pending",
+      candidates: [{ anchorId: "a1", threadKey: "k", score: 0.5, reason: "pending" }],
+      needsClarification: "sometimes",
+    },
+    focusThreadResolverSchema,
+  );
+  assert.equal(result.valid, false);
+});
+
+test("planner response formats expose native json schema metadata", () => {
+  assert.equal(routerResponseFormat.type, "json_schema");
+  assert.equal(automationPlannerResponseFormat.type, "json_schema");
+  assert.equal(workflowPlannerResponseFormat.type, "json_schema");
+  assert.equal(failureExplainerResponseFormat.type, "json_schema");
+  assert.equal(focusThreadResolverResponseFormat.type, "json_schema");
 });

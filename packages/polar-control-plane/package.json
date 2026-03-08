@@ -11,6 +11,7 @@
     "@polar/adapter-extensions": "*",
     "@polar/adapter-native": "*",
     "@polar/domain": "*",
-    "@polar/runtime-core": "*"
+    "@polar/runtime-core": "*",
+    "yaml": "^2.8.1"
   }
 }

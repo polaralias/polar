@@ -9,6 +9,7 @@ const repoRoot = resolve(moduleDir, '../..');
 const platform = createPolarPlatform({
     dbPath: resolve(repoRoot, 'polar-system.db')
 });
+await platform.bootstrapPromise;
 const controlPlane = platform.controlPlane;
 
 // BUG-002 fix: API authorization via a simple bearer token from env
@@ -24,17 +25,17 @@ const ALLOWED_ACTIONS = new Set([
     'listHandoffRoutingTelemetry', 'listUsageTelemetry', 'listExecutionLineage', 'listTelemetryAlerts', 'routeTelemetryAlerts',
     'getThreadStateDiagnostics',
     'listSchedulerEventQueue', 'runSchedulerQueueAction',
-    'createAutomationJob', 'listAutomationJobs', 'updateAutomationJob', 'disableAutomationJob',
+    'createAutomationJob', 'listAutomationJobs', 'updateAutomationJob', 'disableAutomationJob', 'deleteAutomationJob',
     'generateOutput', 'listModels', 'streamOutput', 'embedText',
     'executeExtension', 'applyExtensionLifecycle', 'listExtensionStates',
-    'installSkill', 'reviewSkillInstallProposal', 'syncMcpServer', 'installPlugin',
+    'installSkill', 'listPendingSkillInstallProposals', 'reviewSkillInstallProposal', 'syncMcpServer', 'installPlugin',
     'submitSkillMetadataOverride', 'listBlockedSkills', 'listCapabilityAuthorityStates',
     'searchMemory', 'getMemory', 'upsertMemory', 'compactMemory',
     'getPersonalityProfile', 'getEffectivePersonality', 'upsertPersonalityProfile', 'resetPersonalityProfile', 'listPersonalityProfiles',
     'getModelRegistry', 'upsertModelRegistry', 'setModelRegistryDefault',
-    'getAgentRegistry', 'listAgentProfiles', 'getAgentProfile', 'registerAgentProfile', 'unregisterAgentProfile',
+    'getAgentRegistry', 'listAgentProfiles', 'getAgentProfile', 'getAgentConfiguration', 'applyAgentConfiguration', 'exportAgentConfigurationYaml', 'applyAgentConfigurationYaml', 'registerAgentProfile', 'unregisterAgentProfile',
     'pinProfileForScope', 'unpinProfileForScope', 'getEffectivePinnedProfile',
-    'orchestrate', 'updateMessageChannelId', 'executeWorkflow', 'rejectWorkflow', 'cancelWorkflow', 'handleRepairSelection'
+    'orchestrate', 'updateMessageChannelId', 'executeWorkflow', 'rejectWorkflow', 'cancelWorkflow', 'getWorkflowProposal', 'consumeAutomationProposal', 'rejectAutomationProposal', 'handleRepairSelection'
 ]);
 
 /**

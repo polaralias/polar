@@ -20,11 +20,16 @@ import {
     parseJsonProposalText,
     routerProposalSchema,
     automationPlannerSchema,
+    automationPlannerResponseFormat,
     validateWorkflowPlannerProposal,
+    workflowPlannerResponseFormat,
     failureExplainerSchema,
+    failureExplainerResponseFormat,
     focusThreadResolverSchema,
+    focusThreadResolverResponseFormat,
     normalizeConfidence,
 } from './proposal-contracts.mjs';
+import { requestStructuredJsonResponse } from './structured-output.mjs';
 
 const repairPhrasingSchema = createStrictObjectSchema({
     schemaId: 'orchestrator.repair.phrasing',
@@ -55,6 +60,7 @@ const delegationStateSchema = createStrictObjectSchema({
     schemaId: 'orchestrator.delegation.state',
     fields: {
         agentId: stringField({ minLength: 1 }),
+        profileId: stringField({ minLength: 1, required: false }),
         task_instructions: stringField({ minLength: 1 }),
         forward_skills: stringArrayField({ minItems: 0, required: false }),
         model_override: stringField({ minLength: 1, required: false }),
@@ -68,6 +74,53 @@ const delegationStateSchema = createStrictObjectSchema({
  */
 function normalizeJsonText(rawText) {
     return rawText.replace(/```json?\s*/g, '').replace(/```/g, '').trim();
+}
+
+function normalizeDelegationState(value) {
+    if (typeof value !== "object" || value === null || Object.getPrototypeOf(value) !== Object.prototype) {
+        return null;
+    }
+    const agentId = typeof value.agentId === "string" ? value.agentId.trim() : "";
+    const taskInstructions =
+        typeof value.task_instructions === "string" ? value.task_instructions.trim() : "";
+    if (!agentId || !taskInstructions) {
+        return null;
+    }
+    const normalized = {
+        agentId,
+        task_instructions: taskInstructions,
+    };
+    if (typeof value.profileId === "string" && value.profileId.trim().length > 0) {
+        normalized.profileId = value.profileId.trim();
+    }
+    const forwardSkills = normalizeStringArray(value.forward_skills);
+    if (forwardSkills.length > 0) {
+        normalized.forward_skills = forwardSkills;
+    }
+    if (typeof value.model_override === "string" && value.model_override.trim().length > 0) {
+        normalized.model_override = value.model_override.trim();
+    }
+    if (typeof value.pinnedProvider === "string" && value.pinnedProvider.trim().length > 0) {
+        normalized.pinnedProvider = value.pinnedProvider.trim();
+    }
+    return normalized;
+}
+
+function normalizeDelegationStateMap(value) {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+        return {};
+    }
+    const normalized = {};
+    for (const [laneKey, delegationState] of Object.entries(value)) {
+        if (typeof laneKey !== "string" || laneKey.length === 0) {
+            continue;
+        }
+        const parsed = normalizeDelegationState(delegationState);
+        if (parsed) {
+            normalized[laneKey] = parsed;
+        }
+    }
+    return normalized;
 }
 
 /**
@@ -291,26 +344,59 @@ function detectInboxAutomationProposal(text) {
  * }} input
  */
 async function requestAutomationPlannerProposal(input) {
-    const response = await input.providerGateway.generate({
-        executionType: "tool",
-        providerId: input.providerId,
-        model: input.model,
-        system: "You are an automation planning model. Output strict JSON only.",
-        prompt:
-            `Produce an automation planner proposal JSON object only. ${JSON.stringify({
-                userText: input.text,
-                runScope: {
-                    sessionId: input.sessionId,
-                    userId: input.userId,
-                },
-                constraints: {
-                    maxNotificationsPerDayCap: 3,
-                    quietHoursDefault: { startHour: 22, endHour: 7, timezone: "UTC" },
-                    allowedScheduleKinds: ["interval", "daily", "weekly", "event"],
-                },
-            })}`,
+    const plannerPayload = {
+        userText: input.text,
+        runScope: {
+            sessionId: input.sessionId,
+            userId: input.userId,
+        },
+        constraints: {
+            maxNotificationsPerDayCap: 3,
+            quietHoursDefault: { startHour: 22, endHour: 7, timezone: "UTC" },
+            allowedScheduleKinds: ["interval", "daily", "weekly", "event"],
+        },
+    };
+
+    return requestStructuredJsonResponse({
+        providerGateway: input.providerGateway,
+        responseFormat: automationPlannerResponseFormat,
+        initialRequest: {
+            executionType: "tool",
+            providerId: input.providerId,
+            model: input.model,
+            system:
+                `You are an automation planning model. Return exactly one JSON object matching ${automationPlannerSchema.schemaId}. `
+                + "No markdown, no code fences, no prose outside the JSON object. "
+                + 'Rules: "propose" requires schedule, runScope, limits, and riskHints. '
+                + '"clarify" requires clarificationQuestion. confidence must be numeric.',
+            prompt: `Produce an automation planner proposal JSON object only. ${JSON.stringify(plannerPayload)}`,
+            temperature: 0,
+            maxOutputTokens: 320,
+        },
+        validateResponseText(rawText) {
+            return parseJsonProposalText(rawText, automationPlannerSchema);
+        },
+        buildRepairRequest({ invalidOutput, validationErrors }) {
+            return {
+                executionType: "tool",
+                providerId: input.providerId,
+                model: input.model,
+                system:
+                    `You are an automation planner JSON repairer. Return exactly one corrected JSON object matching ${automationPlannerSchema.schemaId}. `
+                    + "Do not explain the changes. Do not wrap the JSON in markdown or quotes.",
+                prompt:
+                    `The prior automation planner output was invalid. Fix it and return corrected JSON only. ${JSON.stringify({
+                        validationErrors,
+                        plannerRequest: plannerPayload,
+                        invalidOutput,
+                    })}`,
+                temperature: 0,
+                maxOutputTokens: 320,
+            };
+        },
+        unavailableFallbackReason: "planner_unavailable",
+        invalidFallbackReason: "schema_invalid",
     });
-    return parseJsonProposalText(response?.text || "{}", automationPlannerSchema);
 }
 
 function normalizeAutomationScheduleFromProposal(schedule) {
@@ -404,25 +490,60 @@ function parseJsonWithSchema(rawText, schema) {
  * }} input
  */
 async function requestWorkflowPlannerProposal(input) {
-    const response = await input.providerGateway.generate({
-        executionType: "tool",
-        providerId: input.providerId,
-        model: input.model,
-        system: "You are a workflow planning model. Output strict JSON only.",
-        prompt:
-            `Propose an executable workflow JSON object only. ${JSON.stringify({
-                userText: input.text,
-                assistantContext: input.cleanText || null,
-                availableTools: input.availableTools,
-            })}`,
+    const plannerPayload = {
+        userText: input.text,
+        assistantContext: input.cleanText || null,
+        availableTools: input.availableTools,
+    };
+
+    return requestStructuredJsonResponse({
+        providerGateway: input.providerGateway,
+        responseFormat: workflowPlannerResponseFormat,
+        initialRequest: {
+            executionType: "tool",
+            providerId: input.providerId,
+            model: input.model,
+            system:
+                "You are a workflow planning model. Return exactly one JSON object matching prompt.workflow_planner.proposal.v1. "
+                + "No markdown, no code fences, no prose outside the JSON object. "
+                + "confidence must be numeric, riskHints must be an object, and steps must be executable capability calls.",
+            prompt: `Propose an executable workflow JSON object only. ${JSON.stringify(plannerPayload)}`,
+            temperature: 0,
+            maxOutputTokens: 480,
+        },
+        validateResponseText(rawText) {
+            try {
+                return validateWorkflowPlannerProposal(JSON.parse(normalizeJsonText(rawText || "{}")));
+            } catch {
+                return {
+                    valid: false,
+                    schemaId: "prompt.workflow_planner.proposal.v1",
+                    errors: Object.freeze(["Invalid JSON payload"]),
+                    clampReasons: Object.freeze(["schema_invalid"]),
+                };
+            }
+        },
+        buildRepairRequest({ invalidOutput, validationErrors }) {
+            return {
+                executionType: "tool",
+                providerId: input.providerId,
+                model: input.model,
+                system:
+                    "You are a workflow planner JSON repairer. Return exactly one corrected JSON object matching prompt.workflow_planner.proposal.v1. "
+                    + "Do not explain the changes. Do not wrap the JSON in markdown or quotes.",
+                prompt:
+                    `The prior workflow planner output was invalid. Fix it and return corrected JSON only. ${JSON.stringify({
+                        validationErrors,
+                        plannerRequest: plannerPayload,
+                        invalidOutput,
+                    })}`,
+                temperature: 0,
+                maxOutputTokens: 480,
+            };
+        },
+        unavailableFallbackReason: "planner_unavailable",
+        invalidFallbackReason: "schema_invalid",
     });
-    let parsed = {};
-    try {
-        parsed = JSON.parse(normalizeJsonText(response?.text || "{}"));
-    } catch {
-        return { valid: false, clampReasons: ["schema_invalid"] };
-    }
-    return validateWorkflowPlannerProposal(parsed);
 }
 
 /**
@@ -459,21 +580,113 @@ function buildFocusCandidateFromThread(thread) {
  * }} input
  */
 async function requestFocusResolverProposal(input) {
-    const response = await input.providerGateway.generate({
-        executionType: "handoff",
-        providerId: input.providerId,
-        model: input.model,
-        system: "You are a focus/thread resolver model. Output strict JSON only.",
-        prompt:
-            `Rank focus candidates for this ambiguous follow-up JSON only. ${JSON.stringify({
-                userText: input.text,
-                laneThreadKey: input.laneThreadKey,
-                focusContext: input.focusContext || null,
-                candidates: input.candidates,
-                temporalAttention: input.temporalAttention,
-            })}`,
+    const resolverPayload = {
+        userText: input.text,
+        laneThreadKey: input.laneThreadKey,
+        focusContext: input.focusContext || null,
+        candidates: input.candidates,
+        temporalAttention: input.temporalAttention,
+    };
+
+    return requestStructuredJsonResponse({
+        providerGateway: input.providerGateway,
+        responseFormat: focusThreadResolverResponseFormat,
+        initialRequest: {
+            executionType: "handoff",
+            providerId: input.providerId,
+            model: input.model,
+            system:
+                `You are a focus/thread resolver model. Return exactly one JSON object matching ${focusThreadResolverSchema.schemaId}. `
+                + "No markdown, no code fences, no prose outside the JSON object. "
+                + "needsClarification must be boolean, and candidates must be ranked typed thread matches.",
+            prompt: `Rank focus candidates for this ambiguous follow-up JSON only. ${JSON.stringify(resolverPayload)}`,
+            temperature: 0,
+            maxOutputTokens: 360,
+        },
+        validateResponseText(rawText) {
+            return parseJsonProposalText(rawText, focusThreadResolverSchema);
+        },
+        buildRepairRequest({ invalidOutput, validationErrors }) {
+            return {
+                executionType: "handoff",
+                providerId: input.providerId,
+                model: input.model,
+                system:
+                    `You are a focus resolver JSON repairer. Return exactly one corrected JSON object matching ${focusThreadResolverSchema.schemaId}. `
+                    + "Do not explain the changes. Do not wrap the JSON in markdown or quotes.",
+                prompt:
+                    `The prior focus resolver output was invalid. Fix it and return corrected JSON only. ${JSON.stringify({
+                        validationErrors,
+                        resolverRequest: resolverPayload,
+                        invalidOutput,
+                    })}`,
+                temperature: 0,
+                maxOutputTokens: 360,
+            };
+        },
+        unavailableFallbackReason: "resolver_unavailable",
+        invalidFallbackReason: "schema_invalid",
     });
-    return parseJsonProposalText(response?.text || "{}", focusThreadResolverSchema);
+}
+
+/**
+ * @param {{
+ *  providerGateway: { generate: (input: Record<string, unknown>) => Promise<{ text?: string }|Record<string, unknown>> },
+ *  providerId: string,
+ *  model: string,
+ *  system: string,
+ *  messages: Array<{ role: string, content: string }>,
+ *  normalizedEnvelope: Record<string, unknown>,
+ *  deterministicHeader: string
+ * }} input
+ */
+async function requestFailureExplainerProposal(input) {
+    const promptPayload = {
+        normalizedEnvelope: input.normalizedEnvelope,
+        deterministicHeader: input.deterministicHeader,
+    };
+
+    return requestStructuredJsonResponse({
+        providerGateway: input.providerGateway,
+        responseFormat: failureExplainerResponseFormat,
+        initialRequest: {
+            executionType: "tool",
+            providerId: input.providerId,
+            model: input.model,
+            system: input.system,
+            messages: input.messages,
+            prompt:
+                `Return exactly one JSON object matching ${failureExplainerSchema.schemaId}. `
+                + "Default to safe detail level. Use only these normalized error envelopes. "
+                + `Do not include stack traces or secret values.\n\n${JSON.stringify(promptPayload)}`,
+            temperature: 0,
+            maxOutputTokens: 320,
+        },
+        validateResponseText(rawText) {
+            return parseJsonProposalText(rawText, failureExplainerSchema);
+        },
+        buildRepairRequest({ invalidOutput, validationErrors }) {
+            return {
+                executionType: "tool",
+                providerId: input.providerId,
+                model: input.model,
+                system:
+                    `You are a failure explainer JSON repairer. Return exactly one corrected JSON object matching ${failureExplainerSchema.schemaId}. `
+                    + "Do not explain the changes. Do not wrap the JSON in markdown or quotes.",
+                messages: input.messages,
+                prompt:
+                    `The prior failure explainer output was invalid. Fix it and return corrected JSON only. ${JSON.stringify({
+                        validationErrors,
+                        failureExplainerRequest: promptPayload,
+                        invalidOutput,
+                    })}`,
+                temperature: 0,
+                maxOutputTokens: 320,
+            };
+        },
+        unavailableFallbackReason: "failure_explainer_unavailable",
+        invalidFallbackReason: "schema_invalid",
+    });
 }
 
 /**
@@ -515,8 +728,8 @@ function toJsonSafeValue(value) {
 const AGENT_REGISTRY_RESOURCE_TYPE = "policy";
 const AGENT_REGISTRY_RESOURCE_ID = "agent-registry:default";
 const AGENT_ID_PATTERN = /^@[a-z0-9_-]{2,32}$/;
-const DEFAULT_GENERIC_AGENT_ID = "@generic_sub_agent";
-const DEFAULT_GENERIC_PROFILE_ID = "profile.generic_sub_agent";
+const DEFAULT_GENERIC_AGENT_ID = "@general";
+const DEFAULT_GENERIC_PROFILE_ID = "profile.general";
 const ROUTER_CONFIDENCE_THRESHOLD = 0.65;
 const ROUTER_DECISION_MARGIN_THRESHOLD = 0.12;
 const FOCUS_RESOLVER_AMBIGUITY_SCORE_GAP_THRESHOLD = 0.2;
@@ -980,29 +1193,33 @@ function buildTemporalAttentionRecord(input) {
         .slice(0, 3)
         .map((thread) => thread?.summary || thread?.pendingQuestion?.text || thread?.openOffer?.target || thread?.id)
         .filter((entry) => typeof entry === "string" && entry.length > 0);
-    let activeDelegation = null;
-    for (const entry of [...recentLaneMessages].reverse()) {
-        const messageText = typeof entry?.text === "string" ? entry.text : "";
-        if (!messageText) {
-            continue;
-        }
-        if (messageText.startsWith("[DELEGATION CLEARED]")) {
-            break;
-        }
-        if (messageText.startsWith("[DELEGATION ACTIVE]")) {
-            try {
-                const parsed = parseJsonWithSchema(
-                    messageText.replace("[DELEGATION ACTIVE]", "").trim(),
-                    delegationStateSchema,
-                );
-                activeDelegation = {
-                    agentId: parsed.agentId,
-                    task_instructions: parsed.task_instructions,
-                };
-            } catch {
-                activeDelegation = null;
+    let activeDelegation =
+        typeof sessionState?.activeDelegations === "object" &&
+            sessionState?.activeDelegations !== null &&
+            typeof laneThreadKey === "string"
+            ? normalizeDelegationState(sessionState.activeDelegations[laneThreadKey])
+            : null;
+    if (!activeDelegation) {
+        for (const entry of [...recentLaneMessages].reverse()) {
+            const messageText = typeof entry?.text === "string" ? entry.text : "";
+            if (!messageText) {
+                continue;
             }
-            break;
+            if (messageText.startsWith("[DELEGATION CLEARED]")) {
+                break;
+            }
+            if (messageText.startsWith("[DELEGATION ACTIVE]")) {
+                try {
+                    const parsed = parseJsonWithSchema(
+                        messageText.replace("[DELEGATION ACTIVE]", "").trim(),
+                        delegationStateSchema,
+                    );
+                    activeDelegation = normalizeDelegationState(parsed);
+                } catch {
+                    activeDelegation = null;
+                }
+                break;
+            }
         }
     }
     const riskHints = Object.freeze({
@@ -1360,6 +1577,7 @@ export function createOrchestrator({
     const WORKFLOW_RUN_STATUS = new Map();
     const WORKFLOW_TTL_MS = 30 * 60 * 1000;
     const WORKFLOW_MAX_SIZE = 100;
+    const BULK_ACTION_THRESHOLD = 50;
     const PENDING_AUTOMATION_PROPOSALS = new Map();
     const AUTOMATION_PROPOSAL_TTL_MS = 30 * 60 * 1000;
 
@@ -1464,7 +1682,7 @@ export function createOrchestrator({
     }
 
     function normalizeSessionStateValue(value) {
-        const fallback = { threads: [], activeThreadId: null };
+        const fallback = { threads: [], activeThreadId: null, activeDelegations: {} };
         if (typeof value !== "object" || value === null) {
             return fallback;
         }
@@ -1473,10 +1691,51 @@ export function createOrchestrator({
             typeof value.activeThreadId === "string" && value.activeThreadId.length > 0
                 ? value.activeThreadId
                 : null;
+        const activeDelegations = normalizeDelegationStateMap(value.activeDelegations);
         return {
             threads,
             activeThreadId,
+            activeDelegations,
         };
+    }
+
+    function getActiveDelegationForLane(sessionState, laneThreadKey) {
+        if (typeof laneThreadKey !== "string" || laneThreadKey.length === 0) {
+            return null;
+        }
+        const state = normalizeSessionStateValue(sessionState);
+        return normalizeDelegationState(state.activeDelegations?.[laneThreadKey]);
+    }
+
+    function setActiveDelegationForLane(sessionState, laneThreadKey, delegationState) {
+        const state = normalizeSessionStateValue(sessionState);
+        if (typeof laneThreadKey !== "string" || laneThreadKey.length === 0) {
+            return state;
+        }
+        if (!state.activeDelegations || typeof state.activeDelegations !== "object") {
+            state.activeDelegations = {};
+        }
+        const normalized = normalizeDelegationState(delegationState);
+        if (normalized) {
+            state.activeDelegations[laneThreadKey] = normalized;
+        } else {
+            delete state.activeDelegations[laneThreadKey];
+        }
+        return state;
+    }
+
+    function resolveLaneThreadKeyForThread(sessionState, threadId, fallbackLaneThreadKey) {
+        if (typeof fallbackLaneThreadKey === "string" && fallbackLaneThreadKey.length > 0) {
+            return fallbackLaneThreadKey;
+        }
+        if (typeof threadId !== "string" || threadId.length === 0) {
+            return null;
+        }
+        const state = normalizeSessionStateValue(sessionState);
+        const matchedThread = state.threads.find((thread) => thread?.id === threadId);
+        return typeof matchedThread?.laneThreadKey === "string" && matchedThread.laneThreadKey.length > 0
+            ? matchedThread.laneThreadKey
+            : null;
     }
 
     async function readThreadStateRecord(memoryId) {
@@ -1736,13 +1995,126 @@ export function createOrchestrator({
     /**
      * Compute risk summary for a list of workflow steps.
      */
-    function evaluateWorkflowRisk(steps) {
+    function inferTargetCountFromArgs(args) {
+        if (!args || typeof args !== "object") {
+            return null;
+        }
+        let maxCount = null;
+        const visit = (value, key = "") => {
+            if (Array.isArray(value)) {
+                if (value.length > 0) {
+                    maxCount = maxCount === null ? value.length : Math.max(maxCount, value.length);
+                }
+                for (const item of value) {
+                    visit(item, key);
+                }
+                return;
+            }
+            if (!value || typeof value !== "object") {
+                return;
+            }
+            for (const [childKey, childValue] of Object.entries(value)) {
+                if (typeof childValue === "number" && Number.isFinite(childValue)) {
+                    if (/(count|limit|max|total|batch|size)$/i.test(childKey) && childValue > 1) {
+                        maxCount = maxCount === null ? childValue : Math.max(maxCount, childValue);
+                    }
+                    continue;
+                }
+                visit(childValue, childKey);
+            }
+        };
+        visit(args);
+        return maxCount !== null && Number.isFinite(maxCount) ? maxCount : null;
+    }
+
+    function inferExplicitCountFromText(sourceText) {
+        const textValue = typeof sourceText === "string" ? sourceText : "";
+        let maxCount = null;
+        for (const match of textValue.matchAll(/\b(\d{1,6})\b/g)) {
+            const parsed = Number.parseInt(match[1], 10);
+            if (!Number.isFinite(parsed) || parsed <= 1) {
+                continue;
+            }
+            maxCount = maxCount === null ? parsed : Math.max(maxCount, parsed);
+        }
+        return maxCount;
+    }
+
+    function hasOpenEndedBulkIntent(sourceText) {
+        if (typeof sourceText !== "string") {
+            return false;
+        }
+        return /\b(all|every|each|entire|whole|bulk|campaign|blast|mass|everyone|everything)\b/i.test(sourceText);
+    }
+
+    function sanitizePreviewValue(value) {
+        return toJsonSafeValue(value);
+    }
+
+    function buildWorkflowDryRunPreview({ steps, risk, sourceText }) {
+        const stepsPayload = steps.map((step, index) => ({
+            step: index + 1,
+            extensionId: step.extensionId,
+            capabilityId: step.capabilityId,
+            targetEstimate:
+                typeof step.targetEstimate === "number" && Number.isFinite(step.targetEstimate)
+                    ? step.targetEstimate
+                    : undefined,
+            args: sanitizePreviewValue(step.args ?? {}),
+        }));
+
+        const targetEstimate =
+            typeof risk.bulk?.targetEstimate === "number" && Number.isFinite(risk.bulk.targetEstimate)
+                ? risk.bulk.targetEstimate
+                : null;
+        const previewLines = [];
+        if (risk.riskLevel === "destructive") {
+            previewLines.push("Dry run preview: this workflow includes destructive actions.");
+        } else {
+            previewLines.push("Dry run preview: this workflow qualifies as a bulk write.");
+        }
+        if (targetEstimate !== null) {
+            previewLines.push(`Estimated targets: about ${targetEstimate}.`);
+        } else if (risk.bulk?.isBulk) {
+            previewLines.push("Estimated targets: unresolved from prompt and args, so this is being treated as bulk conservatively.");
+        }
+        if (typeof risk.bulk?.reason === "string" && risk.bulk.reason.length > 0) {
+            previewLines.push(`Why this needs preview: ${risk.bulk.reason}.`);
+        }
+        previewLines.push("Planned steps:");
+        for (const step of stepsPayload) {
+            const targetLabel =
+                typeof step.targetEstimate === "number" && Number.isFinite(step.targetEstimate)
+                    ? ` targeting about ${step.targetEstimate}`
+                    : "";
+            previewLines.push(`- Step ${step.step}: ${step.capabilityId} via ${step.extensionId}${targetLabel}.`);
+        }
+
+        return Object.freeze({
+            summaryText: previewLines.join("\n"),
+            payload: Object.freeze({
+                previewKind: "workflow_dry_run",
+                riskLevel: risk.riskLevel,
+                sideEffects: risk.sideEffects,
+                dataEgress: risk.dataEgress,
+                bulk: sanitizePreviewValue(risk.bulk),
+                prompt: typeof sourceText === "string" ? sourceText : "",
+                steps: Object.freeze(stepsPayload),
+            }),
+        });
+    }
+
+    function evaluateWorkflowRisk(steps, sourceText = "") {
         let maxRisk = 'read';
         let maxEffects = 'none';
         let maxEgress = 'none';
         let hasDelegation = false;
         let delegationRequiresApproval = false;
         const requirements = [];
+        let hasWriteStep = false;
+        let explicitBulkCapability = false;
+        let bulkThreshold = BULK_ACTION_THRESHOLD;
+        let maxTargetEstimate = null;
 
         for (const step of steps) {
             if (step.capabilityId === 'delegate_to_agent') {
@@ -1758,11 +2130,21 @@ export function createOrchestrator({
 
             const state = extensionGateway.getState(step.extensionId);
             const cap = (state?.capabilities || []).find(c => c.capabilityId === step.capabilityId);
+            const stepTargetEstimate = inferTargetCountFromArgs(step.args ?? {});
+            if (typeof stepTargetEstimate === "number" && Number.isFinite(stepTargetEstimate)) {
+                step.targetEstimate = stepTargetEstimate;
+                maxTargetEstimate = maxTargetEstimate === null
+                    ? stepTargetEstimate
+                    : Math.max(maxTargetEstimate, stepTargetEstimate);
+            }
 
             if (cap) {
                 // Risk Level: read < write < destructive
                 if (cap.riskLevel === 'destructive') maxRisk = 'destructive';
                 else if (cap.riskLevel === 'write' && maxRisk === 'read') maxRisk = 'write';
+                if (cap.riskLevel === 'write' || cap.riskLevel === 'destructive') {
+                    hasWriteStep = true;
+                }
 
                 // Side Effects: none < internal < external
                 if (cap.sideEffects === 'external') maxEffects = 'external';
@@ -1770,6 +2152,12 @@ export function createOrchestrator({
 
                 // Data Egress: none < network
                 if (cap.dataEgress === 'network') maxEgress = 'network';
+                if (cap.bulk === true) {
+                    explicitBulkCapability = true;
+                }
+                if (typeof cap.bulkThreshold === "number" && Number.isFinite(cap.bulkThreshold) && cap.bulkThreshold > 1) {
+                    bulkThreshold = Math.max(2, Math.floor(cap.bulkThreshold));
+                }
 
                 const approvalRequirement = evaluateCapabilityApprovalRequirement({
                     riskLevel: cap.riskLevel || 'unknown',
@@ -1793,7 +2181,30 @@ export function createOrchestrator({
                 // If metadata missing, assume write/internal for safety
                 if (maxRisk === 'read') maxRisk = 'write';
                 if (maxEffects === 'none') maxEffects = 'internal';
+                hasWriteStep = true;
             }
+        }
+
+        const inferredCountFromText = inferExplicitCountFromText(sourceText);
+        const targetEstimateCandidates = [maxTargetEstimate, inferredCountFromText]
+            .filter((value) => typeof value === "number" && Number.isFinite(value));
+        const targetEstimate =
+            targetEstimateCandidates.length > 0
+                ? Math.max(...targetEstimateCandidates)
+                : null;
+        const openEndedBulkIntent = hasOpenEndedBulkIntent(sourceText);
+        const inferredBulk = hasWriteStep && (
+            explicitBulkCapability ||
+            (typeof targetEstimate === "number" && targetEstimate >= bulkThreshold) ||
+            openEndedBulkIntent
+        );
+        let bulkReason = null;
+        if (explicitBulkCapability) {
+            bulkReason = "capability is explicitly marked bulk";
+        } else if (typeof targetEstimate === "number" && targetEstimate >= bulkThreshold) {
+            bulkReason = `estimated target count ${targetEstimate} meets threshold ${bulkThreshold}`;
+        } else if (openEndedBulkIntent) {
+            bulkReason = "prompt uses an open-ended selector and cannot be bounded safely";
         }
 
         return {
@@ -1802,7 +2213,16 @@ export function createOrchestrator({
             dataEgress: maxEgress,
             hasDelegation,
             delegationRequiresApproval,
-            requirements
+            requirements,
+            bulk: Object.freeze({
+                isBulk: inferredBulk,
+                threshold: bulkThreshold,
+                targetEstimate,
+                explicitCapability: explicitBulkCapability,
+                inferredFromText: openEndedBulkIntent,
+                reason: bulkReason,
+            }),
+            requiresDryRunApproval: maxRisk === 'destructive' || inferredBulk,
         };
     }
 
@@ -1869,6 +2289,168 @@ export function createOrchestrator({
         return normalizeAgentRegistry(record?.config);
     }
 
+    async function resolveExecutionProfile({ sessionId, userId, profileIdOverride }) {
+        if (typeof profileIdOverride === "string" && profileIdOverride.trim().length > 0) {
+            const record = await readConfigRecord("profile", profileIdOverride.trim());
+            if (!record || typeof record.config !== "object" || record.config === null) {
+                throw new RuntimeExecutionError(`Profile not found: ${profileIdOverride}`);
+            }
+            return {
+                status: "resolved",
+                resolvedScope: "direct_override",
+                profileId: profileIdOverride.trim(),
+                profileConfig: record.config,
+            };
+        }
+        return profileResolutionGateway.resolve({
+            sessionId,
+            userId: String(userId),
+        });
+    }
+
+    function buildWorkflowExecutionOverrides(metadata = {}, laneThreadKey) {
+        if (typeof metadata !== "object" || metadata === null) {
+            return null;
+        }
+        const overrides = {};
+        if (typeof metadata.profileIdOverride === "string" && metadata.profileIdOverride.trim().length > 0) {
+            overrides.profileIdOverride = metadata.profileIdOverride.trim();
+        }
+        const delegationState = normalizeDelegationState(metadata.delegationState);
+        if (delegationState) {
+            overrides.delegationState = delegationState;
+        }
+        if (metadata.internalDelegation === true) {
+            overrides.internalDelegation = true;
+        }
+        if (metadata.suppressThreadStateMutation === true) {
+            overrides.suppressThreadStateMutation = true;
+        }
+        if (
+            metadata.suppressUserMessagePersist === true ||
+            metadata.suppressMemoryWrite === true ||
+            metadata.suppressTaskWrites === true
+        ) {
+            overrides.suppressResponsePersist = true;
+        }
+        if (typeof laneThreadKey === "string" && laneThreadKey.length > 0) {
+            overrides.laneThreadKey = laneThreadKey;
+        }
+        return Object.keys(overrides).length > 0 ? Object.freeze(overrides) : null;
+    }
+
+    async function executeDelegatedTask({
+        sessionId,
+        userId,
+        laneThreadKey,
+        threadId,
+        agentId,
+        profileId,
+        taskInstructions,
+        forwardSkills,
+        providerId,
+        modelId,
+        parentWorkflowId,
+        parentRunId,
+        allowEscalatedExecution = false,
+    }) {
+        const delegatedState = normalizeDelegationState({
+            agentId,
+            profileId,
+            task_instructions: taskInstructions,
+            forward_skills: forwardSkills,
+            model_override: modelId,
+            pinnedProvider: providerId,
+        });
+        if (!delegatedState) {
+            return {
+                status: "error",
+                text: `Delegated execution could not start for ${agentId}.`,
+            };
+        }
+
+        try {
+            const delegatedResult = await methods.orchestrate({
+                sessionId,
+                userId,
+                text: taskInstructions,
+                metadata: {
+                    ...(typeof threadId === "string" && threadId.length > 0 ? { threadId } : {}),
+                    ...(typeof laneThreadKey === "string" && laneThreadKey.length > 0 ? { threadKey: laneThreadKey } : {}),
+                    profileIdOverride: profileId,
+                    delegationState: delegatedState,
+                    internalDelegation: true,
+                    suppressUserMessagePersist: true,
+                    suppressMemoryWrite: true,
+                    suppressTaskWrites: true,
+                    suppressAutomationWrites: true,
+                    suppressThreadStateMutation: true,
+                    ...(typeof parentWorkflowId === "string" ? { parentWorkflowId } : {}),
+                    ...(typeof parentRunId === "string" ? { parentRunId } : {}),
+                    ...(allowEscalatedExecution ? { allowEscalatedExecution: true } : {}),
+                },
+            });
+
+            if (delegatedResult?.status === "completed") {
+                const delegatedText =
+                    typeof delegatedResult.text === "string" && delegatedResult.text.trim().length > 0
+                        ? delegatedResult.text.trim()
+                        : `Delegated execution completed for ${agentId}.`;
+                const looksLikeClarification =
+                    delegatedText.length <= 280 &&
+                    /\?$/.test(delegatedText);
+                if (looksLikeClarification) {
+                    return {
+                        status: "clarification_needed",
+                        text: delegatedText,
+                    };
+                }
+                return {
+                    status: "completed",
+                    text: delegatedText,
+                };
+            }
+            if (
+                delegatedResult?.type === "clarification_needed" ||
+                delegatedResult?.status === "clarification_needed"
+            ) {
+                return {
+                    status: "clarification_needed",
+                    text:
+                        typeof delegatedResult.text === "string" && delegatedResult.text.trim().length > 0
+                            ? delegatedResult.text
+                            : `Delegated execution needs clarification for ${agentId}.`,
+                };
+            }
+            if (delegatedResult?.status === "workflow_proposed") {
+                return {
+                    status: "pending_approval",
+                    text:
+                        typeof delegatedResult.text === "string" && delegatedResult.text.trim().length > 0
+                            ? delegatedResult.text
+                            : `Delegated execution is awaiting approval for ${agentId}.`,
+                    ...(typeof delegatedResult.workflowId === "string" ? { workflowId: delegatedResult.workflowId } : {}),
+                    ...(delegatedResult.risk && typeof delegatedResult.risk === "object" ? { risk: delegatedResult.risk } : {}),
+                };
+            }
+            return {
+                status: delegatedResult?.status === "error" ? "error" : "error",
+                text:
+                    typeof delegatedResult?.text === "string" && delegatedResult.text.trim().length > 0
+                        ? delegatedResult.text
+                        : `Delegated execution failed to start for ${agentId}.`,
+            };
+        } catch (error) {
+            return {
+                status: "error",
+                text:
+                    error instanceof Error && typeof error.message === "string" && error.message.trim().length > 0
+                        ? error.message
+                        : `Delegated execution failed to start for ${agentId}.`,
+            };
+        }
+    }
+
     const methods = {
         async orchestrate(envelope) {
             const { sessionId, userId, text, messageId, metadata = {} } = envelope;
@@ -1892,6 +2474,13 @@ export function createOrchestrator({
                 return Object.freeze(safe);
             })();
             const isPreviewMode = metadata?.previewMode === true;
+            const profileIdOverride =
+                typeof metadata?.profileIdOverride === "string" && metadata.profileIdOverride.trim().length > 0
+                    ? metadata.profileIdOverride.trim()
+                    : undefined;
+            const delegatedExecutionState = normalizeDelegationState(metadata?.delegationState);
+            const suppressThreadStateMutation = metadata?.suppressThreadStateMutation === true;
+            const internalDelegation = metadata?.internalDelegation === true;
             const suppressUserMessagePersist =
                 metadata?.suppressUserMessagePersist === true || isPreviewMode;
             const suppressMemoryWrite =
@@ -1914,7 +2503,7 @@ export function createOrchestrator({
             let forcedRoutingDecision = null;
             let forcedRoutingTargetAgentId = null;
             const routingStateKey = buildRoutingStateKey(polarSessionId, laneThreadKey);
-            const pendingRoutingState = PENDING_ROUTING_STATES.get(routingStateKey);
+            const pendingRoutingState = internalDelegation ? null : PENDING_ROUTING_STATES.get(routingStateKey);
             if (pendingRoutingState && now() <= (pendingRoutingState.expiresAtMs || 0) && text) {
                 let selectionIntent = parseRoutingSelectionIntent({ text });
                 if (
@@ -1948,9 +2537,10 @@ export function createOrchestrator({
             } else if (pendingRoutingState) {
                 await persistRoutingState(polarSessionId, laneThreadKey, null);
             }
-            const profile = await profileResolutionGateway.resolve({
+            const profile = await resolveExecutionProfile({
                 sessionId: polarSessionId,
-                userId: String(userId),
+                userId,
+                profileIdOverride,
             });
             const policy = profile.profileConfig?.modelPolicy || {};
             const providerId = policy.providerId || "openai";
@@ -1974,6 +2564,10 @@ export function createOrchestrator({
                     replyToMessageId: metadata?.replyToMessageId,
                     laneThreadKey: inboundThreadKey,
                 });
+            }
+
+            if (text && !suppressThreadStateMutation) {
+                const preservedActiveDelegations = normalizeDelegationStateMap(sessionState.activeDelegations);
                 sessionState = applyUserTurn({
                     sessionState,
                     classification,
@@ -1981,6 +2575,7 @@ export function createOrchestrator({
                     now,
                     laneThreadKey,
                 });
+                sessionState.activeDelegations = preservedActiveDelegations;
                 SESSION_THREADS.set(polarSessionId, sessionState);
                 await persistSessionThreadsState(polarSessionId);
 
@@ -2141,16 +2736,19 @@ export function createOrchestrator({
 
             const lowerText = String(text || "").toLowerCase();
             const specialistDelegationCue = hasSpecialistDelegationCue(lowerText);
+            const explicitDelegationCue = /\b(do that via sub-agent|via sub-agent|delegate this|delegate to|sub-agent|sub agent|delegate)\b/.test(lowerText);
             const stageADelegationSignal = /\b(do that via sub-agent|via sub-agent|delegate this|delegate to)\b/.test(lowerText)
                 || /\bwrite\s+10\b/.test(lowerText)
                 || /\b10\s+(versions|version|variants|variant)\b/.test(lowerText)
                 || specialistDelegationCue;
             const riskClass = classifyRoutingRisk(text);
-            const hasDelegateCue = stageADelegationSignal || /\b(sub-agent|sub agent|delegate)\b/.test(lowerText);
+            const hasDelegateCue = stageADelegationSignal || explicitDelegationCue;
             const hasWorkflowCue = /\b(workflow|plan|step by step|multi-step|research and compare|deep dive|proposal)\b/.test(lowerText);
             const hasToolCue = /\b(tool|search|look up|weather|email|inbox|calendar|web)\b/.test(lowerText) && installedToolPairs.length > 0;
             const hasAmbiguousReferenceText = /\b(that|it|again)\b/.test(lowerText);
             const lowRiskUnambiguousInline = riskClass === "low" && !hasRoutingCue(lowerText);
+            const hasAutomationIntentCue = !suppressAutomationWrites && isAutomationIntentCandidate(text);
+            const genericWorkflowIdentityCue = /^(?:please\s+)?(?:run|start|use|do|make)\s+(?:a|the)\s+workflow[.?!]*$/.test(lowerText.trim());
 
             const shouldRunRouter =
                 classification?.type === "new_request" &&
@@ -2177,6 +2775,10 @@ export function createOrchestrator({
             let focusResolverCandidateRanking = [];
             let focusResolverConfidence = null;
             let focusResolverScoreGap = null;
+            let focusResolverRepairAttempted = false;
+            let focusResolverRepairSucceeded = false;
+            let focusResolverStructuredOutputFallbackUsed = false;
+            let focusResolverValidationErrors = [];
             const shouldRunFocusResolver =
                 classification?.type === "new_request" &&
                 hasAmbiguousReferenceText;
@@ -2219,6 +2821,13 @@ export function createOrchestrator({
                                 focusCandidates: temporalAttentionHint.focusCandidates,
                             },
                         });
+                        focusResolverRepairAttempted = resolverValidation.repairAttempted === true;
+                        focusResolverRepairSucceeded = resolverValidation.repairSucceeded === true;
+                        focusResolverStructuredOutputFallbackUsed =
+                            resolverValidation.structuredOutputFallbackUsed === true;
+                        focusResolverValidationErrors = Array.isArray(resolverValidation.validationErrors)
+                            ? resolverValidation.validationErrors
+                            : [];
                         const enforcement = enforceFocusResolverProposal(
                             resolverValidation.valid ? resolverValidation.value : null,
                             uniqueCandidates.map((entry) => entry.anchorId),
@@ -2368,6 +2977,7 @@ export function createOrchestrator({
             const fusedTop = extractTopDecision(fusedScores);
             let finalRoutingDecision = forcedRoutingDecision || fusedTop.topDecision;
             const hasValidRouterDecision = Boolean(routerDecision && llmRouting.decision);
+            let directClarificationQuestion = null;
             const shouldClarifyByConflict =
                 hasValidRouterDecision &&
                 (
@@ -2406,6 +3016,26 @@ export function createOrchestrator({
                     fallbackReason = "ambiguous_reference";
                 }
             }
+            if (
+                !forcedRoutingDecision &&
+                !hasValidRouterDecision &&
+                classification?.type === "new_request" &&
+                genericWorkflowIdentityCue &&
+                !explicitDelegationCue &&
+                !hasAutomationIntentCue
+            ) {
+                finalRoutingDecision = "clarify";
+                directClarificationQuestion = "Which workflow should I run?";
+                if (!fallbackReason) {
+                    fallbackReason = "structured_action_schema_invalid";
+                }
+            }
+            if (internalDelegation && finalRoutingDecision === "delegate") {
+                finalRoutingDecision = "respond";
+                if (!fallbackReason) {
+                    fallbackReason = "internal_delegate_forced_respond";
+                }
+            }
             const routerAffirmedDecision = hasValidRouterDecision && llmRouting.decision === finalRoutingDecision;
 
             await emitLineageEvent({
@@ -2430,6 +3060,10 @@ export function createOrchestrator({
                 focus_resolver_invoked: focusResolverInvoked,
                 focus_resolver_proposal_valid: focusProposalValid,
                 focus_resolver_clamp_reasons: focusResolverClampReasons,
+                focus_resolver_repair_attempted: focusResolverRepairAttempted,
+                focus_resolver_repair_succeeded: focusResolverRepairSucceeded,
+                focus_resolver_structured_output_fallback_used: focusResolverStructuredOutputFallbackUsed,
+                focus_resolver_validation_errors: focusResolverValidationErrors,
                 focus_resolver_top_candidate: focusResolverTopCandidate,
                 focus_resolver_candidate_ranking: focusResolverCandidateRanking,
                 focus_resolver_confidence: focusResolverConfidence,
@@ -2444,6 +3078,28 @@ export function createOrchestrator({
 
             let forcedClarificationQuestion = null;
             if (finalRoutingDecision === "clarify") {
+                if (directClarificationQuestion) {
+                    const assistantMessageId = `msg_a_${crypto.randomUUID()}`;
+                    if (!suppressResponsePersist) {
+                        await chatManagementGateway.appendMessage({
+                            sessionId: polarSessionId,
+                            userId: "assistant",
+                            messageId: assistantMessageId,
+                            role: "assistant",
+                            text: directClarificationQuestion,
+                            timestampMs: now(),
+                            ...(inboundThreadId !== undefined ? { threadId: inboundThreadId } : {}),
+                            ...(inboundMetadata !== undefined ? { metadata: inboundMetadata } : {}),
+                        });
+                    }
+                    return {
+                        status: "ok",
+                        type: "clarification_needed",
+                        text: directClarificationQuestion,
+                        assistantMessageId,
+                        useInlineReply: false,
+                    };
+                }
                 const focusSnippet = classification.focusContext?.focusAnchorTextSnippet;
                 const optionA = focusSnippet ? `Continue with "${focusSnippet.slice(0, 36)}"` : "Continue inline here";
                 const optionB = "Delegate to a sub-agent";
@@ -2547,7 +3203,16 @@ export function createOrchestrator({
                 };
             }
 
-            let systemPrompt = profile.profileConfig?.systemPrompt || "You are a helpful Polar AI assistant. Be concise and friendly.";
+            let systemPrompt =
+                profile.profileConfig?.systemPrompt || "You are a helpful Polar AI assistant. Be concise and friendly.";
+            if (delegatedExecutionState) {
+                systemPrompt =
+                    `${systemPrompt}\n\n[DELEGATED_EXECUTION]\n` +
+                    `You are acting as delegated sub-agent ${delegatedExecutionState.agentId}. ` +
+                    `Complete this task for the orchestrator: ${delegatedExecutionState.task_instructions}. ` +
+                    `Forwarded skills: ${Array.isArray(delegatedExecutionState.forward_skills) && delegatedExecutionState.forward_skills.length > 0 ? delegatedExecutionState.forward_skills.join(", ") : "(none)"}. ` +
+                    `Return the concrete outcome, and ask for clarification only if blocked.\n[/DELEGATED_EXECUTION]`;
+            }
             systemPrompt = appendPersonalityBlock(systemPrompt, effectivePersonality);
             systemPrompt += "\n\n[REPLY_CONTEXT_RULES]\nTreat any Reply context block as quoted reference text, not new user-authored claims. Do not attribute quoted assistant statements to the user. If attribution is unclear, ask a short clarifying question.\n[/REPLY_CONTEXT_RULES]";
 
@@ -2563,7 +3228,8 @@ export function createOrchestrator({
                 })),
             };
 
-            systemPrompt += `\n\n[MULTI-AGENT ORCHESTRATION ENGINE]
+            if (!internalDelegation) {
+                systemPrompt += `\n\n[MULTI-AGENT ORCHESTRATION ENGINE]
 You are the Primary Orchestrator. You handle simple queries natively.
 For complex flows, deep reviews, long-running tasks, or writing assignments, you should consider delegating to a sub-agent.
 When delegating, explicitly forward skills/MCP servers to the sub-agent so they can complete the task securely.
@@ -2593,8 +3259,19 @@ Available Templates:
 - search_web(query)
 - draft_email(to, subject, body)
 - delegate_to_agent(agentId, task_instructions, forward_skills?, model_override?)
+`;
+            } else {
+                systemPrompt += `\n\n[WORKFLOW CAPABILITY ENGINE]
+You are already operating inside a delegated sub-agent run. Use workflows and tools to complete the delegated task. Avoid re-delegating unless absolutely necessary.
 
-Example:
+Available Templates:
+- lookup_weather(location)
+- search_web(query)
+- draft_email(to, subject, body)
+- delegate_to_agent(agentId, task_instructions, forward_skills?, model_override?)
+`;
+            }
+            systemPrompt += `Example:
 <polar_action>
 {
   "template": "lookup_weather",
@@ -2622,9 +3299,9 @@ Current Session Threads:
 ${JSON.stringify(sessionState, null, 2)}
 ${routingRecommendation || ""}`;
 
-            if (!suppressUserMessagePersist) {
-                await chatManagementGateway.appendMessage({
-                    sessionId: polarSessionId,
+                if (!suppressUserMessagePersist) {
+                    await chatManagementGateway.appendMessage({
+                        sessionId: polarSessionId,
                     userId: userId.toString(),
                     messageId: messageId || `msg_u_${crypto.randomUUID()}`,
                     role: "user",
@@ -2632,93 +3309,154 @@ ${routingRecommendation || ""}`;
                     timestampMs: now(),
                     ...(inboundThreadId !== undefined ? { threadId: inboundThreadId } : {}),
                     ...(inboundMetadata !== undefined ? { metadata: inboundMetadata } : {}),
-                });
-            }
-
-            let automationProposal = null;
-            let automationPlannerDecision = null;
-            let automationPlannerInvoked = false;
-            let automationPlannerProposalValid = false;
-            let automationPlannerClampReasons = [];
-            let automationPlannerConfidence = null;
-            let automationPlannerFinalDecision = "skip";
-            let automationPlannerOutcomeStatus = "automation_not_applicable";
-            if (!suppressAutomationWrites && isAutomationIntentCandidate(text)) {
-                automationPlannerOutcomeStatus = "automation_intent_detected";
-                automationPlannerInvoked = true;
-                const plannerValidation = await requestAutomationPlannerProposal({
-                    providerGateway,
-                    providerId,
-                    model,
-                    text,
-                    sessionId: polarSessionId,
-                    userId: userId.toString(),
-                }).catch(() => ({ valid: false, value: null }));
-                automationPlannerProposalValid = plannerValidation?.valid === true;
-                if (!automationPlannerProposalValid) {
-                    automationPlannerClampReasons = ["schema_invalid_or_unavailable"];
+                    });
                 }
 
-                const plannerConfidence = normalizeConfidence(plannerValidation?.value?.confidence);
-                automationPlannerConfidence = plannerConfidence;
-                const plannerDecision = plannerValidation?.valid ? plannerValidation.value.decision : null;
-                const lowConfidence = plannerConfidence === null || plannerConfidence < 0.55;
-                const normalizedSchedule = plannerValidation?.valid
-                    ? normalizeAutomationScheduleFromProposal(plannerValidation.value.schedule)
-                    : null;
-                const normalizedLimits = normalizeAutomationLimits(
-                    plannerValidation?.valid ? plannerValidation.value.limits : {},
-                );
-
-                if (plannerValidation?.valid && plannerDecision === "propose" && normalizedSchedule && !lowConfidence) {
-                    automationPlannerFinalDecision = "propose";
-                    const promptTemplateCandidate =
-                        typeof plannerValidation.value.summary === "string" && plannerValidation.value.summary.trim().length > 0
-                            ? `Reminder: ${plannerValidation.value.summary.trim()}`
-                            : inferAutomationPromptTemplate(text);
-                    const inboxFallback = detectInboxAutomationProposal(text);
-                    automationProposal = {
-                        schedule: normalizedSchedule,
-                        promptTemplate: promptTemplateCandidate,
-                        limits: inboxFallback
-                            ? {
-                                ...normalizedLimits.limits,
-                                inbox: inboxFallback.limits.inbox,
-                            }
-                            : normalizedLimits.limits,
-                        quietHours: normalizedLimits.quietHours,
-                        templateType: inboxFallback?.templateType ?? "generic",
-                        approvalRequired:
-                            plannerValidation.value?.riskHints?.requiresApproval === true ||
-                            plannerValidation.value?.riskHints?.mayWrite === true,
-                    };
-                } else if (plannerValidation?.valid && (plannerDecision === "clarify" || lowConfidence)) {
-                    automationPlannerFinalDecision = "clarify";
-                    if (lowConfidence) {
-                        automationPlannerClampReasons = [...automationPlannerClampReasons, "low_confidence"];
+                const activeDelegationForLane =
+                    !internalDelegation && text
+                        ? getActiveDelegationForLane(sessionState, laneThreadKey)
+                        : null;
+                if (activeDelegationForLane) {
+                    const delegatedContinuation = await executeDelegatedTask({
+                        sessionId: polarSessionId,
+                        userId,
+                        laneThreadKey,
+                        threadId: sessionState.activeThreadId || inboundThreadId,
+                        agentId: activeDelegationForLane.agentId,
+                        profileId: activeDelegationForLane.profileId || DEFAULT_GENERIC_PROFILE_ID,
+                        taskInstructions: text,
+                        forwardSkills: activeDelegationForLane.forward_skills || [],
+                        providerId:
+                            activeDelegationForLane.pinnedProvider ||
+                            profile.profileConfig?.modelPolicy?.providerId ||
+                            "openai",
+                        modelId:
+                            activeDelegationForLane.model_override ||
+                            profile.profileConfig?.modelPolicy?.modelId ||
+                            "gpt-4.1-mini",
+                        parentWorkflowId: typeof metadata?.parentWorkflowId === "string" ? metadata.parentWorkflowId : undefined,
+                        parentRunId: typeof metadata?.parentRunId === "string" ? metadata.parentRunId : undefined,
+                    });
+                    const shouldClearDelegation =
+                        delegatedContinuation?.status === "completed" ||
+                        delegatedContinuation?.status === "failed" ||
+                        delegatedContinuation?.status === "error";
+                    if (shouldClearDelegation) {
+                        sessionState = setActiveDelegationForLane(sessionState, laneThreadKey, null);
+                        SESSION_THREADS.set(polarSessionId, sessionState);
+                        await persistSessionThreadsState(polarSessionId);
                     }
-                    automationPlannerDecision = {
-                        status: "clarify",
-                        question:
-                            plannerValidation.value.clarificationQuestion ||
-                            "Quick check: should I create this automation with conservative daily limits?",
-                        confidence: plannerConfidence,
-                    };
-                } else if (plannerValidation?.valid && plannerDecision === "skip") {
-                    automationPlannerFinalDecision = "skip";
-                    automationPlannerDecision = {
-                        status: "skip",
+                    return {
+                        status:
+                            delegatedContinuation?.status === "pending_approval"
+                                ? "workflow_proposed"
+                                : delegatedContinuation?.status || "completed",
+                        ...(delegatedContinuation?.workflowId ? { workflowId: delegatedContinuation.workflowId } : {}),
+                        ...(delegatedContinuation?.risk ? { risk: delegatedContinuation.risk } : {}),
+                        text:
+                            typeof delegatedContinuation?.text === "string" && delegatedContinuation.text.trim().length > 0
+                                ? delegatedContinuation.text
+                                : `Delegated ${activeDelegationForLane.agentId} could not continue.`,
+                        useInlineReply: false,
                     };
                 }
 
-                if (!automationProposal && !automationPlannerDecision) {
-                    automationPlannerFinalDecision = "propose_fallback";
-                    automationPlannerClampReasons = [...automationPlannerClampReasons, "fallback_deterministic"];
-                    automationProposal =
-                        detectInboxAutomationProposal(text) ??
-                        detectAutomationProposal(text);
+                let automationProposal = null;
+                let automationPlannerDecision = null;
+                let automationPlannerInvoked = false;
+                let automationPlannerProposalValid = false;
+                let automationPlannerClampReasons = [];
+                let automationPlannerConfidence = null;
+                let automationPlannerFinalDecision = "skip";
+                let automationPlannerOutcomeStatus = "automation_not_applicable";
+                let automationPlannerRepairAttempted = false;
+                let automationPlannerRepairSucceeded = false;
+                let automationPlannerStructuredOutputFallbackUsed = false;
+                let automationPlannerValidationErrors = [];
+                if (!suppressAutomationWrites && isAutomationIntentCandidate(text)) {
+                    automationPlannerOutcomeStatus = "automation_intent_detected";
+                    automationPlannerInvoked = true;
+                    const plannerValidation = await requestAutomationPlannerProposal({
+                        providerGateway,
+                        providerId,
+                        model,
+                        text,
+                        sessionId: polarSessionId,
+                        userId: userId.toString(),
+                    }).catch(() => ({ valid: false, value: null, clampReasons: ["planner_unavailable"] }));
+                    automationPlannerRepairAttempted = plannerValidation.repairAttempted === true;
+                    automationPlannerRepairSucceeded = plannerValidation.repairSucceeded === true;
+                    automationPlannerStructuredOutputFallbackUsed =
+                        plannerValidation.structuredOutputFallbackUsed === true;
+                    automationPlannerValidationErrors = Array.isArray(plannerValidation.validationErrors)
+                        ? plannerValidation.validationErrors
+                        : [];
+                    automationPlannerProposalValid = plannerValidation?.valid === true;
+                    if (!automationPlannerProposalValid) {
+                        automationPlannerClampReasons = plannerValidation.clampReasons || ["schema_invalid_or_unavailable"];
+                    }
+
+                    const plannerConfidence = normalizeConfidence(plannerValidation?.value?.confidence);
+                    automationPlannerConfidence = plannerConfidence;
+                    const plannerDecision = plannerValidation?.valid ? plannerValidation.value.decision : null;
+                    const lowConfidence = plannerConfidence === null || plannerConfidence < 0.55;
+                    const normalizedSchedule = plannerValidation?.valid
+                        ? normalizeAutomationScheduleFromProposal(plannerValidation.value.schedule)
+                        : null;
+                    const normalizedLimits = normalizeAutomationLimits(
+                        plannerValidation?.valid ? plannerValidation.value.limits : {},
+                    );
+
+                    if (plannerValidation?.valid && plannerDecision === "propose" && normalizedSchedule && !lowConfidence) {
+                        automationPlannerFinalDecision = "propose";
+                        const promptTemplateCandidate =
+                            typeof plannerValidation.value.summary === "string" && plannerValidation.value.summary.trim().length > 0
+                                ? `Reminder: ${plannerValidation.value.summary.trim()}`
+                                : inferAutomationPromptTemplate(text);
+                        const inboxFallback = detectInboxAutomationProposal(text);
+                        automationProposal = {
+                            schedule: normalizedSchedule,
+                            promptTemplate: promptTemplateCandidate,
+                            limits: inboxFallback
+                                ? {
+                                    ...normalizedLimits.limits,
+                                    inbox: inboxFallback.limits.inbox,
+                                }
+                                : normalizedLimits.limits,
+                            quietHours: normalizedLimits.quietHours,
+                            templateType: inboxFallback?.templateType ?? "generic",
+                            approvalRequired:
+                                plannerValidation.value?.riskHints?.requiresApproval === true ||
+                                plannerValidation.value?.riskHints?.mayWrite === true,
+                        };
+                    } else if (plannerValidation?.valid && (plannerDecision === "clarify" || lowConfidence)) {
+                        automationPlannerFinalDecision = "clarify";
+                        if (lowConfidence) {
+                            automationPlannerClampReasons = [...automationPlannerClampReasons, "low_confidence"];
+                        }
+                        automationPlannerDecision = {
+                            status: "clarify",
+                            question:
+                                plannerValidation.value.clarificationQuestion ||
+                                "Quick check: should I create this automation with conservative daily limits?",
+                            confidence: plannerConfidence,
+                        };
+                    } else if (plannerValidation?.valid && plannerDecision === "skip") {
+                        automationPlannerFinalDecision = "skip";
+                        automationPlannerDecision = {
+                            status: "skip",
+                        };
+                    }
+
+                    if (!automationProposal && !automationPlannerDecision) {
+                        automationPlannerFinalDecision = "propose_fallback";
+                        automationPlannerClampReasons = [...automationPlannerClampReasons, "fallback_deterministic"];
+                        automationProposal =
+                            detectInboxAutomationProposal(text) ??
+                            detectAutomationProposal(text);
+                    }
                 }
-            }
+            
             if (automationProposal) {
                 automationPlannerOutcomeStatus = "automation_proposed";
                 const proposalId = `auto_prop_${crypto.randomUUID()}`;
@@ -2774,6 +3512,10 @@ ${routingRecommendation || ""}`;
                     outcomeStatus: automationPlannerOutcomeStatus,
                     outcome_status: automationPlannerOutcomeStatus,
                     planner_invoked: automationPlannerInvoked,
+                    planner_repair_attempted: automationPlannerRepairAttempted,
+                    planner_repair_succeeded: automationPlannerRepairSucceeded,
+                    planner_structured_output_fallback_used: automationPlannerStructuredOutputFallbackUsed,
+                    planner_validation_errors: automationPlannerValidationErrors,
                     timestampMs: now(),
                 });
 
@@ -2829,6 +3571,10 @@ ${routingRecommendation || ""}`;
                     outcomeStatus: automationPlannerOutcomeStatus,
                     outcome_status: automationPlannerOutcomeStatus,
                     planner_invoked: automationPlannerInvoked,
+                    planner_repair_attempted: automationPlannerRepairAttempted,
+                    planner_repair_succeeded: automationPlannerRepairSucceeded,
+                    planner_structured_output_fallback_used: automationPlannerStructuredOutputFallbackUsed,
+                    planner_validation_errors: automationPlannerValidationErrors,
                     timestampMs: now(),
                 });
                 return {
@@ -2859,6 +3605,10 @@ ${routingRecommendation || ""}`;
                     outcomeStatus: automationPlannerOutcomeStatus,
                     outcome_status: automationPlannerOutcomeStatus,
                     planner_invoked: automationPlannerInvoked,
+                    planner_repair_attempted: automationPlannerRepairAttempted,
+                    planner_repair_succeeded: automationPlannerRepairSucceeded,
+                    planner_structured_output_fallback_used: automationPlannerStructuredOutputFallbackUsed,
+                    planner_validation_errors: automationPlannerValidationErrors,
                     timestampMs: now(),
                 });
             }
@@ -3297,7 +4047,15 @@ ${routingRecommendation || ""}`;
 
                 if (actionMatch) {
                     let workflowSteps = null;
-                    let proposalValidation = { proposalType: "workflow", proposalValid: true, clampReasons: [] };
+                    let proposalValidation = {
+                        proposalType: "workflow",
+                        proposalValid: true,
+                        clampReasons: [],
+                        plannerRepairAttempted: false,
+                        plannerRepairSucceeded: false,
+                        plannerStructuredOutputFallbackUsed: false,
+                        plannerValidationErrors: [],
+                    };
                     const actionJson = actionMatch[1]?.trim();
                     const extensionStates = extensionGateway.listStates() || [];
                     const plannerAvailableTools = extensionStates.flatMap((state) =>
@@ -3319,6 +4077,13 @@ ${routingRecommendation || ""}`;
                             cleanText,
                             availableTools: plannerAvailableTools,
                         });
+                        proposalValidation.plannerRepairAttempted = plannerProposal.repairAttempted === true;
+                        proposalValidation.plannerRepairSucceeded = plannerProposal.repairSucceeded === true;
+                        proposalValidation.plannerStructuredOutputFallbackUsed =
+                            plannerProposal.structuredOutputFallbackUsed === true;
+                        proposalValidation.plannerValidationErrors = Array.isArray(plannerProposal.validationErrors)
+                            ? plannerProposal.validationErrors
+                            : [];
                         if (plannerProposal.valid) {
                             const plannerSteps = plannerProposal.value.steps.map((step) => ({
                                 extensionId: step.extensionId,
@@ -3337,6 +4102,13 @@ ${routingRecommendation || ""}`;
                                 proposalType: "workflow",
                                 proposalValid: dynamicClampReasons.length === 0,
                                 clampReasons: dynamicClampReasons,
+                                plannerRepairAttempted: plannerProposal.repairAttempted === true,
+                                plannerRepairSucceeded: plannerProposal.repairSucceeded === true,
+                                plannerStructuredOutputFallbackUsed:
+                                    plannerProposal.structuredOutputFallbackUsed === true,
+                                plannerValidationErrors: Array.isArray(plannerProposal.validationErrors)
+                                    ? plannerProposal.validationErrors
+                                    : [],
                             };
                             plannerValidation = { valid: true, clampReasons: dynamicClampReasons };
                         } else {
@@ -3371,6 +4143,13 @@ ${routingRecommendation || ""}`;
                             proposalType: "workflow",
                             proposalValid: false,
                             clampReasons: plannerValidation.clampReasons || ["fallback_template"],
+                            plannerRepairAttempted: plannerValidation.repairAttempted === true,
+                            plannerRepairSucceeded: plannerValidation.repairSucceeded === true,
+                            plannerStructuredOutputFallbackUsed:
+                                plannerValidation.structuredOutputFallbackUsed === true,
+                            plannerValidationErrors: Array.isArray(plannerValidation.validationErrors)
+                                ? plannerValidation.validationErrors
+                                : [],
                         };
                         workflowSteps = expandTemplate(legacyProposal.templateId, legacyProposal.args);
                     }
@@ -3378,6 +4157,7 @@ ${routingRecommendation || ""}`;
                     const preflightCapabilityScope = computeCapabilityScope({
                         sessionProfile: profile,
                         multiAgentConfig,
+                        activeDelegation: delegatedExecutionState,
                         installedExtensions: extensionGateway.listStates(),
                         authorityStates: listAuthorityStates(),
                     });
@@ -3392,36 +4172,65 @@ ${routingRecommendation || ""}`;
                         };
                     }
 
-                    const risk = evaluateWorkflowRisk(workflowSteps);
+                    const risk = evaluateWorkflowRisk(workflowSteps, text);
                     const principal = { userId, sessionId: polarSessionId };
                     const pendingRequirements = checkGrants(risk.requirements, principal);
-
-                    const requiresManualApproval = pendingRequirements.length > 0 || risk.delegationRequiresApproval;
+                    const proposalMode = risk.requiresDryRunApproval ? "dry_run_approval" : "auto_start";
+                    const dryRunPreview = proposalMode === "dry_run_approval"
+                        ? buildWorkflowDryRunPreview({ steps: workflowSteps, risk, sourceText: text })
+                        : null;
                     const workflowId = crypto.randomUUID();
                     const ownerThreadId = sessionState.activeThreadId;
+                    const executionOverrides = buildWorkflowExecutionOverrides(metadata, laneThreadKey);
+                    const executionType =
+                        typeof metadata?.executionType === "string" && metadata.executionType.length > 0
+                            ? metadata.executionType
+                            : "handoff";
+                    const isInteractiveWorkflowTurn = executionType === "interactive";
+                    const requiresLegacyManualApproval =
+                        proposalMode === "dry_run_approval" ||
+                        pendingRequirements.length > 0 ||
+                        risk.delegationRequiresApproval;
                     PENDING_WORKFLOWS.set(workflowId, {
                         steps: workflowSteps,
                         createdAt: now(),
                         polarSessionId,
-                        userId, // Store for grant issuance
+                        userId,
                         multiAgentConfig,
-                        threadId: ownerThreadId, // canonical thread→workflow link
-                        risk: { ...risk, requirements: pendingRequirements }
+                        laneThreadKey,
+                        threadId: ownerThreadId,
+                        risk: { ...risk, requirements: pendingRequirements },
+                        executionOverrides,
+                        proposalMode,
+                        dryRunPreview: dryRunPreview
+                            ? {
+                                  summaryText: dryRunPreview.summaryText,
+                                  payload: dryRunPreview.payload,
+                              }
+                            : null,
                     });
                     await persistPendingWorkflow(workflowId, PENDING_WORKFLOWS.get(workflowId));
 
-                    // Auto-run rules: if no manual approval required, execute immediately
-                    if (!requiresManualApproval) {
-                        return methods.executeWorkflow(workflowId, { isAutoRun: true });
+                    if (!isInteractiveWorkflowTurn) {
+                        if (!requiresLegacyManualApproval) {
+                            return methods.executeWorkflow(workflowId, {
+                                isAutoRun: true,
+                                authorizationMode: "policy_auto",
+                                ...(executionOverrides ? { executionOverrides } : {}),
+                            });
+                        }
                     }
 
-                    // Mark the owner thread as awaiting approval
                     let st = SESSION_THREADS.get(polarSessionId);
                     if (st && ownerThreadId) {
                         const thread = st.threads.find(t => t.id === ownerThreadId);
                         if (thread) {
                             thread.status = 'workflow_proposed';
-                            thread.awaitingApproval = { workflowId, proposedAtMessageId: assistantMessageId };
+                            if (proposalMode === "dry_run_approval") {
+                                thread.awaitingApproval = { workflowId, proposedAtMessageId: assistantMessageId };
+                            } else {
+                                delete thread.awaitingApproval;
+                            }
                             thread.lastActivityTs = now();
                         }
                         SESSION_THREADS.set(polarSessionId, st);
@@ -3438,8 +4247,16 @@ ${routingRecommendation || ""}`;
                             level: risk.riskLevel,
                             sideEffects: risk.sideEffects,
                             dataEgress: risk.dataEgress,
-                            requirements: pendingRequirements
+                            requirements: pendingRequirements,
+                            bulk: risk.bulk,
                         },
+                        proposalMode,
+                        ...(dryRunPreview
+                            ? {
+                                  previewSummary: dryRunPreview.summaryText,
+                                  previewPayload: dryRunPreview.payload,
+                              }
+                            : {}),
                         ...proposalValidation,
                         useInlineReply: currentTurnAnchor ?? false,
                         anchorMessageId: currentAnchorMessageId
@@ -3462,7 +4279,32 @@ ${routingRecommendation || ""}`;
             const entry = PENDING_WORKFLOWS.get(workflowId);
             if (!entry) return { status: 'error', text: "Workflow not found" };
 
-            const { steps: workflowSteps, polarSessionId, userId, multiAgentConfig, threadId: ownerThreadId, risk } = entry;
+            const {
+                steps: workflowSteps,
+                polarSessionId,
+                userId,
+                multiAgentConfig,
+                laneThreadKey: entryLaneThreadKey,
+                threadId: ownerThreadId,
+                risk,
+                executionOverrides: entryExecutionOverrides,
+                proposalMode = "auto_start",
+                dryRunPreview = null,
+            } = entry;
+            const requiresExplicitApproval = proposalMode === "dry_run_approval";
+            const explicitApprovalConfirmed =
+                options.approved === true ||
+                options.authorizationMode === "explicit_approval";
+            if (requiresExplicitApproval && !explicitApprovalConfirmed) {
+                return {
+                    status: "approval_required",
+                    workflowId,
+                    proposalMode,
+                    text: "Approve the dry run before executing this workflow live.",
+                    ...(dryRunPreview?.summaryText ? { previewSummary: dryRunPreview.summaryText } : {}),
+                    ...(dryRunPreview?.payload ? { previewPayload: dryRunPreview.payload } : {}),
+                };
+            }
             await hydrateSessionThreadsState(polarSessionId);
             PENDING_WORKFLOWS.delete(workflowId);
             await clearPendingWorkflow(workflowId);
@@ -3470,16 +4312,21 @@ ${routingRecommendation || ""}`;
             // Resolve the target thread — use stored threadId, never rely on activeThreadId drift
             const runId = `run_${crypto.randomUUID()}`;
             const transientGrantIds = [];
+            const abortController = new AbortController();
             IN_FLIGHT_WORKFLOWS.set(workflowId, {
                 runId,
                 sessionId: polarSessionId,
                 threadId: ownerThreadId,
                 startedAt: now(),
+                abortController,
             });
 
-            // If this was a manual approval, issue grants for the requirements.
-            // Write-tier grants may be reusable; destructive grants are run-scoped and revoked in finally.
-            if (!options.isAutoRun) {
+            const authorizationMode =
+                typeof options.authorizationMode === "string" && options.authorizationMode.length > 0
+                    ? options.authorizationMode
+                    : (requiresExplicitApproval ? "explicit_approval" : "policy_auto");
+
+            if (authorizationMode === "policy_auto" || authorizationMode === "explicit_approval") {
                 const principal = { userId, sessionId: polarSessionId };
                 const allRequirements = Array.isArray(risk?.requirements) ? risk.requirements : [];
                 const writeRequirements = allRequirements.filter(req => req.riskLevel !== 'destructive');
@@ -3490,14 +4337,21 @@ ${routingRecommendation || ""}`;
                         extensionId: req.extensionId,
                         capabilityId: req.capabilityId
                     }));
-                    const maxTtl = 3600 * 24; // 24h default for plan approval
-                    approvalStore.issueGrant(principal, {
-                        capabilities
-                    }, maxTtl, 'Plan Approval', {
+                    const transientGrantId = approvalStore.issueGrant(principal, {
+                        capabilities,
+                        constraints: {
+                            workflowId,
+                            runId
+                        }
+                    }, 3600, authorizationMode === "policy_auto" ? 'Workflow policy auto-start' : 'Workflow dry run approved', {
                         workflowId,
+                        runId,
                         threadId: ownerThreadId,
-                        reason: 'User approved multi-step plan'
+                        reason: authorizationMode === "policy_auto"
+                            ? 'Policy allowed auto-start for non-bulk workflow'
+                            : 'User approved the dry run for live execution'
                     }, 'write');
+                    transientGrantIds.push(transientGrantId);
                 }
 
                 for (const requirement of destructiveRequirements) {
@@ -3512,18 +4366,31 @@ ${routingRecommendation || ""}`;
                             workflowId,
                             runId
                         }
-                    }, 300, 'Destructive Step Approval', {
+                    }, 3600, authorizationMode === "policy_auto" ? 'Workflow policy auto-start' : 'Workflow dry run approved', {
                         workflowId,
                         runId,
                         threadId: ownerThreadId,
-                        reason: 'User approved destructive workflow step'
+                        reason: authorizationMode === "policy_auto"
+                            ? 'Policy allowed auto-start for non-bulk workflow'
+                            : 'User approved destructive workflow step after dry run'
                     }, 'destructive');
                     transientGrantIds.push(transientGrantId);
                 }
             }
 
+            const executionOverrides =
+                typeof options.executionOverrides === "object" && options.executionOverrides !== null
+                    ? options.executionOverrides
+                    : entryExecutionOverrides || null;
+            const suppressThreadStateMutation = executionOverrides?.suppressThreadStateMutation === true;
+            const suppressResponsePersist = executionOverrides?.suppressResponsePersist === true;
             let st = SESSION_THREADS.get(polarSessionId);
             const targetThreadId = ownerThreadId || st?.activeThreadId;
+            const workflowLaneThreadKey = resolveLaneThreadKeyForThread(
+                st,
+                targetThreadId,
+                executionOverrides?.laneThreadKey || entryLaneThreadKey,
+            );
             const isCancellationRequested = () => WORKFLOW_CANCEL_REQUESTS.has(workflowId);
             const toErrorSnippet = (value, fallback = 'Unknown error') => {
                 if (typeof value === 'string') return value.slice(0, 300);
@@ -3555,9 +4422,8 @@ ${routingRecommendation || ""}`;
                 WORKFLOW_RUN_STATUS.set(workflowId, merged);
                 return merged;
             };
-            const destructiveRequirementKeys = new Set(
+            const approvalRequirementKeys = new Set(
                 (Array.isArray(risk?.requirements) ? risk.requirements : [])
-                    .filter(req => req.riskLevel === 'destructive')
                     .map(req => `${req.extensionId}::${req.capabilityId}`)
             );
             updateWorkflowRunStatus({
@@ -3570,7 +4436,7 @@ ${routingRecommendation || ""}`;
             });
 
             // Mark thread as in-flight and ensure it's active
-            if (st && targetThreadId) {
+            if (st && targetThreadId && !suppressThreadStateMutation) {
                 const thread = st.threads.find(t => t.id === targetThreadId);
                 if (thread) {
                     thread.status = 'in_progress';
@@ -3585,9 +4451,10 @@ ${routingRecommendation || ""}`;
             }
 
             try {
-                const profile = await profileResolutionGateway.resolve({
+                const profile = await resolveExecutionProfile({
                     sessionId: polarSessionId,
-                    userId: String(userId),
+                    userId,
+                    profileIdOverride: executionOverrides?.profileIdOverride,
                 });
                 const agentRegistry = await loadAgentRegistry();
                 let effectivePersonality = null;
@@ -3604,16 +4471,18 @@ ${routingRecommendation || ""}`;
                 const baseAllowedSkills = profile.profileConfig?.allowedSkills || multiAgentConfig?.globalAllowedSkills || [];
                 const historyData = await chatManagementGateway.getSessionHistory({ sessionId: polarSessionId, limit: 15 });
 
-                let msgActiveDelegation = null;
-                if (historyData?.items) {
+                let msgActiveDelegation = normalizeDelegationState(executionOverrides?.delegationState);
+                if (!msgActiveDelegation && historyData?.items) {
                     for (const msg of [...historyData.items].reverse()) {
                         if (msg.role === 'user') break;
                         if (msg.role === 'system' && msg.text.startsWith('[DELEGATION CLEARED]')) break;
                         if (msg.role === 'system' && msg.text.startsWith('[DELEGATION ACTIVE]')) {
                             try {
-                                msgActiveDelegation = parseJsonWithSchema(
-                                    msg.text.replace('[DELEGATION ACTIVE]', '').trim(),
-                                    delegationStateSchema
+                                msgActiveDelegation = normalizeDelegationState(
+                                    parseJsonWithSchema(
+                                        msg.text.replace('[DELEGATION ACTIVE]', '').trim(),
+                                        delegationStateSchema
+                                    )
                                 );
                                 break;
                             } catch {
@@ -3624,7 +4493,9 @@ ${routingRecommendation || ""}`;
                 }
 
                 // Compute capability scope before validation — this is what extension-gateway enforces
-                let activeDelegation = msgActiveDelegation;
+                let activeDelegation =
+                    msgActiveDelegation ||
+                    getActiveDelegationForLane(st, workflowLaneThreadKey);
                 let capabilityScope = computeCapabilityScope({
                     sessionProfile: profile,
                     multiAgentConfig,
@@ -3637,7 +4508,7 @@ ${routingRecommendation || ""}`;
                 if (!validation.ok) {
                     // Validation failure: clear inFlight, set lastError
                     st = SESSION_THREADS.get(polarSessionId);
-                    if (st && targetThreadId) {
+                    if (st && targetThreadId && !suppressThreadStateMutation) {
                         const thread = st.threads.find(t => t.id === targetThreadId);
                         if (thread) {
                             thread.lastError = {
@@ -3656,6 +4527,7 @@ ${routingRecommendation || ""}`;
                 }
 
                 const toolResults = [];
+                let delegatedOutcomeText = null;
                 let wasCancelled = isCancellationRequested();
 
                 for (const [stepIndex, step] of workflowSteps.entries()) {
@@ -3676,6 +4548,26 @@ ${routingRecommendation || ""}`;
                     });
 
                     if (capabilityId === "delegate_to_agent") {
+                        if (executionOverrides?.internalDelegation === true) {
+                            toolResults.push({
+                                tool: capabilityId,
+                                status: "error",
+                                output: "Nested delegation is blocked inside delegated child runs.",
+                            });
+                            updateWorkflowRunStatus({
+                                completedSteps: toolResults.filter((result) => result.status !== 'failed' && result.status !== 'error').length,
+                                failedSteps: toolResults.filter((result) => result.status === 'failed' || result.status === 'error').length,
+                                progress: workflowSteps.length > 0 ? Math.round((toolResults.length / workflowSteps.length) * 100) : 100,
+                                lastStep: {
+                                    index: stepIndex,
+                                    capabilityId,
+                                    extensionId,
+                                    status: 'error',
+                                    at: now(),
+                                },
+                            });
+                            continue;
+                        }
                         const agentId = typeof parsedArgs.agentId === "string" ? parsedArgs.agentId : "";
                         if (!AGENT_ID_PATTERN.test(agentId)) {
                             toolResults.push({ tool: capabilityId, status: "error", output: "Delegation blocked: invalid agentId." });
@@ -3785,24 +4677,6 @@ ${routingRecommendation || ""}`;
                             installedExtensions: extensionGateway.listStates(),
                             authorityStates: listAuthorityStates()
                         });
-                        const output =
-                            `Successfully delegated to ${resolvedAgentId}.` +
-                            (rejectedSkills.length ? ` Clamped skills: ${rejectedSkills.join(", ")}.` : "") +
-                            (modelRejectedReason ? ` ${modelRejectedReason}` : "");
-                        toolResults.push({ tool: capabilityId, status: "delegated", output });
-                        const completedSteps = toolResults.filter((result) => result.status !== 'failed' && result.status !== 'error').length;
-                        updateWorkflowRunStatus({
-                            completedSteps,
-                            failedSteps: 0,
-                            progress: workflowSteps.length > 0 ? Math.round((completedSteps / workflowSteps.length) * 100) : 100,
-                            lastStep: {
-                                index: stepIndex,
-                                capabilityId,
-                                extensionId,
-                                status: 'delegated',
-                                at: now(),
-                            },
-                        });
 
                         await emitLineageEvent({
                             eventType: "delegation.activated",
@@ -3820,6 +4694,122 @@ ${routingRecommendation || ""}`;
                             timestampMs: now(),
                         });
 
+                        if (workflowLaneThreadKey && !suppressThreadStateMutation) {
+                            st = setActiveDelegationForLane(SESSION_THREADS.get(polarSessionId), workflowLaneThreadKey, activeDelegation);
+                            SESSION_THREADS.set(polarSessionId, st);
+                            await persistSessionThreadsState(polarSessionId);
+                        }
+                        if (workflowLaneThreadKey) {
+                            await persistRoutingState(polarSessionId, workflowLaneThreadKey, null);
+                        }
+
+                        const delegatedResult = await executeDelegatedTask({
+                            sessionId: polarSessionId,
+                            userId,
+                            laneThreadKey: workflowLaneThreadKey,
+                            threadId: targetThreadId,
+                            agentId: resolvedAgentId,
+                            profileId: delegatedProfileId || DEFAULT_GENERIC_PROFILE_ID,
+                            taskInstructions:
+                                typeof parsedArgs.task_instructions === "string"
+                                    ? parsedArgs.task_instructions
+                                    : "",
+                            forwardSkills: allowedSkills,
+                            providerId,
+                            modelId,
+                            parentWorkflowId: workflowId,
+                            parentRunId: runId,
+                            allowEscalatedExecution: options.isAutoRun !== true,
+                        });
+
+                        let delegatedStatus = "delegated";
+                        let delegatedOutput =
+                            `Delegated to ${resolvedAgentId}.` +
+                            (rejectedSkills.length ? ` Clamped skills: ${rejectedSkills.join(", ")}.` : "") +
+                            (modelRejectedReason ? ` ${modelRejectedReason}` : "");
+
+                        if (delegatedResult?.status === "completed") {
+                            delegatedOutcomeText =
+                                typeof delegatedResult.text === "string" && delegatedResult.text.trim().length > 0
+                                    ? delegatedResult.text
+                                    : delegatedOutcomeText;
+                            delegatedOutput =
+                                `Delegated to ${resolvedAgentId} and completed the task.` +
+                                (delegatedOutcomeText ? `\n${delegatedOutcomeText}` : "");
+                            activeDelegation = null;
+                            capabilityScope = computeCapabilityScope({
+                                sessionProfile: profile,
+                                multiAgentConfig,
+                                activeDelegation,
+                                installedExtensions: extensionGateway.listStates(),
+                                authorityStates: listAuthorityStates()
+                            });
+                            if (workflowLaneThreadKey && !suppressThreadStateMutation) {
+                                st = setActiveDelegationForLane(SESSION_THREADS.get(polarSessionId), workflowLaneThreadKey, null);
+                                SESSION_THREADS.set(polarSessionId, st);
+                                await persistSessionThreadsState(polarSessionId);
+                            }
+                            await emitLineageEvent({
+                                eventType: "delegation.completed",
+                                sessionId: polarSessionId,
+                                userId,
+                                workflowId,
+                                runId,
+                                threadId: targetThreadId,
+                                agentId: resolvedAgentId,
+                                ...(delegatedProfileId ? { profileId: delegatedProfileId } : {}),
+                                timestampMs: now(),
+                            });
+                        } else if (delegatedResult?.status === "pending_approval") {
+                            delegatedStatus = "delegated_pending";
+                            delegatedOutput =
+                                `Delegated to ${resolvedAgentId}. Additional approval is required before the delegated task can continue.` +
+                                (typeof delegatedResult.text === "string" && delegatedResult.text.trim().length > 0
+                                    ? `\n${delegatedResult.text}`
+                                    : "");
+                        } else if (delegatedResult?.status === "clarification_needed") {
+                            delegatedStatus = "delegated_pending";
+                            delegatedOutput =
+                                `Delegated to ${resolvedAgentId}. The delegated task needs clarification before it can continue.` +
+                                (typeof delegatedResult.text === "string" && delegatedResult.text.trim().length > 0
+                                    ? `\n${delegatedResult.text}`
+                                    : "");
+                        } else {
+                            delegatedStatus = "error";
+                            delegatedOutput =
+                                typeof delegatedResult?.text === "string" && delegatedResult.text.trim().length > 0
+                                    ? delegatedResult.text
+                                    : `Delegated execution failed to start for ${resolvedAgentId}.`;
+                            activeDelegation = null;
+                            capabilityScope = computeCapabilityScope({
+                                sessionProfile: profile,
+                                multiAgentConfig,
+                                activeDelegation,
+                                installedExtensions: extensionGateway.listStates(),
+                                authorityStates: listAuthorityStates()
+                            });
+                            if (workflowLaneThreadKey && !suppressThreadStateMutation) {
+                                st = setActiveDelegationForLane(SESSION_THREADS.get(polarSessionId), workflowLaneThreadKey, null);
+                                SESSION_THREADS.set(polarSessionId, st);
+                                await persistSessionThreadsState(polarSessionId);
+                            }
+                        }
+
+                        toolResults.push({ tool: capabilityId, status: delegatedStatus, output: delegatedOutput });
+                        const completedSteps = toolResults.filter((result) => result.status !== 'failed' && result.status !== 'error').length;
+                        updateWorkflowRunStatus({
+                            completedSteps,
+                            failedSteps: toolResults.filter((result) => result.status === 'failed' || result.status === 'error').length,
+                            progress: workflowSteps.length > 0 ? Math.round((completedSteps / workflowSteps.length) * 100) : 100,
+                            lastStep: {
+                                index: stepIndex,
+                                capabilityId,
+                                extensionId,
+                                status: delegatedStatus,
+                                at: now(),
+                            },
+                        });
+
                         continue;
                     }
 
@@ -3833,6 +4823,11 @@ ${routingRecommendation || ""}`;
                             installedExtensions: extensionGateway.listStates(),
                             authorityStates: listAuthorityStates()
                         });
+                        if (workflowLaneThreadKey && !suppressThreadStateMutation) {
+                            st = setActiveDelegationForLane(SESSION_THREADS.get(polarSessionId), workflowLaneThreadKey, null);
+                            SESSION_THREADS.set(polarSessionId, st);
+                            await persistSessionThreadsState(polarSessionId);
+                        }
                         toolResults.push({ tool: capabilityId, status: "completed", output: "Task completed." });
                         const completedSteps = toolResults.filter((result) => result.status !== 'failed' && result.status !== 'error').length;
                         updateWorkflowRunStatus({
@@ -3866,8 +4861,12 @@ ${routingRecommendation || ""}`;
                             runId,
                             ...(targetThreadId ? { threadId: targetThreadId } : {}),
                         },
+                        cancellation: {
+                            workflowId,
+                            runId,
+                        },
                     };
-                    if (destructiveRequirementKeys.has(stepKey) && !options.isAutoRun) {
+                    if (approvalRequirementKeys.has(stepKey)) {
                         metadata.approvalContext = { workflowId, runId };
                     }
                     try {
@@ -3912,7 +4911,7 @@ ${routingRecommendation || ""}`;
                         // Record lastError on owning thread if step failed
                         if (stepStatus === 'failed' || stepStatus === 'error') {
                             st = SESSION_THREADS.get(polarSessionId);
-                            if (st && targetThreadId) {
+                            if (st && targetThreadId && !suppressThreadStateMutation) {
                                 const thread = st.threads.find(t => t.id === targetThreadId);
                                 if (thread) {
                                     thread.lastError = {
@@ -3982,7 +4981,7 @@ ${routingRecommendation || ""}`;
                             metadata: normalized.auditMetadata,
                         });
                         st = SESSION_THREADS.get(polarSessionId);
-                        if (st && targetThreadId) {
+                        if (st && targetThreadId && !suppressThreadStateMutation) {
                             const thread = st.threads.find(t => t.id === targetThreadId);
                             if (thread) {
                                 thread.lastError = {
@@ -4007,7 +5006,7 @@ ${routingRecommendation || ""}`;
                 // Post-loop: clear inFlight on owning thread, set final status
                 st = SESSION_THREADS.get(polarSessionId);
                 const anyFailed = toolResults.some(r => r.status === 'failed' || r.status === 'error');
-                if (st && targetThreadId) {
+                if (st && targetThreadId && !suppressThreadStateMutation) {
                     const thread = st.threads.find(t => t.id === targetThreadId);
                     if (thread) {
                         delete thread.inFlight;
@@ -4032,8 +5031,17 @@ ${routingRecommendation || ""}`;
                     await persistSessionThreadsState(polarSessionId);
                 }
                 if (wasCancelled) {
+                    const succeededCount = toolResults.filter((result) => result.status !== 'failed' && result.status !== 'error').length;
+                    const failedCount = toolResults.filter((result) => result.status === 'failed' || result.status === 'error').length;
+                    const notAttemptedCount = Math.max(0, workflowSteps.length - toolResults.length);
+                    const outcome =
+                        failedCount > 0 || succeededCount > 0
+                            ? (failedCount > 0 ? 'partial' : 'succeeded_before_cancel')
+                            : 'cancelled';
                     updateWorkflowRunStatus({
                         status: 'cancelled',
+                        completedSteps: succeededCount,
+                        failedSteps: failedCount,
                         progress: 100,
                     });
                     await emitLineageEvent({
@@ -4043,14 +5051,24 @@ ${routingRecommendation || ""}`;
                         workflowId,
                         runId,
                         threadId: targetThreadId,
+                        metadata: {
+                            succeededCount,
+                            failedCount,
+                            notAttemptedCount,
+                            outcome,
+                        },
                         timestampMs: now(),
                     });
                     const assistantMessageId = `msg_ast_${crypto.randomUUID()}`;
-                    const cancelText = "Workflow cancelled by user.";
-                    await chatManagementGateway.appendMessage({
-                        sessionId: polarSessionId, userId: "assistant", role: "assistant",
-                        text: cancelText, messageId: assistantMessageId, timestampMs: now()
-                    });
+                    const cancelText =
+                        `Workflow cancelled by user. ` +
+                        `${succeededCount} succeeded, ${failedCount} failed, ${notAttemptedCount} not attempted.`;
+                    if (!suppressResponsePersist) {
+                        await chatManagementGateway.appendMessage({
+                            sessionId: polarSessionId, userId: "assistant", role: "assistant",
+                            text: cancelText, messageId: assistantMessageId, timestampMs: now()
+                        });
+                    }
                     const sessionStateForReply = SESSION_THREADS.get(polarSessionId) || { threads: [], activeThreadId: null };
                     return {
                         status: 'cancelled',
@@ -4058,6 +5076,7 @@ ${routingRecommendation || ""}`;
                         assistantMessageId,
                         workflowId,
                         runId,
+                        outcome,
                         useInlineReply: selectReplyAnchor({
                             sessionState: sessionStateForReply,
                             classification: { type: 'status_nudge', targetThreadId: targetThreadId }
@@ -4095,11 +5114,19 @@ ${routingRecommendation || ""}`;
                 );
                 const normalizedFailures = toolResults.filter((result) => result.status === 'error' && typeof result.category === 'string');
                 const hasAnyFailure = toolResults.some((result) => result.status === 'failed' || result.status === 'error');
-                let shapedFailureSummary = "Execution complete.";
+                let shapedFailureSummary = delegatedOutcomeText || "Execution complete.";
                 let failureProposalValid = false;
                 let failureClampReasons = [];
-                let failureFinalDecision = "skip";
-                let failureOutcomeStatus = hasAnyFailure ? "workflow_failed" : "workflow_completed";
+                let failureFinalDecision = delegatedOutcomeText ? "respond" : "skip";
+                let failureOutcomeStatus = hasAnyFailure
+                    ? "workflow_failed"
+                    : delegatedOutcomeText
+                        ? "workflow_completed_delegated"
+                        : "workflow_completed";
+                let failureRepairAttempted = false;
+                let failureRepairSucceeded = false;
+                let failureStructuredOutputFallbackUsed = false;
+                let failureValidationErrors = [];
                 if (hasAnyFailure) {
                     failureFinalDecision = "clarify";
                     const deterministicFailureFallback = normalizedFailures.length > 0
@@ -4117,26 +5144,29 @@ ${routingRecommendation || ""}`;
                         capabilityId: failure.safeDiagnostic?.capabilityId,
                     }));
                     try {
-                        const failureResponse = await providerGateway.generate({
-                            executionType: "handoff",
+                        const failureValidation = await requestFailureExplainerProposal({
+                            providerGateway,
                             providerId: activeDelegation?.pinnedProvider || profile.profileConfig?.modelPolicy?.providerId || "openai",
                             model: activeDelegation?.model_override || profile.profileConfig?.modelPolicy?.modelId || "gpt-4.1-mini",
                             system: finalSystemPrompt,
                             messages: historyData?.items ? historyData.items.map(m => ({ role: m.role, content: m.text })) : [],
-                            prompt:
-                                `You are the failure explainer. Return strict JSON only with keys summary,suggestedNextStep,canRetry,detailLevel,detailedDiagnostic. ` +
-                                `Default to safe detail level. Use only these normalized error envelopes: ${JSON.stringify(normalizedEnvelope)}. ` +
-                                `Do not include stack traces or secret values.\n\n${deterministicHeader}`
+                            normalizedEnvelope,
+                            deterministicHeader,
                         });
-                        shapedFailureSummary = typeof failureResponse?.text === 'string' ? failureResponse.text : deterministicFailureFallback;
-                        const validation = parseJsonProposalText(shapedFailureSummary, failureExplainerSchema);
-                        failureProposalValid = validation.valid;
-                        failureClampReasons = validation.clampReasons;
-                        shapedFailureSummary = validation.valid
-                            ? validation.value.summary
+                        failureRepairAttempted = failureValidation.repairAttempted === true;
+                        failureRepairSucceeded = failureValidation.repairSucceeded === true;
+                        failureStructuredOutputFallbackUsed =
+                            failureValidation.structuredOutputFallbackUsed === true;
+                        failureValidationErrors = Array.isArray(failureValidation.validationErrors)
+                            ? failureValidation.validationErrors
+                            : [];
+                        failureProposalValid = failureValidation.valid;
+                        failureClampReasons = failureValidation.clampReasons;
+                        shapedFailureSummary = failureValidation.valid
+                            ? failureValidation.value.summary
                             : deterministicFailureFallback;
-                        failureFinalDecision = validation.valid ? "respond" : "fallback_safe_summary";
-                        failureOutcomeStatus = validation.valid
+                        failureFinalDecision = failureValidation.valid ? "respond" : "fallback_safe_summary";
+                        failureOutcomeStatus = failureValidation.valid
                             ? "workflow_failed_summary"
                             : "workflow_failed_fallback_summary";
                     } catch {
@@ -4158,20 +5188,27 @@ ${routingRecommendation || ""}`;
                     final_decision: failureFinalDecision,
                     outcomeStatus: failureOutcomeStatus,
                     outcome_status: failureOutcomeStatus,
+                    repair_attempted: failureRepairAttempted,
+                    repair_succeeded: failureRepairSucceeded,
+                    structured_output_fallback_used: failureStructuredOutputFallbackUsed,
+                    validation_errors: failureValidationErrors,
                     timestampMs: now(),
                 });
                 const cleanText = shapedFailureSummary.replace(/<polar_action>[\s\S]*?<\/polar_action>/, '').replace(/<thread_state>[\s\S]*?<\/thread_state>/, '').trim();
+                const finalText = !hasAnyFailure && delegatedOutcomeText ? cleanText : deterministicHeader + cleanText;
 
                 const assistantMessageId = `msg_ast_${crypto.randomUUID()}`;
-                await chatManagementGateway.appendMessage({
-                    sessionId: polarSessionId, userId: "assistant", role: "assistant",
-                    text: cleanText, messageId: assistantMessageId, timestampMs: now()
-                });
+                if (!suppressResponsePersist) {
+                    await chatManagementGateway.appendMessage({
+                        sessionId: polarSessionId, userId: "assistant", role: "assistant",
+                        text: cleanText, messageId: assistantMessageId, timestampMs: now()
+                    });
+                }
 
                 const sessionStateForReply = SESSION_THREADS.get(polarSessionId) || { threads: [], activeThreadId: null };
                 return {
                     status: 'completed',
-                    text: deterministicHeader + cleanText,
+                    text: finalText,
                     assistantMessageId,
                     useInlineReply: selectReplyAnchor({
                         sessionState: sessionStateForReply,
@@ -4190,7 +5227,7 @@ ${routingRecommendation || ""}`;
                 // Crash path: record lastError on the owning thread (using stored threadId)
                 let internalMessageId;
                 st = SESSION_THREADS.get(polarSessionId);
-                if (st && targetThreadId) {
+                if (st && targetThreadId && !suppressThreadStateMutation) {
                     const thread = st.threads.find(t => t.id === targetThreadId);
                     if (thread) {
                         thread.lastError = {
@@ -4214,7 +5251,9 @@ ${routingRecommendation || ""}`;
                 }
                 if (normalized.clearPending) {
                     clearTerminalPendingState(polarSessionId, targetThreadId);
-                    await persistSessionThreadsState(polarSessionId);
+                    if (!suppressThreadStateMutation) {
+                        await persistSessionThreadsState(polarSessionId);
+                    }
                 }
                 await emitLineageEvent({
                     eventType: 'workflow.execution.error_normalized',
@@ -4289,7 +5328,7 @@ ${routingRecommendation || ""}`;
                 if (st && entry.threadId) {
                     const thread = st.threads.find(t => t.id === entry.threadId);
                     if (thread) {
-                        thread.status = 'in_progress';
+                        thread.status = 'done';
                         delete thread.awaitingApproval;
                         thread.lastActivityTs = now();
                     }
@@ -4301,6 +5340,27 @@ ${routingRecommendation || ""}`;
             WORKFLOW_CANCEL_REQUESTS.delete(workflowId);
             await clearPendingWorkflow(workflowId);
             return { status: 'rejected' };
+        },
+
+        async getWorkflowProposal(workflowId) {
+            await hydratePendingWorkflow(workflowId);
+            const entry = PENDING_WORKFLOWS.get(workflowId);
+            if (!entry) {
+                return { status: "not_found", workflowId };
+            }
+            return {
+                status: "found",
+                workflowId,
+                proposalMode: entry.proposalMode || "auto_start",
+                steps: entry.steps || [],
+                risk: entry.risk || {},
+                ...(entry.dryRunPreview?.summaryText
+                    ? { previewSummary: entry.dryRunPreview.summaryText }
+                    : {}),
+                ...(entry.dryRunPreview?.payload
+                    ? { previewPayload: entry.dryRunPreview.payload }
+                    : {}),
+            };
         },
 
         async cancelWorkflow(workflowId) {
@@ -4327,6 +5387,14 @@ ${routingRecommendation || ""}`;
 
             if (IN_FLIGHT_WORKFLOWS.has(workflowId)) {
                 WORKFLOW_CANCEL_REQUESTS.set(workflowId, { requestedAt: now() });
+                const inFlight = IN_FLIGHT_WORKFLOWS.get(workflowId);
+                if (inFlight?.abortController && typeof inFlight.abortController.abort === "function") {
+                    try {
+                        inFlight.abortController.abort("user_cancelled");
+                    } catch {
+                        // best-effort cancellation only
+                    }
+                }
                 return { status: "cancellation_requested", phase: "in_flight", workflowId };
             }
 
@@ -4367,6 +5435,8 @@ ${routingRecommendation || ""}`;
                         sessionId: id,
                         activeThreadId: state.activeThreadId,
                         threadCount: state.threads.length,
+                        activeDelegationCount: Object.keys(state.activeDelegations || {}).length,
+                        activeDelegations: toJsonSafeValue(state.activeDelegations),
                         threads: toJsonSafeValue(state.threads),
                     });
                 })

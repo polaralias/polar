@@ -356,27 +356,26 @@ export async function exportArtifactsFromDb({
 export async function listArtifactFiles({ artifactsDir }) {
   const resolvedArtifactsDir = resolve(artifactsDir);
   const filenames = ["REACTIONS.md", "HEARTBEAT.md", "MEMORY.md", "PERSONALITY.md"];
-  const items = [];
-  for (const filename of filenames) {
-    const path = resolve(resolvedArtifactsDir, filename);
-    try {
-      const info = await stat(path);
-      items.push(
-        Object.freeze({
+
+  const items = await Promise.all(
+    filenames.map(async (filename) => {
+      const path = resolve(resolvedArtifactsDir, filename);
+      try {
+        const info = await stat(path);
+        return Object.freeze({
           filename,
           path,
           updatedAtMs: info.mtimeMs,
-        }),
-      );
-    } catch {
-      items.push(
-        Object.freeze({
+        });
+      } catch {
+        return Object.freeze({
           filename,
           path,
           updatedAtMs: null,
-        }),
-      );
-    }
-  }
+        });
+      }
+    }),
+  );
+
   return Object.freeze(items);
 }

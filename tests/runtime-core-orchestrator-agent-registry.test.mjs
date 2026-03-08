@@ -37,6 +37,39 @@ test("orchestrator includes registered agents in context and clamps delegated mo
       async generate(input) {
         providerCalls.push(input);
         if (
+          typeof input.system === "string" &&
+          input.system.includes("You are a routing model. Output strict JSON only.")
+        ) {
+          if (typeof input.prompt === "string" && input.prompt.includes("Write docs")) {
+            return {
+              text: JSON.stringify({
+                decision: "respond",
+                confidence: 0.95,
+                rationale: "delegated writer can answer directly",
+                references: { refersTo: "latest", refersToReason: "delegated task text" },
+              }),
+            };
+          }
+          return {
+            text: JSON.stringify({
+              decision: "delegate",
+              target: { agentId: "@writer" },
+              confidence: 0.92,
+              rationale: "specialist writing task",
+              references: { refersTo: "latest", refersToReason: "user requested delegation" },
+            }),
+          };
+        }
+        if (
+          typeof input.system === "string" &&
+          (
+            input.system.includes("[DELEGATED_EXECUTION]") ||
+            input.system.includes("You are writer sub-agent.")
+          )
+        ) {
+          return { text: "Writer finished docs." };
+        }
+        if (
           typeof input.prompt === "string" &&
           input.prompt.includes("Analyze these execution results")
         ) {
@@ -122,6 +155,7 @@ test("orchestrator includes registered agents in context and clamps delegated mo
 
   const executed = await orchestrator.executeWorkflow(proposed.workflowId);
   assert.equal(executed.status, "completed");
+  assert.match(executed.text, /Writer finished docs/);
   const diagnostics = await orchestrator.getThreadStateDiagnostics({
     sessionId: "session-agent-1",
   });
@@ -140,9 +174,13 @@ test("orchestrator includes registered agents in context and clamps delegated mo
   assert.deepEqual(delegationEvent.allowedSkills, ["web"]);
   assert.equal(delegationEvent.modelId, "claude-sonnet-4-6");
   assert.equal(delegationEvent.providerId, "anthropic");
+  assert.equal(
+    lineageEvents.some((event) => event?.eventType === "delegation.completed"),
+    true,
+  );
 
   // Successful single-step delegation now completes with deterministic summary text
-  // and does not require a second "Analyze these execution results" provider roundtrip.
+  // and returns the delegated child outcome without a second summary roundtrip.
   const summaryCall = providerCalls.find(
     (call) =>
       typeof call.prompt === "string" &&
@@ -272,7 +310,7 @@ test("orchestrator falls back to default generic sub-agent when router suggests 
   });
   assert.equal(proposed.status, "workflow_proposed");
   assert.equal(proposed.steps[0].capabilityId, "delegate_to_agent");
-  assert.equal(proposed.steps[0].args.agentId, "@generic_sub_agent");
+  assert.equal(proposed.steps[0].args.agentId, "@general");
   // Focus resolver and router can each invoke provider once before deterministic clamp.
   assert.equal(providerCalls.length >= 1, true);
 });

@@ -57,6 +57,54 @@ test("MemoryExtractionMiddleware triggers extraction on user message append", as
     assert.ok(capturedGenerateRequest.prompt.includes('I love London'));
 });
 
+test("MemoryExtractionMiddleware repairs malformed extraction output before persisting facts", async () => {
+    let upsertCalled = false;
+    const generateRequests = [];
+    let generateCallCount = 0;
+
+    const memoryGateway = {
+        async upsert(req) {
+            upsertCalled = true;
+            assert.equal(req.record.fact, 'Recovered Fact');
+            return { status: 'completed', memoryId: 'mem-2' };
+        }
+    };
+
+    const providerGateway = {
+        async generate(req) {
+            generateRequests.push(req);
+            generateCallCount += 1;
+            if (generateCallCount === 1) {
+                return { text: JSON.stringify({}) };
+            }
+            return { text: JSON.stringify({ facts: ['Recovered Fact'] }) };
+        }
+    };
+
+    const middleware = createMemoryExtractionMiddleware({ memoryGateway, providerGateway });
+
+    const context = {
+        actionId: 'chat.message.append',
+        input: {
+            role: 'user',
+            sessionId: 'sess-2',
+            userId: 'user-2',
+            text: 'I work on Polar',
+            messageId: 'msg-2',
+            traceId: 'trace-2'
+        },
+        output: { status: 'appended' }
+    };
+
+    await middleware.after(context);
+    await new Promise(resolve => setTimeout(resolve, 50));
+
+    assert.equal(upsertCalled, true);
+    assert.equal(generateCallCount, 2);
+    assert.equal(generateRequests[0]?.responseFormat?.type, 'json_schema');
+    assert.match(String(generateRequests[1]?.system || ''), /fact extraction JSON repairer/i);
+});
+
 test("MemoryRecallMiddleware injects facts into the prompt", async () => {
     const memoryGateway = {
         async search(req) {

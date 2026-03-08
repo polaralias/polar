@@ -66,6 +66,7 @@ function setupSkillInstaller({
 function setupSkillInstallerWithRegistry({
   skillPolicy = {},
   analysisResponse,
+  analysisResponses,
 } = {}) {
   const contractRegistry = createContractRegistry();
   registerExtensionContracts(contractRegistry);
@@ -81,6 +82,11 @@ function setupSkillInstallerWithRegistry({
   });
   const skillRegistry = createSkillRegistry();
   const providerRequests = [];
+  const scriptedResponses = Array.isArray(analysisResponses)
+    ? [...analysisResponses]
+    : analysisResponse !== undefined
+      ? [analysisResponse]
+      : [];
 
   const installerGateway = createSkillInstallerGateway({
     middlewarePipeline,
@@ -90,9 +96,12 @@ function setupSkillInstallerWithRegistry({
     providerGateway: {
       async generate(request) {
         providerRequests.push(request);
+        const nextResponse = scriptedResponses.length > 0
+          ? scriptedResponses.shift()
+          : undefined;
         return {
           text:
-            analysisResponse ??
+            nextResponse ??
             JSON.stringify({
               extensionId: "skill.docs-helper",
               version: "1.0.0",
@@ -472,7 +481,7 @@ test("skill installer proposal review flow supports pending -> approved -> enabl
     setupSkillInstallerWithRegistry();
 
   const proposed = await installerGateway.proposeManifest({
-    sourceUri: "https://safe.local/skills/docs-helper/SKILL.md",
+    sourceUri: "C:/skills/docs-helper/SKILL.md",
     skillContent: "# SKILL.md\nUse docs search capability",
     mcpInventory: [
       {
@@ -530,6 +539,113 @@ test("skill installer proposal review flow supports pending -> approved -> enabl
     input: { query: "policies" },
   });
   assert.equal(executed.status, "completed");
+});
+
+test("skill installer can stage a provided manifest for review before final install", async () => {
+  const { installerGateway, skillRegistry, providerRequests } =
+    setupSkillInstallerWithRegistry();
+  const manifest = `---
+name: docs-helper
+description: Assist with documentation tasks
+---
+## Capabilities
+- \`docs.search\` : Search docs [risk: read, effects: none]
+`;
+
+  const staged = await installerGateway.install({
+    sourceUri: "C:/skills/docs-helper/SKILL.md",
+    skillManifest: manifest,
+    requestedTrustLevel: "reviewed",
+    enableAfterInstall: true,
+    requireManifestReview: true,
+  });
+
+  assert.equal(staged.status, "applied");
+  assert.equal(staged.lifecycleState, "pending_install");
+  assert.equal(staged.reviewStatus, "pending");
+  assert.equal(staged.manifestSource, "provided");
+  assert.equal(skillRegistry.listPending().length, 1);
+  assert.equal(providerRequests.length, 0);
+
+  const reviewed = await installerGateway.reviewProposal({
+    extensionId: "skill.docs-helper",
+    decision: "approve",
+    requestedTrustLevel: "reviewed",
+    enableAfterReview: true,
+  });
+
+  assert.equal(reviewed.status, "applied");
+  assert.equal(reviewed.lifecycleState, "enabled");
+});
+
+test("skill installer generates a proposal when review mode is enabled and the manifest is missing", async () => {
+  const { installerGateway, skillRegistry, providerRequests } =
+    setupSkillInstallerWithRegistry();
+
+  const staged = await installerGateway.install({
+    sourceUri: "C:/skills/docs-helper/SKILL.md",
+    skillManifest: "# SKILL.md\nUse docs search capability",
+    requestedTrustLevel: "reviewed",
+    enableAfterInstall: true,
+    requireManifestReview: true,
+    mcpInventory: [{ name: "docs.search" }],
+  });
+
+  assert.equal(staged.status, "applied");
+  assert.equal(staged.lifecycleState, "pending_install");
+  assert.equal(staged.reviewStatus, "pending");
+  assert.equal(staged.manifestSource, "generated");
+  assert.equal(skillRegistry.listPending().length, 1);
+  assert.equal(providerRequests.length, 1);
+
+  const reviewed = await installerGateway.reviewProposal({
+    extensionId: "skill.docs-helper",
+    decision: "approve",
+    requestedTrustLevel: "reviewed",
+    enableAfterReview: true,
+  });
+
+  assert.equal(reviewed.status, "applied");
+  assert.equal(reviewed.lifecycleState, "enabled");
+});
+
+test("skill installer repairs malformed analyzer manifest output before proposing", async () => {
+  const { installerGateway, providerRequests } =
+    setupSkillInstallerWithRegistry({
+      analysisResponses: [
+        JSON.stringify({
+          extensionId: "skill.docs-helper",
+          capabilities: [
+            {
+              riskLevel: "read",
+            },
+          ],
+        }),
+        JSON.stringify({
+          extensionId: "skill.docs-helper",
+          version: "1.0.0",
+          description: "Docs helper",
+          permissions: ["fs.read"],
+          capabilities: [
+            {
+              capabilityId: "docs.search",
+              riskLevel: "read",
+              sideEffects: "none",
+            },
+          ],
+        }),
+      ],
+    });
+
+  const proposed = await installerGateway.proposeManifest({
+    sourceUri: "https://safe.local/skills/docs-helper/SKILL.md",
+    skillContent: "# SKILL.md\nUse docs search capability",
+    mcpInventory: [{ name: "docs.search" }],
+  });
+
+  assert.equal(proposed.status, "applied");
+  assert.equal(providerRequests[0]?.responseFormat?.type, "json_schema");
+  assert.match(String(providerRequests[1]?.system || ""), /skill manifest JSON repairer/i);
 });
 
 test("skill installer proposal review reject clears pending proposal and removes pending install state", async () => {

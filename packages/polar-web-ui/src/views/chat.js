@@ -3,6 +3,7 @@ import { fetchApi } from '../api.js';
 export async function renderChat(container) {
     const sessionId = localStorage.getItem('polar_ui_session') || crypto.randomUUID();
     localStorage.setItem('polar_ui_session', sessionId);
+    const REJECTION_FOLLOW_UP_TEXT = 'I can see that was rejected. What needs changing?';
 
     // Base UI Shell
     const html = `
@@ -178,6 +179,69 @@ export async function renderChat(container) {
         if (result.status === 'workflow_proposed' && result.workflowId) {
             const workflowId = result.workflowId;
             const steps = result.steps || [];
+            if (result.proposalMode === 'dry_run_approval') {
+                const safeWorkflowId = String(workflowId).replace(/[^a-zA-Z0-9_-]/g, '_');
+                const previewSummary = typeof result.previewSummary === 'string'
+                    ? `<div style="margin-top:8px; opacity:0.9; white-space:pre-wrap">${result.previewSummary}</div>`
+                    : '';
+                let wfHtml = `<strong>🟠 Dry Run Preview</strong><br><ul style="margin-top: 8px; padding-left: 16px; opacity: 0.8">`;
+                steps.forEach(s => {
+                    wfHtml += `<li><code>${s.capabilityId}</code> (from ${s.extensionId})</li>`;
+                });
+                wfHtml += `</ul>${previewSummary}<div style="margin-top: 12px; display:flex; gap:8px; flex-wrap:wrap;">
+                    <button id="wf-approve-btn-${safeWorkflowId}" class="action-btn outline" style="font-size: 12px; padding: 6px 12px;">Approve</button>
+                    <button id="wf-reject-btn-${safeWorkflowId}" class="action-btn outline" style="font-size: 12px; padding: 6px 12px; color: var(--danger); border-color: var(--danger)">Reject</button>
+                    <button id="wf-details-btn-${safeWorkflowId}" class="action-btn outline" style="font-size: 12px; padding: 6px 12px;">Details</button>
+                </div>
+                <pre id="wf-details-payload-${safeWorkflowId}" style="display:none; margin-top:12px; max-height:280px; overflow:auto; white-space:pre-wrap;">${JSON.stringify(result.previewPayload || {}, null, 2)}</pre>`;
+
+                const wfDiv = addBubble('assistant', wfHtml, {
+                    reaction: '⚡',
+                    done: false
+                });
+                const approveButton = wfDiv.querySelector(`#wf-approve-btn-${safeWorkflowId}`);
+                const rejectButton = wfDiv.querySelector(`#wf-reject-btn-${safeWorkflowId}`);
+                const detailsButton = wfDiv.querySelector(`#wf-details-btn-${safeWorkflowId}`);
+                const detailsPayload = wfDiv.querySelector(`#wf-details-payload-${safeWorkflowId}`);
+
+                const disableButtons = () => {
+                    [approveButton, rejectButton, detailsButton].forEach((button) => {
+                        if (button) {
+                            button.disabled = true;
+                        }
+                    });
+                };
+
+                approveButton?.addEventListener('click', async () => {
+                    disableButtons();
+                    try {
+                        const execResult = await fetchApi('executeWorkflow', { workflowId, approved: true });
+                        wfDiv.querySelectorAll('button').forEach((button) => button.remove());
+                        await processOrchestratorResponse(execResult);
+                    } catch (e) {
+                        addBubble('system', '<span style="color:var(--danger)">Approve failed: ' + e.message + '</span>');
+                    }
+                });
+
+                rejectButton?.addEventListener('click', async () => {
+                    disableButtons();
+                    try {
+                        await fetchApi('rejectWorkflow', { workflowId });
+                        wfDiv.querySelectorAll('button').forEach((button) => button.remove());
+                        addBubble('assistant', REJECTION_FOLLOW_UP_TEXT);
+                    } catch (e) {
+                        addBubble('system', '<span style="color:var(--danger)">Reject failed: ' + e.message + '</span>');
+                    }
+                });
+
+                detailsButton?.addEventListener('click', () => {
+                    if (!detailsPayload) return;
+                    const isHidden = detailsPayload.style.display === 'none';
+                    detailsPayload.style.display = isHidden ? 'block' : 'none';
+                    detailsButton.textContent = isHidden ? 'Hide details' : 'Details';
+                });
+                return;
+            }
 
             let wfHtml = `<strong>⚡ Proposed Execution Workflow:</strong><br><ul style="margin-top: 8px; padding-left: 16px; opacity: 0.8">`;
             steps.forEach(s => {
@@ -222,6 +286,96 @@ export async function renderChat(container) {
                 onFinish();
                 addBubble('system', '<span style="color:var(--danger)">Error: ' + e.message + '</span>');
             }
+            return;
+        }
+
+        if (result.status === 'automation_created' && result.jobId) {
+            const safeJobId = String(result.jobId).replace(/[^a-zA-Z0-9_-]/g, '_');
+            const autoHtml = `
+                <strong>🗓️ Automation Live</strong><br>
+                <div style="margin-top:8px; opacity:0.85">Job ID: <code>${result.jobId}</code><br>Schedule: <code>${result.job?.schedule || result.proposal?.schedule || 'unknown'}</code></div>
+                <div style="margin-top: 12px; display:flex; gap:8px;">
+                    <button id="auto-delete-btn-${safeJobId}" class="action-btn outline" style="font-size: 12px; padding: 6px 12px; color: var(--danger); border-color: var(--danger)">Reject</button>
+                </div>
+            `;
+            const autoDiv = addBubble('assistant', autoHtml);
+            const deleteButton = autoDiv.querySelector(`#auto-delete-btn-${safeJobId}`);
+            deleteButton?.addEventListener('click', async () => {
+                deleteButton.disabled = true;
+                try {
+                    const deleted = await fetchApi('deleteAutomationJob', { id: result.jobId });
+                    deleteButton.remove();
+                    if (deleted?.status === 'deleted') {
+                        addBubble('assistant', REJECTION_FOLLOW_UP_TEXT);
+                    } else {
+                        addBubble('system', '⚠️ Automation was already gone.');
+                    }
+                } catch (e) {
+                    addBubble('system', '<span style="color:var(--danger)">Reject failed: ' + e.message + '</span>');
+                }
+            });
+            return;
+        }
+
+        if (result.status === 'automation_proposed' && result.proposalId) {
+            const safeProposalId = String(result.proposalId).replace(/[^a-zA-Z0-9_-]/g, '_');
+            const autoHtml = `
+                <strong>🗓️ Automation Proposal</strong><br>
+                <div style="margin-top:8px; opacity:0.85">Schedule: <code>${result.proposal?.schedule || 'unknown'}</code><br>Prompt: <code>${result.proposal?.promptTemplate || 'unknown'}</code></div>
+                <div style="margin-top: 12px; display:flex; gap:8px;">
+                    <button id="auto-approve-btn-${safeProposalId}" class="action-btn outline" style="font-size: 12px; padding: 6px 12px;">Approve</button>
+                    <button id="auto-reject-btn-${safeProposalId}" class="action-btn outline" style="font-size: 12px; padding: 6px 12px; color: var(--danger); border-color: var(--danger)">Reject</button>
+                </div>
+            `;
+            const autoDiv = addBubble('assistant', autoHtml);
+            const approveButton = autoDiv.querySelector(`#auto-approve-btn-${safeProposalId}`);
+            const rejectButton = autoDiv.querySelector(`#auto-reject-btn-${safeProposalId}`);
+
+            approveButton?.addEventListener('click', async () => {
+                approveButton.disabled = true;
+                rejectButton.disabled = true;
+                try {
+                    const proposalResult = await fetchApi('consumeAutomationProposal', { proposalId: result.proposalId });
+                    if (proposalResult?.status !== 'found') {
+                        addBubble('system', '⚠️ This automation proposal expired or was already handled.');
+                        return;
+                    }
+                    const created = await fetchApi('createAutomationJob', {
+                        ownerUserId: proposalResult.proposal.userId,
+                        sessionId: proposalResult.proposal.sessionId,
+                        schedule: proposalResult.proposal.schedule,
+                        promptTemplate: proposalResult.proposal.promptTemplate,
+                        limits: proposalResult.proposal.limits,
+                        quietHours: proposalResult.proposal.quietHours,
+                        enabled: true
+                    });
+                    autoDiv.querySelectorAll('button').forEach((button) => button.remove());
+                    await processOrchestratorResponse({
+                        status: 'automation_created',
+                        jobId: created?.job?.id,
+                        job: created?.job,
+                        proposalId: result.proposalId,
+                        proposal: result.proposal,
+                        text: created?.status === 'created'
+                            ? `Automation created.\nJob ID: ${created.job.id}\nSchedule: ${created.job.schedule}\nReject it if you want changes.`
+                            : 'Automation approval succeeded, but job creation did not complete.'
+                    });
+                } catch (e) {
+                    addBubble('system', '<span style="color:var(--danger)">Automation create failed: ' + e.message + '</span>');
+                }
+            });
+
+            rejectButton?.addEventListener('click', async () => {
+                approveButton.disabled = true;
+                rejectButton.disabled = true;
+                try {
+                    await fetchApi('rejectAutomationProposal', { proposalId: result.proposalId });
+                    autoDiv.querySelectorAll('button').forEach((button) => button.remove());
+                    addBubble('assistant', REJECTION_FOLLOW_UP_TEXT);
+                } catch (e) {
+                    addBubble('system', '<span style="color:var(--danger)">Reject failed: ' + e.message + '</span>');
+                }
+            });
         }
     }
 
@@ -235,6 +389,7 @@ export async function renderChat(container) {
                 text: text || "",
                 messageId: messageId || crypto.randomUUID(),
                 metadata: {
+                    executionType: "interactive",
                     ...(replyToMessageId ? { replyToMessageId } : {}),
                     source: "polar-web-ui",
                     userAgent: navigator.userAgent

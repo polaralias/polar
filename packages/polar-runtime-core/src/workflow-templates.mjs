@@ -10,8 +10,8 @@ export const WORKFLOW_TEMPLATES = {
         },
         steps: (args) => [
             {
-                extensionId: "system",
-                extensionType: "core",
+                extensionId: "weather",
+                extensionType: "mcp",
                 capabilityId: "lookup_weather",
                 args: { location: args.location }
             }

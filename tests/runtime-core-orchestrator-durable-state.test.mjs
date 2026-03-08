@@ -95,6 +95,7 @@ function createHarness({ memoryGateway, providerGateway, extensionGateway, messa
             resourceId,
             version: 1,
             config: {
+              systemPrompt: "Writer agent.",
               allowedSkills: ["web"],
               modelPolicy: { providerId: "openai", modelId: "gpt-4.1-mini" },
             },
@@ -224,4 +225,104 @@ test("durable pending workflow survives orchestrator restart and can execute", a
   const second = createHarness({ memoryGateway, providerGateway, extensionGateway, messages, lineageEvents });
   const executed = await second.executeWorkflow(proposed.workflowId);
   assert.notEqual(executed.text, "Workflow not found");
+});
+
+test("active delegated lane state survives and routes follow-up prompts back into the delegated child run", async () => {
+  const memoryGateway = createSharedMemoryGateway();
+  const messages = [];
+  const lineageEvents = [];
+  const providerGateway = {
+    async generate(input) {
+      if (typeof input.system === "string" && input.system.includes("routing model")) {
+        if (
+          typeof input.prompt === "string" &&
+          input.prompt.includes("please delegate this to writer")
+        ) {
+          return {
+            text: JSON.stringify({
+              decision: "delegate",
+              target: { agentId: "@writer" },
+              confidence: 0.94,
+              rationale: "explicit delegate request",
+              references: { refersTo: "latest", refersToReason: "user asked for delegation" },
+            }),
+          };
+        }
+        return {
+          text: JSON.stringify({
+            decision: "clarify",
+            confidence: 0.4,
+            rationale: "delegated task is ambiguous",
+            references: { refersTo: "latest", refersToReason: "needs clarification" },
+          }),
+        };
+      }
+      if (
+        typeof input.system === "string" &&
+        (
+          input.system.includes("[DELEGATED_EXECUTION]") ||
+          input.system.includes("Writer agent.")
+        ) &&
+        typeof input.prompt === "string" &&
+        (
+          input.prompt.includes("do that") ||
+          input.prompt.includes("please delegate this to writer")
+        )
+      ) {
+        return { text: "What should I focus on?" };
+      }
+      if (
+        typeof input.system === "string" &&
+        (
+          input.system.includes("[DELEGATED_EXECUTION]") ||
+          input.system.includes("Writer agent.")
+        ) &&
+        typeof input.prompt === "string" &&
+        input.prompt.includes("use section B")
+      ) {
+        return { text: "Writer completed section B." };
+      }
+      return {
+        text: `<polar_action>{"template":"delegate_to_agent","args":{"agentId":"@writer","task_instructions":"do that"}}</polar_action>Delegating now.`,
+      };
+    },
+  };
+  const extensionGateway = {
+    getState() { return undefined; },
+    listStates() { return []; },
+    async execute() { return { status: "completed", output: "ok" }; },
+  };
+
+  const first = createHarness({ memoryGateway, providerGateway, extensionGateway, messages, lineageEvents });
+  const proposed = await first.orchestrate({
+    sessionId: "session-active-delegation",
+    userId: "u1",
+    text: "please delegate this to writer",
+    messageId: "mad-1",
+    metadata: { threadKey: "root:delegation" },
+  });
+  assert.equal(proposed.status, "workflow_proposed");
+
+  const executed = await first.executeWorkflow(proposed.workflowId);
+  assert.equal(executed.status, "completed");
+  const midDiagnostics = await first.getThreadStateDiagnostics({
+    sessionId: "session-active-delegation",
+  });
+  assert.equal(midDiagnostics.sessions[0].activeDelegationCount, 1);
+
+  const second = createHarness({ memoryGateway, providerGateway, extensionGateway, messages, lineageEvents });
+  const followUp = await second.orchestrate({
+    sessionId: "session-active-delegation",
+    userId: "u1",
+    text: "use section B",
+    messageId: "mad-2",
+    metadata: { threadKey: "root:delegation" },
+  });
+  assert.equal(followUp.status, "completed");
+  assert.match(followUp.text, /Writer completed section B/);
+
+  const diagnostics = await second.getThreadStateDiagnostics({
+    sessionId: "session-active-delegation",
+  });
+  assert.equal(diagnostics.sessions[0].activeDelegationCount, 0);
 });

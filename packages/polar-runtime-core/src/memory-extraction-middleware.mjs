@@ -3,32 +3,35 @@ import {
     createStrictObjectSchema,
     stringArrayField
 } from '@polar/domain';
+import { parseJsonProposalText } from './proposal-contracts.mjs';
+import { createJsonSchemaResponseFormat, requestStructuredJsonResponse } from './structured-output.mjs';
 
 const memoryExtractionResponseSchema = createStrictObjectSchema({
     schemaId: 'memory.extraction.response',
     fields: {
-        facts: stringArrayField({ minItems: 0, required: false })
+        facts: stringArrayField({ minItems: 0 })
     }
 });
 
-/**
- * @param {string} rawText
- * @returns {Record<string, unknown>}
- */
-function parseExtractionResponse(rawText) {
-    const normalized = rawText.replace(/```json?\s*/g, '').replace(/```/g, '').trim();
-    const parsed = JSON.parse(normalized);
-    const validation = memoryExtractionResponseSchema.validate(parsed);
-    if (!validation.ok) {
-        throw new RuntimeExecutionError(`Invalid ${memoryExtractionResponseSchema.schemaId}: ${(validation.errors || []).join('; ')}`);
-    }
-    return /** @type {Record<string, unknown>} */ (validation.value);
-}
+const memoryExtractionResponseFormat = createJsonSchemaResponseFormat(
+    'memory_extraction_response_v1',
+    Object.freeze({
+        type: 'object',
+        additionalProperties: false,
+        required: ['facts'],
+        properties: {
+            facts: {
+                type: 'array',
+                items: { type: 'string' },
+            }
+        }
+    })
+);
 
 /**
  * Middleware that automatically extracts durable facts from chat messages
  * and persists them to the Memory Gateway.
- * 
+ *
  * @param {{
  *   memoryGateway: { upsert: (req: any) => Promise<any> },
  *   providerGateway: { generate: (req: any) => Promise<any>, embed?: (req: any) => Promise<any> },
@@ -50,7 +53,6 @@ export function createMemoryExtractionMiddleware({
         id: 'memory-extraction',
 
         async after(context) {
-            // Only extract from successful user message appends
             if (context.actionId === 'chat.message.append' &&
                 context.output.status === 'appended' &&
                 context.input.role === 'user') {
@@ -66,22 +68,70 @@ export function createMemoryExtractionMiddleware({
                                 : undefined
                         );
 
-                // Run extraction in background but attach a .catch() to prevent unhandled rejections (BUG-007)
                 const extractionPromise = (async () => {
                     try {
-                        const extractionResult = await providerGateway.generate({
-                            traceId: `${traceId}-extract`,
-                            executionType: 'tool',
-                            providerId: extractionProviderId,
-                            model: extractionModel,
-                            system: 'You are a fact extraction engine. Extract only evergreen user/project facts.',
-                            prompt: `Extract durable facts from this user message.\nReturn JSON only in this shape: {"facts":["..."]}\nIf none, return {"facts":[]}\n\nUser message:\n${text}`,
-                            responseFormat: { type: 'json_object' }
+                        const extractionPayload = {
+                            userMessage: text,
+                            laneThreadKey: laneThreadKey || null,
+                        };
+                        const extractionValidation = await requestStructuredJsonResponse({
+                            providerGateway,
+                            responseFormat: memoryExtractionResponseFormat,
+                            initialRequest: {
+                                traceId: `${traceId}-extract`,
+                                executionType: 'tool',
+                                providerId: extractionProviderId,
+                                model: extractionModel,
+                                system:
+                                    `You are a fact extraction engine. Return exactly one JSON object matching ${memoryExtractionResponseSchema.schemaId}. `
+                                    + 'Extract only evergreen user/project facts. No markdown or prose outside JSON.',
+                                prompt:
+                                    'Extract durable facts from this user message.\n'
+                                    + 'Return JSON only in this shape: {"facts":["..."]}\n'
+                                    + 'If none, return {"facts":[]}\n\n'
+                                    + `Payload:\n${JSON.stringify(extractionPayload)}`,
+                                temperature: 0,
+                                maxOutputTokens: 240,
+                            },
+                            validateResponseText(rawText) {
+                                return parseJsonProposalText(rawText, memoryExtractionResponseSchema);
+                            },
+                            buildRepairRequest({ invalidOutput, validationErrors }) {
+                                return {
+                                    traceId: `${traceId}-extract-repair`,
+                                    executionType: 'tool',
+                                    providerId: extractionProviderId,
+                                    model: extractionModel,
+                                    system:
+                                        `You are a fact extraction JSON repairer. Return exactly one corrected JSON object matching ${memoryExtractionResponseSchema.schemaId}. `
+                                        + 'Do not explain the changes.',
+                                    prompt:
+                                        `The prior memory extraction output was invalid. Fix it and return corrected JSON only. ${JSON.stringify({
+                                            validationErrors,
+                                            extractionPayload,
+                                            invalidOutput,
+                                        })}`,
+                                    temperature: 0,
+                                    maxOutputTokens: 240,
+                                };
+                            },
+                            unavailableFallbackReason: 'memory_extraction_unavailable',
+                            invalidFallbackReason: 'schema_invalid',
                         });
+                        if (!extractionValidation.valid) {
+                            const failureMessage =
+                                typeof extractionValidation.errorMessage === 'string' &&
+                                    extractionValidation.errorMessage.length > 0
+                                    ? extractionValidation.errorMessage
+                                    : `Invalid ${memoryExtractionResponseSchema.schemaId}: ${(extractionValidation.validationErrors || []).join('; ') || (extractionValidation.clampReasons || []).join('; ')}`;
+                            throw new RuntimeExecutionError(
+                                failureMessage
+                            );
+                        }
 
-                        // Provider gateway returns { text: "..." }, not { content: "..." } (BUG-019 fix)
-                        const parsed = parseExtractionResponse(extractionResult.text || '{}');
-                        const facts = Array.isArray(parsed.facts) ? parsed.facts : [];
+                        const facts = Array.isArray(extractionValidation.value?.facts)
+                            ? extractionValidation.value.facts
+                            : [];
 
                         for (const fact of facts) {
                             let embeddingVector = undefined;
@@ -126,12 +176,10 @@ export function createMemoryExtractionMiddleware({
                             });
                         }
                     } catch (err) {
-                        // Log the error for observability instead of silently swallowing (BUG-004 fix)
                         console.warn(`[memory-extraction] Failed to extract facts: ${err.message}`);
                     }
                 })();
 
-                // Attach a no-op catch to prevent unhandled rejection if the IIFE itself throws (BUG-007 fix)
                 extractionPromise.catch(() => { });
             }
         }

@@ -19,16 +19,20 @@ test("web chat is a thin client: uses backend orchestration endpoints only", () 
   assert.match(chatSource, /fetchApi\('orchestrate'/);
   assert.match(chatSource, /fetchApi\('executeWorkflow'/);
   assert.match(chatSource, /fetchApi\('cancelWorkflow'/);
+  assert.match(chatSource, /fetchApi\('deleteAutomationJob'/);
+  assert.match(chatSource, /fetchApi\('consumeAutomationProposal'/);
+  assert.match(chatSource, /fetchApi\('rejectAutomationProposal'/);
   assert.match(chatSource, /fetchApi\('handleRepairSelection'/);
 
   assert.doesNotMatch(chatSource, /fetchApi\('generateOutput'/);
   assert.doesNotMatch(chatSource, /providerGateway\.generate/);
   assert.doesNotMatch(chatSource, /<polar_action>/);
 
-  assert.match(
-    viteSource,
-    /'orchestrate'[\s\S]*'executeWorkflow'[\s\S]*'cancelWorkflow'[\s\S]*'handleRepairSelection'/,
-  );
+  assert.match(viteSource, /'orchestrate'/);
+  assert.match(viteSource, /'executeWorkflow'/);
+  assert.match(viteSource, /'cancelWorkflow'/);
+  assert.match(viteSource, /'deleteAutomationJob'/);
+  assert.match(viteSource, /'handleRepairSelection'/);
 });
 
 test("telegram runner renders workflow proposal controls and processes approval callbacks", () => {
@@ -36,9 +40,13 @@ test("telegram runner renders workflow proposal controls and processes approval 
 
   assert.match(runnerSource, /result\.status === 'workflow_proposed'/);
   assert.match(runnerSource, /callback_data: `wf_can:\$\{result\.workflowId\}:\$\{telegramMessageId\}`/);
+  assert.match(runnerSource, /callback_data: `wf_app:\$\{result\.workflowId\}:\$\{telegramMessageId\}`/);
+  assert.match(runnerSource, /callback_data: `wf_rej:\$\{result\.workflowId\}:\$\{telegramMessageId\}`/);
+  assert.match(runnerSource, /callback_data: `wf_det:\$\{result\.workflowId\}:\$\{telegramMessageId\}`/);
   assert.match(runnerSource, /executeWorkflowAndReply\(\{/);
-  assert.match(runnerSource, /controlPlane\.executeWorkflow\(workflowId\)/);
+  assert.match(runnerSource, /controlPlane\.executeWorkflow\(\{\s*workflowId,/);
   assert.match(runnerSource, /controlPlane\.cancelWorkflow\(workflowId\)/);
+  assert.match(runnerSource, /controlPlane\.getWorkflowProposal\(workflowId\)/);
 });
 
 test("telegram runner renders automation proposal controls and processes approval callbacks", () => {

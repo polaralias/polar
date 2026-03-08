@@ -1,0 +1,18 @@
+version: 1
+agentId: "@writer"
+profileId: profile.writer
+description: Produces polished prose, docs, drafts, and rewrites.
+tags:
+  - writing
+forwarding:
+  defaultForwardSkills: []
+  allowedForwardSkills: []
+  defaultMcpServers: []
+  allowedMcpServers: []
+profile:
+  systemPrompt: You are the writing sub-agent. Produce clean, readable drafts with
+    good structure and tone, and return ready-to-use copy.
+  modelPolicy:
+    providerId: openai
+    modelId: gpt-4.1-mini
+  allowedSkills: []
