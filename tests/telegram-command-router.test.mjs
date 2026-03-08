@@ -45,6 +45,7 @@ function createRouterHarness(overrides = {}) {
     memorySearchRequests: [],
     memoryGetRequests: [],
     skillInstallRequests: [],
+    skillReviewRequests: [],
     extensionLifecycleRequests: [],
     commandAccessUpserts: [],
   };
@@ -179,7 +180,34 @@ function createRouterHarness(overrides = {}) {
       return {
         status: "applied",
         extensionId: "skill.docs-helper",
-        lifecycleState: "enabled",
+        lifecycleState: "pending_install",
+        reviewStatus: "pending",
+        manifestSource: "provided",
+      };
+    },
+    async listPendingSkillInstallProposals() {
+      return {
+        status: "ok",
+        totalCount: 1,
+        items: [
+          {
+            extensionId: "skill.docs-helper",
+            manifest: {
+              installRequest: {
+                manifestSource: "provided",
+              },
+            },
+          },
+        ],
+      };
+    },
+    async reviewSkillInstallProposal(request) {
+      calls.skillReviewRequests.push(request);
+      return {
+        status: request.decision === "approve" ? "applied" : "rejected",
+        extensionId: request.extensionId,
+        lifecycleState: request.decision === "approve" ? "enabled" : "removed",
+        reviewStatus: request.decision === "approve" ? "approved" : "rejected",
       };
     },
     async applyExtensionLifecycle(request) {
@@ -766,7 +794,7 @@ test("skills list reports installed skill state", async () => {
   assert.match(replies[0], /missingMetadata=1/);
 });
 
-test("skills install reads manifest from file source and calls installSkill", async () => {
+test("skills install reads manifest from file source and stages a pending review", async () => {
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "polar-skill-"));
   try {
     const manifestPath = path.join(workspace, "SKILL.md");
@@ -779,9 +807,32 @@ test("skills install reads manifest from file source and calls installSkill", as
     assert.match(calls.skillInstallRequests[0].skillManifest, /skill manifest/);
     assert.equal(replies.length, 1);
     assert.match(replies[0], /Skill install result/);
+    assert.match(replies[0], /pending_install/);
+    assert.match(replies[0], /next: \/skills approve skill\.docs-helper/);
   } finally {
     fs.rmSync(workspace, { recursive: true, force: true });
   }
+});
+
+test("skills pending lists pending review proposals", async () => {
+  const { router } = createRouterHarness();
+  const { ctx, replies } = createCtx("/skills pending");
+  await router.handle(ctx);
+  assert.equal(replies.length, 1);
+  assert.match(replies[0], /Pending skill proposals/);
+  assert.match(replies[0], /skill\.docs-helper/);
+});
+
+test("skills approve reviews the pending skill install proposal", async () => {
+  const { router, calls } = createRouterHarness();
+  const { ctx, replies } = createCtx("/skills approve skill.docs-helper reviewed");
+  await router.handle(ctx);
+  assert.equal(calls.skillReviewRequests.length, 1);
+  assert.equal(calls.skillReviewRequests[0].extensionId, "skill.docs-helper");
+  assert.equal(calls.skillReviewRequests[0].decision, "approve");
+  assert.equal(calls.skillReviewRequests[0].enableAfterReview, true);
+  assert.match(replies[0], /Skill review result/);
+  assert.match(replies[0], /enabled/);
 });
 
 test("skills block and unblock call extension lifecycle", async () => {

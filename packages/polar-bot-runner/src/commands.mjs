@@ -718,6 +718,8 @@ export function createTelegramCommandRouter({
     const status = asTrimmed(result.status) || "unknown";
     const extensionId = asTrimmed(result.extensionId);
     const lifecycleState = asTrimmed(result.lifecycleState);
+    const reviewStatus = asTrimmed(result.reviewStatus);
+    const manifestSource = asTrimmed(result.manifestSource);
     const reason = asTrimmed(result.reason);
     const lines = [`status: ${status}`];
     if (extensionId) {
@@ -726,8 +728,17 @@ export function createTelegramCommandRouter({
     if (lifecycleState) {
       lines.push(`lifecycleState: ${lifecycleState}`);
     }
+    if (reviewStatus) {
+      lines.push(`reviewStatus: ${reviewStatus}`);
+    }
+    if (manifestSource) {
+      lines.push(`manifestSource: ${manifestSource}`);
+    }
     if (reason) {
       lines.push(`reason: ${reason}`);
+    }
+    if (lifecycleState === "pending_install" && extensionId) {
+      lines.push(`next: /skills approve ${extensionId}`);
     }
     return {
       status,
@@ -1687,6 +1698,25 @@ export function createTelegramCommandRouter({
       return;
     }
 
+    if (subcommand === "pending") {
+      const pending = await controlPlane.listPendingSkillInstallProposals();
+      const items = Array.isArray(pending?.items) ? pending.items : [];
+      if (items.length === 0) {
+        await replyWithOptions(ctx, "No skill install proposals are pending review.");
+        return;
+      }
+      const lines = items.map((item) => {
+        const extensionId = asTrimmed(item.extensionId) || "unknown";
+        const manifest = isPlainObject(item.manifest) ? item.manifest : {};
+        const manifestSource = asTrimmed(manifest.manifestSource)
+          || asTrimmed(manifest.installRequest?.manifestSource)
+          || "unknown";
+        return `- ${extensionId} | pending_install | manifest=${manifestSource}`;
+      });
+      await replyWithOptions(ctx, `Pending skill proposals:\n${lines.join("\n")}`);
+      return;
+    }
+
     if (subcommand === "install") {
       const sourceArg = asTrimmed(tokens.slice(1).join(" "));
       if (!sourceArg) {
@@ -1709,6 +1739,33 @@ export function createTelegramCommandRouter({
       });
       const summary = normalizeInstallSkillResult(installed);
       await replyWithOptions(ctx, `Skill install result:\n${summary.text}`);
+      return;
+    }
+
+    if (subcommand === "approve" || subcommand === "reject") {
+      const extensionId = asTrimmed(tokens[1]);
+      const reason = asTrimmed(tokens.slice(2).join(" "));
+      if (!extensionId) {
+        throw createUsageError({
+          message: "Missing skillId.",
+          usage: `/skills ${subcommand} <skillId> [reason]`,
+          example: `/skills ${subcommand} skill.docs-helper`,
+        });
+      }
+      const reviewed = await controlPlane.reviewSkillInstallProposal({
+        extensionId,
+        decision: subcommand === "approve" ? "approve" : "reject",
+        reviewerId: `telegram:${ctx.from?.id ?? "unknown"}`,
+        requestedTrustLevel: "reviewed",
+        enableAfterReview: subcommand === "approve",
+        ...(reason ? { reason } : {}),
+        metadata: {
+          source: "telegram_command",
+          actor: "operator",
+        },
+      });
+      const summary = normalizeInstallSkillResult(reviewed);
+      await replyWithOptions(ctx, `Skill review result:\n${summary.text}`);
       return;
     }
 
@@ -1768,7 +1825,7 @@ export function createTelegramCommandRouter({
 
     throw createUsageError({
       message: "Unknown skills subcommand.",
-      usage: "/skills list [page] | /skills install <source> | /skills block <skillId> | /skills unblock <skillId>",
+      usage: "/skills list [page] | /skills pending | /skills install <source> | /skills approve <skillId> [reason] | /skills reject <skillId> [reason] | /skills block <skillId> | /skills unblock <skillId>",
       example: "/skills list",
     });
   }

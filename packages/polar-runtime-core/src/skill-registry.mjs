@@ -109,6 +109,12 @@ export function createSkillRegistry() {
         throw new RuntimeExecutionError("Proposed manifest must be a plain object");
       }
 
+      const additionalMetadata = Object.fromEntries(
+        Object.entries(metadata).filter(([key]) =>
+          key !== "reviewStatus" && key !== "sourceUri"
+        ),
+      );
+
       const proposal = Object.freeze({
         ...manifest,
         extensionId: normalizedExtensionId,
@@ -116,6 +122,7 @@ export function createSkillRegistry() {
         ...(typeof metadata.sourceUri === "string" && metadata.sourceUri.length > 0
           ? { sourceUri: metadata.sourceUri }
           : {}),
+        ...additionalMetadata,
         proposedAt: Date.now(),
       });
       proposedManifests.set(normalizedExtensionId, proposal);
@@ -541,4 +548,3 @@ export function createSkillRegistry() {
     },
   });
 }
-

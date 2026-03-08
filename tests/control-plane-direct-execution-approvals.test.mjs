@@ -30,6 +30,27 @@ async function configureSessionProfile(service, sessionId, allowedSkills) {
 }
 
 /**
+ * @param {ReturnType<typeof createControlPlaneService>} service
+ * @param {Record<string, unknown>} request
+ */
+async function installAndApproveSkill(service, request) {
+  const staged = await service.installSkill(request);
+  assert.equal(staged.status, "applied");
+  assert.equal(staged.lifecycleState, "pending_install");
+
+  const approved = await service.reviewSkillInstallProposal({
+    extensionId: staged.extensionId,
+    decision: "approve",
+    reviewerId: "operator-1",
+    requestedTrustLevel: "reviewed",
+    enableAfterReview: true,
+  });
+  assert.equal(approved.status, "applied");
+  assert.equal(approved.lifecycleState, "enabled");
+  return approved;
+}
+
+/**
  * @param {{
  *  name: string,
  *  description: string,
@@ -58,7 +79,7 @@ test("direct executeExtension denies approval-required capabilities without gran
 
   await configureSessionProfile(service, sessionId, [extensionId]);
 
-  const installResult = await service.installSkill({
+  const installResult = await installAndApproveSkill(service, {
     sourceUri: "C:/skills/mail/SKILL.md",
     enableAfterInstall: true,
     skillManifest: buildSkillManifest({
@@ -72,7 +93,6 @@ test("direct executeExtension denies approval-required capabilities without gran
     }),
   });
   assert.equal(installResult.status, "applied");
-  assert.equal(installResult.lifecycleState, "enabled");
 
   const directResult = await service.executeExtension({
     extensionId,
@@ -107,7 +127,7 @@ test("direct executeExtension recomputes scope server-side and ignores caller-su
   // No allowed skills for this session.
   await configureSessionProfile(service, sessionId, []);
 
-  const installResult = await service.installSkill({
+  const installResult = await installAndApproveSkill(service, {
     sourceUri: "C:/skills/notes/SKILL.md",
     enableAfterInstall: true,
     skillManifest: buildSkillManifest({
@@ -121,7 +141,6 @@ test("direct executeExtension recomputes scope server-side and ignores caller-su
     }),
   });
   assert.equal(installResult.status, "applied");
-  assert.equal(installResult.lifecycleState, "enabled");
 
   const directResult = await service.executeExtension({
     extensionId,
