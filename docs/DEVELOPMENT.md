@@ -23,10 +23,27 @@ Run Web UI + Telegram bot together:
 npm run dev
 ```
 
+Run Web UI + Telegram bot + live delegation/tool/workflow lineage tail:
+```bash
+npm run dev:trace
+```
+
+This defaults to high-signal delegation and workflow events so telemetry polling does not flood the console.
+
 Or individually:
 ```bash
 npm run dev:ui
 npm run dev:bot
+```
+
+If you only want the live lineage tail:
+```bash
+npm run dev:trace:tail
+```
+
+If you need low-level `extension.execute` checkpoints as well:
+```bash
+npm run dev:trace:tail:verbose
 ```
 
 ## Tests

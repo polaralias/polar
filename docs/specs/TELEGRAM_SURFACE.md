@@ -39,7 +39,7 @@ to bind orchestrator-produced ids to Telegram ids.
 ### Text messages
 1) Resolve session context (existing helper)
 2) Persist user message via `appendMessage`
-3) Call `orchestrate` with envelope `{ sessionId, userId, text, channel:"telegram", metadata:{ replyTo?, threadId?, ... } }`
+3) Call `orchestrate` with envelope `{ sessionId, userId, text, channel:"telegram", metadata:{ executionType:"interactive", replyTo?, threadId?, ... } }`
 4) Send reply to Telegram
 5) Bind ids (if applicable)
 
@@ -60,9 +60,35 @@ Callback payloads must be validated before use.
 On approval actions, clear inline markup to prevent duplicate execution.
 
 Known callback types:
-- workflow approve/reject
-- automation proposal approve/reject
+- workflow cancel for already-started runs
+- workflow approve/reject/details for dry-run proposals
+- automation reject/delete for auto-created jobs
+- automation proposal approve/reject fallback when auto-create fails
 - repair selection handlers
+
+### Workflow proposal handling
+When `orchestrate(...)` returns `workflow_proposed`:
+- `proposalMode = "auto_start"`: render a cancel/reject affordance, then immediately call `executeWorkflow(...)`.
+- `proposalMode = "dry_run_approval"`: render a human preview plus `Approve`, `Reject`, and optional `Details` controls. Do not execute live until the user approves.
+
+Dry-run details:
+- `Approve` calls `executeWorkflow({ workflowId, approved: true })`.
+- `Reject` calls `rejectWorkflow(...)` and keeps the follow-up conversation in the same Telegram thread.
+- `Details` may call `getWorkflowProposal(...)` to render the preview payload on demand.
+
+Cancellation semantics:
+- `cancelWorkflow(...)` is the hard stop path for future steps and the best-effort interruption path for the current step.
+- Telegram should report cancellation as a stateful update, not as a silent button press.
+
+### Automation handling
+When `orchestrate(...)` returns `automation_created`:
+- render the created job summary in-thread,
+- attach a reject/delete affordance,
+- if the user rejects, delete the created job but preserve audit history and continue the conversation in the same thread.
+
+If `orchestrate(...)` falls back to `automation_proposed`:
+- surface explicit approve/reject buttons,
+- approval should atomically consume the proposal before creating the job.
 
 ## Reactions and feedback
 Reactions are persisted as feedback events in SQLite (`polar_feedback_events`) via control-plane APIs.

@@ -28,6 +28,7 @@ const platform = createPolarPlatform({
 });
 await platform.bootstrapPromise;
 const controlPlane = platform.controlPlane;
+const REJECTION_FOLLOW_UP_TEXT = "I can see that was rejected. What needs changing?";
 
 function automationProposalTaskId(proposalId) {
     return `automation:proposal:${proposalId}`;
@@ -533,6 +534,7 @@ async function processGroupedMessages(polarSessionId, items) {
             text: userText,
             messageId: `msg_u_${telegramMessageId}`,
             metadata: {
+                executionType: "interactive",
                 ...(typeof envelope.threadId === "string" && envelope.threadId.length > 0
                     ? { threadId: envelope.threadId }
                     : {}),
@@ -576,30 +578,52 @@ async function processGroupedMessages(polarSessionId, items) {
                 formattedSteps += `*Step ${idx + 1}:* \`${step.capabilityId}\`\n`;
                 formattedSteps += `  Ext: \`${step.extensionId}\`\n`;
             });
-
-            // Auto-execute workflows and offer a cancel control while execution is in-flight.
-            const stepsMsg = await ctx.reply(`${formattedSteps}\n🟡 Auto-running now.`, {
-                parse_mode: 'Markdown',
-                ...replyOptions,
-                reply_markup: {
-                    inline_keyboard: [
-                        [
-                            { text: "🛑 Cancel", callback_data: `wf_can:${result.workflowId}:${telegramMessageId}` }
+            if (result.proposalMode === 'dry_run_approval') {
+                const previewSummary = typeof result.previewSummary === 'string'
+                    ? `${result.previewSummary}\n\n`
+                    : "";
+                const proposalMsg = await ctx.reply(`${formattedSteps}${previewSummary}🟠 Dry run completed. Approve to execute live.`, {
+                    parse_mode: 'Markdown',
+                    ...replyOptions,
+                    reply_markup: {
+                        inline_keyboard: [
+                            [
+                                { text: "✅ Approve", callback_data: `wf_app:${result.workflowId}:${telegramMessageId}` },
+                                { text: "❌ Reject", callback_data: `wf_rej:${result.workflowId}:${telegramMessageId}` }
+                            ],
+                            [
+                                { text: "🔎 Details", callback_data: `wf_det:${result.workflowId}:${telegramMessageId}` }
+                            ]
                         ]
-                    ]
+                    }
+                });
+                if (result.assistantMessageId && !primaryReplyMessage?.message_id) {
+                    await controlPlane.updateMessageChannelId(polarSessionId, result.assistantMessageId, proposalMsg.message_id);
                 }
-            });
-            if (result.assistantMessageId && !primaryReplyMessage?.message_id) {
-                await controlPlane.updateMessageChannelId(polarSessionId, result.assistantMessageId, stepsMsg.message_id);
+            } else {
+                const stepsMsg = await ctx.reply(`${formattedSteps}\n🟡 Auto-running now.`, {
+                    parse_mode: 'Markdown',
+                    ...replyOptions,
+                    reply_markup: {
+                        inline_keyboard: [
+                            [
+                                { text: "🛑 Cancel", callback_data: `wf_can:${result.workflowId}:${telegramMessageId}` }
+                            ]
+                        ]
+                    }
+                });
+                if (result.assistantMessageId && !primaryReplyMessage?.message_id) {
+                    await controlPlane.updateMessageChannelId(polarSessionId, result.assistantMessageId, stepsMsg.message_id);
+                }
+                const workflowResult = await executeWorkflowAndReply({
+                    ctx,
+                    workflowId: result.workflowId,
+                    sessionId: polarSessionId,
+                    replyOptions,
+                    cancelControlMessage: stepsMsg,
+                });
+                terminalStatus = workflowResult?.status || terminalStatus;
             }
-            const workflowResult = await executeWorkflowAndReply({
-                ctx,
-                workflowId: result.workflowId,
-                sessionId: polarSessionId,
-                replyOptions,
-                cancelControlMessage: stepsMsg,
-            });
-            terminalStatus = workflowResult?.status || terminalStatus;
         } else if (result.status === 'automation_proposed') {
             let primaryReplyMessage;
             if (result.text) {
@@ -644,6 +668,52 @@ async function processGroupedMessages(polarSessionId, items) {
                         proposal: result.proposal || {}
                     }
                 });
+            }
+        } else if (result.status === 'automation_created') {
+            let primaryReplyMessage;
+            if (result.text) {
+                primaryReplyMessage = await ctx.reply(result.text, replyOptions);
+            }
+            if (result.assistantMessageId && primaryReplyMessage?.message_id) {
+                await controlPlane.updateMessageChannelId(polarSessionId, result.assistantMessageId, primaryReplyMessage.message_id);
+            }
+            if (result.proposalId) {
+                await recordAutomationProposalEvent({
+                    proposalId: result.proposalId,
+                    sessionId: polarSessionId,
+                    userId: ctx.from.id.toString(),
+                    metadata: {
+                        source: "telegram",
+                        decision: "auto_created",
+                        jobId: result.jobId,
+                        proposal: result.proposal || {}
+                    }
+                });
+            }
+            if (result.jobId) {
+                const createdMsg = await ctx.reply(
+                    `🗓️ *Automation Live*\n` +
+                    `Job ID: \`${result.jobId}\`\n` +
+                    `Schedule: \`${result.job?.schedule || result.proposal?.schedule || 'unknown'}\`\n` +
+                    `Reject if you want me to change it.`,
+                    {
+                        parse_mode: 'Markdown',
+                        ...replyOptions,
+                        reply_markup: {
+                            inline_keyboard: [
+                                [
+                                    {
+                                        text: "❌ Reject",
+                                        callback_data: `auto_del:${result.jobId}:${result.proposalId || 'none'}:${telegramMessageId}`
+                                    }
+                                ]
+                            ]
+                        }
+                    }
+                );
+                if (result.assistantMessageId && !primaryReplyMessage?.message_id) {
+                    await controlPlane.updateMessageChannelId(polarSessionId, result.assistantMessageId, createdMsg.message_id);
+                }
             }
         } else if (result.status === 'repair_question') {
             const optA = result.options.find(o => o.id === 'A');
@@ -693,9 +763,13 @@ async function executeWorkflowAndReply({
     sessionId,
     replyOptions,
     cancelControlMessage,
+    approved = false,
 }) {
     try {
-        const result = await controlPlane.executeWorkflow(workflowId);
+        const result = await controlPlane.executeWorkflow({
+            workflowId,
+            ...(approved ? { approved: true } : {}),
+        });
         if (cancelControlMessage?.message_id) {
             await ctx.telegram.editMessageReplyMarkup(
                 cancelControlMessage.chat.id,
@@ -946,6 +1020,7 @@ bot.on('callback_query', async (ctx) => {
                 workflowId,
                 sessionId: sessionContext.sessionId,
                 replyOptions: callbackReplyOptions,
+                approved: true,
             });
             await transitionWaitingReactionToDone(ctx, callbackData);
         } catch (execErr) {
@@ -957,6 +1032,28 @@ bot.on('callback_query', async (ctx) => {
             await transitionWaitingReactionToDone(ctx, callbackData);
         }
 
+    } else if (callbackData.startsWith('wf_det:')) {
+        const parts = callbackData.split(':');
+        const workflowId = parts[1];
+        await ctx.answerCbQuery("Loading dry run details...");
+        try {
+            const preview = await controlPlane.getWorkflowProposal(workflowId);
+            if (preview.status !== "found") {
+                await replyFromOrchestrator("That dry run is no longer available.");
+                return;
+            }
+            const payload = typeof preview.previewPayload === "object" && preview.previewPayload !== null
+                ? JSON.stringify(preview.previewPayload, null, 2).slice(0, 3500)
+                : "No structured preview payload is available.";
+            const summary = typeof preview.previewSummary === "string" ? `${preview.previewSummary}\n\n` : "";
+            await replyFromOrchestrator(`${summary}Preview payload:\n${payload}`);
+        } catch (error) {
+            await replyFromOrchestrator(
+                `Failed to load dry run details: ${error.message}`,
+                `Failed to load dry run details: ${error.message}`,
+            );
+        }
+
     } else if (callbackData.startsWith('wf_can:')) {
         const parts = callbackData.split(':');
         const workflowId = parts[1];
@@ -964,7 +1061,7 @@ bot.on('callback_query', async (ctx) => {
         await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
         const cancelResult = await controlPlane.cancelWorkflow(workflowId);
         if (cancelResult.status === "cancelled" || cancelResult.status === "cancellation_requested") {
-            await replyFromOrchestrator("Cancellation requested. Stopping workflow.");
+            await replyFromOrchestrator("Cancellation requested. Stopping workflow. Tell me what needs changing once it settles.");
         } else {
             await replyFromOrchestrator("Workflow was not found or already finished.");
         }
@@ -977,7 +1074,7 @@ bot.on('callback_query', async (ctx) => {
 
         await ctx.answerCbQuery("Workflow Rejected.");
         await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
-        await replyFromOrchestrator("Workflow rejected.");
+        await replyFromOrchestrator(REJECTION_FOLLOW_UP_TEXT);
         await transitionWaitingReactionToDone(ctx, callbackData);
 
     } else if (callbackData.startsWith('auto_app:')) {
@@ -1110,7 +1207,34 @@ bot.on('callback_query', async (ctx) => {
         });
         await ctx.answerCbQuery("Automation proposal rejected.");
         await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
-        await replyFromOrchestrator("Automation proposal rejected.");
+        await replyFromOrchestrator(REJECTION_FOLLOW_UP_TEXT);
+        await transitionWaitingReactionToDone(ctx, callbackData);
+
+    } else if (callbackData.startsWith('auto_del:')) {
+        const parts = callbackData.split(':');
+        const jobId = parts[1];
+        const proposalId = parts[2];
+        const deleted = await controlPlane.deleteAutomationJob({ id: jobId });
+        if (proposalId && proposalId !== "none") {
+            await recordAutomationProposalDecision({
+                proposalId,
+                toStatus: deleted.status === "deleted" ? "done" : "blocked",
+                sessionId: sessionContext.sessionId,
+                userId: ctx.from.id.toString(),
+                reason: deleted.status === "deleted" ? "Automation auto-created then rejected" : "Automation rejection failed",
+                metadata: {
+                    source: "telegram",
+                    decision: deleted.status === "deleted" ? "rejected_after_create" : "reject_failed",
+                    jobId,
+                    deleteStatus: deleted.status,
+                }
+            });
+        }
+        await ctx.answerCbQuery(deleted.status === "deleted" ? "Automation deleted." : "Automation was already gone.");
+        await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
+        await replyFromOrchestrator(
+            deleted.status === "deleted" ? REJECTION_FOLLOW_UP_TEXT : "That automation was already gone or could not be deleted."
+        );
         await transitionWaitingReactionToDone(ctx, callbackData);
 
     } else if (callbackData.startsWith('repair_sel:')) {

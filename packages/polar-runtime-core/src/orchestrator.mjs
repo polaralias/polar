@@ -1412,6 +1412,7 @@ export function createOrchestrator({
     const WORKFLOW_RUN_STATUS = new Map();
     const WORKFLOW_TTL_MS = 30 * 60 * 1000;
     const WORKFLOW_MAX_SIZE = 100;
+    const BULK_ACTION_THRESHOLD = 50;
     const PENDING_AUTOMATION_PROPOSALS = new Map();
     const AUTOMATION_PROPOSAL_TTL_MS = 30 * 60 * 1000;
 
@@ -1829,13 +1830,126 @@ export function createOrchestrator({
     /**
      * Compute risk summary for a list of workflow steps.
      */
-    function evaluateWorkflowRisk(steps) {
+    function inferTargetCountFromArgs(args) {
+        if (!args || typeof args !== "object") {
+            return null;
+        }
+        let maxCount = null;
+        const visit = (value, key = "") => {
+            if (Array.isArray(value)) {
+                if (value.length > 0) {
+                    maxCount = maxCount === null ? value.length : Math.max(maxCount, value.length);
+                }
+                for (const item of value) {
+                    visit(item, key);
+                }
+                return;
+            }
+            if (!value || typeof value !== "object") {
+                return;
+            }
+            for (const [childKey, childValue] of Object.entries(value)) {
+                if (typeof childValue === "number" && Number.isFinite(childValue)) {
+                    if (/(count|limit|max|total|batch|size)$/i.test(childKey) && childValue > 1) {
+                        maxCount = maxCount === null ? childValue : Math.max(maxCount, childValue);
+                    }
+                    continue;
+                }
+                visit(childValue, childKey);
+            }
+        };
+        visit(args);
+        return maxCount !== null && Number.isFinite(maxCount) ? maxCount : null;
+    }
+
+    function inferExplicitCountFromText(sourceText) {
+        const textValue = typeof sourceText === "string" ? sourceText : "";
+        let maxCount = null;
+        for (const match of textValue.matchAll(/\b(\d{1,6})\b/g)) {
+            const parsed = Number.parseInt(match[1], 10);
+            if (!Number.isFinite(parsed) || parsed <= 1) {
+                continue;
+            }
+            maxCount = maxCount === null ? parsed : Math.max(maxCount, parsed);
+        }
+        return maxCount;
+    }
+
+    function hasOpenEndedBulkIntent(sourceText) {
+        if (typeof sourceText !== "string") {
+            return false;
+        }
+        return /\b(all|every|each|entire|whole|bulk|campaign|blast|mass|everyone|everything)\b/i.test(sourceText);
+    }
+
+    function sanitizePreviewValue(value) {
+        return toJsonSafeValue(value);
+    }
+
+    function buildWorkflowDryRunPreview({ steps, risk, sourceText }) {
+        const stepsPayload = steps.map((step, index) => ({
+            step: index + 1,
+            extensionId: step.extensionId,
+            capabilityId: step.capabilityId,
+            targetEstimate:
+                typeof step.targetEstimate === "number" && Number.isFinite(step.targetEstimate)
+                    ? step.targetEstimate
+                    : undefined,
+            args: sanitizePreviewValue(step.args ?? {}),
+        }));
+
+        const targetEstimate =
+            typeof risk.bulk?.targetEstimate === "number" && Number.isFinite(risk.bulk.targetEstimate)
+                ? risk.bulk.targetEstimate
+                : null;
+        const previewLines = [];
+        if (risk.riskLevel === "destructive") {
+            previewLines.push("Dry run preview: this workflow includes destructive actions.");
+        } else {
+            previewLines.push("Dry run preview: this workflow qualifies as a bulk write.");
+        }
+        if (targetEstimate !== null) {
+            previewLines.push(`Estimated targets: about ${targetEstimate}.`);
+        } else if (risk.bulk?.isBulk) {
+            previewLines.push("Estimated targets: unresolved from prompt and args, so this is being treated as bulk conservatively.");
+        }
+        if (typeof risk.bulk?.reason === "string" && risk.bulk.reason.length > 0) {
+            previewLines.push(`Why this needs preview: ${risk.bulk.reason}.`);
+        }
+        previewLines.push("Planned steps:");
+        for (const step of stepsPayload) {
+            const targetLabel =
+                typeof step.targetEstimate === "number" && Number.isFinite(step.targetEstimate)
+                    ? ` targeting about ${step.targetEstimate}`
+                    : "";
+            previewLines.push(`- Step ${step.step}: ${step.capabilityId} via ${step.extensionId}${targetLabel}.`);
+        }
+
+        return Object.freeze({
+            summaryText: previewLines.join("\n"),
+            payload: Object.freeze({
+                previewKind: "workflow_dry_run",
+                riskLevel: risk.riskLevel,
+                sideEffects: risk.sideEffects,
+                dataEgress: risk.dataEgress,
+                bulk: sanitizePreviewValue(risk.bulk),
+                prompt: typeof sourceText === "string" ? sourceText : "",
+                steps: Object.freeze(stepsPayload),
+            }),
+        });
+    }
+
+    function evaluateWorkflowRisk(steps, sourceText = "") {
         let maxRisk = 'read';
         let maxEffects = 'none';
         let maxEgress = 'none';
         let hasDelegation = false;
         let delegationRequiresApproval = false;
         const requirements = [];
+        let hasWriteStep = false;
+        let explicitBulkCapability = false;
+        let bulkThreshold = BULK_ACTION_THRESHOLD;
+        let maxTargetEstimate = null;
 
         for (const step of steps) {
             if (step.capabilityId === 'delegate_to_agent') {
@@ -1851,11 +1965,21 @@ export function createOrchestrator({
 
             const state = extensionGateway.getState(step.extensionId);
             const cap = (state?.capabilities || []).find(c => c.capabilityId === step.capabilityId);
+            const stepTargetEstimate = inferTargetCountFromArgs(step.args ?? {});
+            if (typeof stepTargetEstimate === "number" && Number.isFinite(stepTargetEstimate)) {
+                step.targetEstimate = stepTargetEstimate;
+                maxTargetEstimate = maxTargetEstimate === null
+                    ? stepTargetEstimate
+                    : Math.max(maxTargetEstimate, stepTargetEstimate);
+            }
 
             if (cap) {
                 // Risk Level: read < write < destructive
                 if (cap.riskLevel === 'destructive') maxRisk = 'destructive';
                 else if (cap.riskLevel === 'write' && maxRisk === 'read') maxRisk = 'write';
+                if (cap.riskLevel === 'write' || cap.riskLevel === 'destructive') {
+                    hasWriteStep = true;
+                }
 
                 // Side Effects: none < internal < external
                 if (cap.sideEffects === 'external') maxEffects = 'external';
@@ -1863,6 +1987,12 @@ export function createOrchestrator({
 
                 // Data Egress: none < network
                 if (cap.dataEgress === 'network') maxEgress = 'network';
+                if (cap.bulk === true) {
+                    explicitBulkCapability = true;
+                }
+                if (typeof cap.bulkThreshold === "number" && Number.isFinite(cap.bulkThreshold) && cap.bulkThreshold > 1) {
+                    bulkThreshold = Math.max(2, Math.floor(cap.bulkThreshold));
+                }
 
                 const approvalRequirement = evaluateCapabilityApprovalRequirement({
                     riskLevel: cap.riskLevel || 'unknown',
@@ -1886,7 +2016,30 @@ export function createOrchestrator({
                 // If metadata missing, assume write/internal for safety
                 if (maxRisk === 'read') maxRisk = 'write';
                 if (maxEffects === 'none') maxEffects = 'internal';
+                hasWriteStep = true;
             }
+        }
+
+        const inferredCountFromText = inferExplicitCountFromText(sourceText);
+        const targetEstimateCandidates = [maxTargetEstimate, inferredCountFromText]
+            .filter((value) => typeof value === "number" && Number.isFinite(value));
+        const targetEstimate =
+            targetEstimateCandidates.length > 0
+                ? Math.max(...targetEstimateCandidates)
+                : null;
+        const openEndedBulkIntent = hasOpenEndedBulkIntent(sourceText);
+        const inferredBulk = hasWriteStep && (
+            explicitBulkCapability ||
+            (typeof targetEstimate === "number" && targetEstimate >= bulkThreshold) ||
+            openEndedBulkIntent
+        );
+        let bulkReason = null;
+        if (explicitBulkCapability) {
+            bulkReason = "capability is explicitly marked bulk";
+        } else if (typeof targetEstimate === "number" && targetEstimate >= bulkThreshold) {
+            bulkReason = `estimated target count ${targetEstimate} meets threshold ${bulkThreshold}`;
+        } else if (openEndedBulkIntent) {
+            bulkReason = "prompt uses an open-ended selector and cannot be bounded safely";
         }
 
         return {
@@ -1895,7 +2048,16 @@ export function createOrchestrator({
             dataEgress: maxEgress,
             hasDelegation,
             delegationRequiresApproval,
-            requirements
+            requirements,
+            bulk: Object.freeze({
+                isBulk: inferredBulk,
+                threshold: bulkThreshold,
+                targetEstimate,
+                explicitCapability: explicitBulkCapability,
+                inferredFromText: openEndedBulkIntent,
+                reason: bulkReason,
+            }),
+            requiresDryRunApproval: maxRisk === 'destructive' || inferredBulk,
         };
     }
 
@@ -3737,42 +3899,65 @@ ${routingRecommendation || ""}`;
                         };
                     }
 
-                    const risk = evaluateWorkflowRisk(workflowSteps);
+                    const risk = evaluateWorkflowRisk(workflowSteps, text);
                     const principal = { userId, sessionId: polarSessionId };
                     const pendingRequirements = checkGrants(risk.requirements, principal);
-
-                    const requiresManualApproval = pendingRequirements.length > 0 || risk.delegationRequiresApproval;
+                    const proposalMode = risk.requiresDryRunApproval ? "dry_run_approval" : "auto_start";
+                    const dryRunPreview = proposalMode === "dry_run_approval"
+                        ? buildWorkflowDryRunPreview({ steps: workflowSteps, risk, sourceText: text })
+                        : null;
                     const workflowId = crypto.randomUUID();
                     const ownerThreadId = sessionState.activeThreadId;
                     const executionOverrides = buildWorkflowExecutionOverrides(metadata, laneThreadKey);
+                    const executionType =
+                        typeof metadata?.executionType === "string" && metadata.executionType.length > 0
+                            ? metadata.executionType
+                            : "handoff";
+                    const isInteractiveWorkflowTurn = executionType === "interactive";
+                    const requiresLegacyManualApproval =
+                        proposalMode === "dry_run_approval" ||
+                        pendingRequirements.length > 0 ||
+                        risk.delegationRequiresApproval;
                     PENDING_WORKFLOWS.set(workflowId, {
                         steps: workflowSteps,
                         createdAt: now(),
                         polarSessionId,
-                        userId, // Store for grant issuance
+                        userId,
                         multiAgentConfig,
                         laneThreadKey,
-                        threadId: ownerThreadId, // canonical thread→workflow link
+                        threadId: ownerThreadId,
                         risk: { ...risk, requirements: pendingRequirements },
                         executionOverrides,
+                        proposalMode,
+                        dryRunPreview: dryRunPreview
+                            ? {
+                                  summaryText: dryRunPreview.summaryText,
+                                  payload: dryRunPreview.payload,
+                              }
+                            : null,
                     });
                     await persistPendingWorkflow(workflowId, PENDING_WORKFLOWS.get(workflowId));
 
-                    // Auto-run rules: if no manual approval required, execute immediately
-                    if (!requiresManualApproval) {
-                        return methods.executeWorkflow(workflowId, {
-                            isAutoRun: true,
-                            ...(executionOverrides ? { executionOverrides } : {}),
-                        });
+                    if (!isInteractiveWorkflowTurn) {
+                        if (!requiresLegacyManualApproval) {
+                            return methods.executeWorkflow(workflowId, {
+                                isAutoRun: true,
+                                authorizationMode: "policy_auto",
+                                ...(executionOverrides ? { executionOverrides } : {}),
+                            });
+                        }
                     }
 
-                    // Mark the owner thread as awaiting approval
                     let st = SESSION_THREADS.get(polarSessionId);
                     if (st && ownerThreadId) {
                         const thread = st.threads.find(t => t.id === ownerThreadId);
                         if (thread) {
                             thread.status = 'workflow_proposed';
-                            thread.awaitingApproval = { workflowId, proposedAtMessageId: assistantMessageId };
+                            if (proposalMode === "dry_run_approval") {
+                                thread.awaitingApproval = { workflowId, proposedAtMessageId: assistantMessageId };
+                            } else {
+                                delete thread.awaitingApproval;
+                            }
                             thread.lastActivityTs = now();
                         }
                         SESSION_THREADS.set(polarSessionId, st);
@@ -3789,8 +3974,16 @@ ${routingRecommendation || ""}`;
                             level: risk.riskLevel,
                             sideEffects: risk.sideEffects,
                             dataEgress: risk.dataEgress,
-                            requirements: pendingRequirements
+                            requirements: pendingRequirements,
+                            bulk: risk.bulk,
                         },
+                        proposalMode,
+                        ...(dryRunPreview
+                            ? {
+                                  previewSummary: dryRunPreview.summaryText,
+                                  previewPayload: dryRunPreview.payload,
+                              }
+                            : {}),
                         ...proposalValidation,
                         useInlineReply: currentTurnAnchor ?? false,
                         anchorMessageId: currentAnchorMessageId
@@ -3822,7 +4015,23 @@ ${routingRecommendation || ""}`;
                 threadId: ownerThreadId,
                 risk,
                 executionOverrides: entryExecutionOverrides,
+                proposalMode = "auto_start",
+                dryRunPreview = null,
             } = entry;
+            const requiresExplicitApproval = proposalMode === "dry_run_approval";
+            const explicitApprovalConfirmed =
+                options.approved === true ||
+                options.authorizationMode === "explicit_approval";
+            if (requiresExplicitApproval && !explicitApprovalConfirmed) {
+                return {
+                    status: "approval_required",
+                    workflowId,
+                    proposalMode,
+                    text: "Approve the dry run before executing this workflow live.",
+                    ...(dryRunPreview?.summaryText ? { previewSummary: dryRunPreview.summaryText } : {}),
+                    ...(dryRunPreview?.payload ? { previewPayload: dryRunPreview.payload } : {}),
+                };
+            }
             await hydrateSessionThreadsState(polarSessionId);
             PENDING_WORKFLOWS.delete(workflowId);
             await clearPendingWorkflow(workflowId);
@@ -3830,16 +4039,21 @@ ${routingRecommendation || ""}`;
             // Resolve the target thread — use stored threadId, never rely on activeThreadId drift
             const runId = `run_${crypto.randomUUID()}`;
             const transientGrantIds = [];
+            const abortController = new AbortController();
             IN_FLIGHT_WORKFLOWS.set(workflowId, {
                 runId,
                 sessionId: polarSessionId,
                 threadId: ownerThreadId,
                 startedAt: now(),
+                abortController,
             });
 
-            // If this was a manual approval, issue grants for the requirements.
-            // Write-tier grants may be reusable; destructive grants are run-scoped and revoked in finally.
-            if (!options.isAutoRun) {
+            const authorizationMode =
+                typeof options.authorizationMode === "string" && options.authorizationMode.length > 0
+                    ? options.authorizationMode
+                    : (requiresExplicitApproval ? "explicit_approval" : "policy_auto");
+
+            if (authorizationMode === "policy_auto" || authorizationMode === "explicit_approval") {
                 const principal = { userId, sessionId: polarSessionId };
                 const allRequirements = Array.isArray(risk?.requirements) ? risk.requirements : [];
                 const writeRequirements = allRequirements.filter(req => req.riskLevel !== 'destructive');
@@ -3850,14 +4064,21 @@ ${routingRecommendation || ""}`;
                         extensionId: req.extensionId,
                         capabilityId: req.capabilityId
                     }));
-                    const maxTtl = 3600 * 24; // 24h default for plan approval
-                    approvalStore.issueGrant(principal, {
-                        capabilities
-                    }, maxTtl, 'Plan Approval', {
+                    const transientGrantId = approvalStore.issueGrant(principal, {
+                        capabilities,
+                        constraints: {
+                            workflowId,
+                            runId
+                        }
+                    }, 3600, authorizationMode === "policy_auto" ? 'Workflow policy auto-start' : 'Workflow dry run approved', {
                         workflowId,
+                        runId,
                         threadId: ownerThreadId,
-                        reason: 'User approved multi-step plan'
+                        reason: authorizationMode === "policy_auto"
+                            ? 'Policy allowed auto-start for non-bulk workflow'
+                            : 'User approved the dry run for live execution'
                     }, 'write');
+                    transientGrantIds.push(transientGrantId);
                 }
 
                 for (const requirement of destructiveRequirements) {
@@ -3872,11 +4093,13 @@ ${routingRecommendation || ""}`;
                             workflowId,
                             runId
                         }
-                    }, 300, 'Destructive Step Approval', {
+                    }, 3600, authorizationMode === "policy_auto" ? 'Workflow policy auto-start' : 'Workflow dry run approved', {
                         workflowId,
                         runId,
                         threadId: ownerThreadId,
-                        reason: 'User approved destructive workflow step'
+                        reason: authorizationMode === "policy_auto"
+                            ? 'Policy allowed auto-start for non-bulk workflow'
+                            : 'User approved destructive workflow step after dry run'
                     }, 'destructive');
                     transientGrantIds.push(transientGrantId);
                 }
@@ -3926,9 +4149,8 @@ ${routingRecommendation || ""}`;
                 WORKFLOW_RUN_STATUS.set(workflowId, merged);
                 return merged;
             };
-            const destructiveRequirementKeys = new Set(
+            const approvalRequirementKeys = new Set(
                 (Array.isArray(risk?.requirements) ? risk.requirements : [])
-                    .filter(req => req.riskLevel === 'destructive')
                     .map(req => `${req.extensionId}::${req.capabilityId}`)
             );
             updateWorkflowRunStatus({
@@ -4366,8 +4588,12 @@ ${routingRecommendation || ""}`;
                             runId,
                             ...(targetThreadId ? { threadId: targetThreadId } : {}),
                         },
+                        cancellation: {
+                            workflowId,
+                            runId,
+                        },
                     };
-                    if (destructiveRequirementKeys.has(stepKey) && !options.isAutoRun) {
+                    if (approvalRequirementKeys.has(stepKey)) {
                         metadata.approvalContext = { workflowId, runId };
                     }
                     try {
@@ -4532,8 +4758,17 @@ ${routingRecommendation || ""}`;
                     await persistSessionThreadsState(polarSessionId);
                 }
                 if (wasCancelled) {
+                    const succeededCount = toolResults.filter((result) => result.status !== 'failed' && result.status !== 'error').length;
+                    const failedCount = toolResults.filter((result) => result.status === 'failed' || result.status === 'error').length;
+                    const notAttemptedCount = Math.max(0, workflowSteps.length - toolResults.length);
+                    const outcome =
+                        failedCount > 0 || succeededCount > 0
+                            ? (failedCount > 0 ? 'partial' : 'succeeded_before_cancel')
+                            : 'cancelled';
                     updateWorkflowRunStatus({
                         status: 'cancelled',
+                        completedSteps: succeededCount,
+                        failedSteps: failedCount,
                         progress: 100,
                     });
                     await emitLineageEvent({
@@ -4543,10 +4778,18 @@ ${routingRecommendation || ""}`;
                         workflowId,
                         runId,
                         threadId: targetThreadId,
+                        metadata: {
+                            succeededCount,
+                            failedCount,
+                            notAttemptedCount,
+                            outcome,
+                        },
                         timestampMs: now(),
                     });
                     const assistantMessageId = `msg_ast_${crypto.randomUUID()}`;
-                    const cancelText = "Workflow cancelled by user.";
+                    const cancelText =
+                        `Workflow cancelled by user. ` +
+                        `${succeededCount} succeeded, ${failedCount} failed, ${notAttemptedCount} not attempted.`;
                     if (!suppressResponsePersist) {
                         await chatManagementGateway.appendMessage({
                             sessionId: polarSessionId, userId: "assistant", role: "assistant",
@@ -4560,6 +4803,7 @@ ${routingRecommendation || ""}`;
                         assistantMessageId,
                         workflowId,
                         runId,
+                        outcome,
                         useInlineReply: selectReplyAnchor({
                             sessionState: sessionStateForReply,
                             classification: { type: 'status_nudge', targetThreadId: targetThreadId }
@@ -4800,7 +5044,7 @@ ${routingRecommendation || ""}`;
                 if (st && entry.threadId) {
                     const thread = st.threads.find(t => t.id === entry.threadId);
                     if (thread) {
-                        thread.status = 'in_progress';
+                        thread.status = 'done';
                         delete thread.awaitingApproval;
                         thread.lastActivityTs = now();
                     }
@@ -4812,6 +5056,27 @@ ${routingRecommendation || ""}`;
             WORKFLOW_CANCEL_REQUESTS.delete(workflowId);
             await clearPendingWorkflow(workflowId);
             return { status: 'rejected' };
+        },
+
+        async getWorkflowProposal(workflowId) {
+            await hydratePendingWorkflow(workflowId);
+            const entry = PENDING_WORKFLOWS.get(workflowId);
+            if (!entry) {
+                return { status: "not_found", workflowId };
+            }
+            return {
+                status: "found",
+                workflowId,
+                proposalMode: entry.proposalMode || "auto_start",
+                steps: entry.steps || [],
+                risk: entry.risk || {},
+                ...(entry.dryRunPreview?.summaryText
+                    ? { previewSummary: entry.dryRunPreview.summaryText }
+                    : {}),
+                ...(entry.dryRunPreview?.payload
+                    ? { previewPayload: entry.dryRunPreview.payload }
+                    : {}),
+            };
         },
 
         async cancelWorkflow(workflowId) {
@@ -4838,6 +5103,14 @@ ${routingRecommendation || ""}`;
 
             if (IN_FLIGHT_WORKFLOWS.has(workflowId)) {
                 WORKFLOW_CANCEL_REQUESTS.set(workflowId, { requestedAt: now() });
+                const inFlight = IN_FLIGHT_WORKFLOWS.get(workflowId);
+                if (inFlight?.abortController && typeof inFlight.abortController.abort === "function") {
+                    try {
+                        inFlight.abortController.abort("user_cancelled");
+                    } catch {
+                        // best-effort cancellation only
+                    }
+                }
                 return { status: "cancellation_requested", phase: "in_flight", workflowId };
             }
 

@@ -1,0 +1,22 @@
+version: 1
+agentId: "@researcher"
+profileId: profile.researcher
+description: Investigates topics across multiple sources and returns
+  evidence-backed findings.
+tags:
+  - research
+forwarding:
+  defaultForwardSkills:
+    - web
+  allowedForwardSkills:
+    - web
+  defaultMcpServers: []
+  allowedMcpServers: []
+profile:
+  systemPrompt: You are the research sub-agent. Gather relevant evidence, compare
+    sources, and return grounded findings with clear caveats.
+  modelPolicy:
+    providerId: openai
+    modelId: gpt-4.1-mini
+  allowedSkills:
+    - web

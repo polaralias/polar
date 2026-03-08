@@ -141,7 +141,7 @@ test("in-flight cancellation stops subsequent workflow steps and emits cancellat
       assert.equal(proposed.status, "workflow_proposed");
 
       activeWorkflowId = proposed.workflowId;
-      const executed = await orchestrator.executeWorkflow(proposed.workflowId);
+      const executed = await orchestrator.executeWorkflow(proposed.workflowId, { approved: true });
 
       assert.equal(cancelResponse?.status, "cancellation_requested");
       assert.equal(cancelResponse?.phase, "in_flight");

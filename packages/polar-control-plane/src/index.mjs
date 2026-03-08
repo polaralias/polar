@@ -2825,15 +2825,69 @@ export function createControlPlaneService(config = {}) {
      * @param {import("@polar/runtime-core").PolarEnvelope} request
      */
     async orchestrate(request) {
-      return orchestrator.orchestrate(request);
+      const result = await orchestrator.orchestrate(request);
+      if (
+        result?.status === "automation_proposed" &&
+        typeof result?.proposalId === "string" &&
+        result?.proposal &&
+        typeof result.proposal === "object"
+      ) {
+        try {
+          const created = await automationJobStore.createJob({
+            ownerUserId: String(request?.userId ?? ""),
+            sessionId: String(request?.sessionId ?? ""),
+            schedule: normalizeAutomationSchedule(result.proposal.schedule),
+            promptTemplate: result.proposal.promptTemplate,
+            limits: result.proposal.limits,
+            quietHours: result.proposal.quietHours,
+            enabled: true,
+          });
+          if (created?.status === "created" && created?.job) {
+            try {
+              orchestrator.consumeAutomationProposal(result.proposalId);
+            } catch {
+              // best-effort cleanup of transient proposal state
+            }
+            return {
+              ...result,
+              status: "automation_created",
+              type: "automation_created",
+              text:
+                `Automation created.\n` +
+                `Job ID: ${created.job.id}\n` +
+                `Schedule: ${created.job.schedule}\n` +
+                `Reject it if you want changes.`,
+              jobId: created.job.id,
+              job: created.job,
+            };
+          }
+        } catch {
+          // Fall back to manual proposal handling when auto-create fails.
+        }
+      }
+      return result;
     },
 
     /**
-     * @param {string | { workflowId: string }} request
+     * @param {string | { workflowId: string, approved?: boolean, authorizationMode?: string }} request
      */
     async executeWorkflow(request) {
       const workflowId = typeof request === 'string' ? request : request.workflowId;
-      return orchestrator.executeWorkflow(workflowId);
+      const approved =
+        typeof request === "object" &&
+        request !== null &&
+        request.approved === true;
+      const authorizationMode =
+        typeof request === "object" &&
+        request !== null &&
+        typeof request.authorizationMode === "string" &&
+        request.authorizationMode.length > 0
+          ? request.authorizationMode
+          : undefined;
+      return orchestrator.executeWorkflow(workflowId, {
+        ...(approved ? { approved: true } : {}),
+        ...(authorizationMode ? { authorizationMode } : {}),
+      });
     },
 
     /**
@@ -2850,6 +2904,14 @@ export function createControlPlaneService(config = {}) {
     async cancelWorkflow(request) {
       const workflowId = typeof request === "string" ? request : request.workflowId;
       return orchestrator.cancelWorkflow(workflowId);
+    },
+
+    /**
+     * @param {string | { workflowId: string }} request
+     */
+    async getWorkflowProposal(request) {
+      const workflowId = typeof request === "string" ? request : request.workflowId;
+      return orchestrator.getWorkflowProposal(workflowId);
     },
 
     /**

@@ -22,7 +22,15 @@ Polar’s differentiator is that safety is enforced in code, not “because the 
 - Middleware enforces that only those capabilities are callable.
 
 ### Approvals and sensitive operations
-- Sensitive tools (email body reads, calendar writes, payments, admin actions) require explicit approval.
+- Approval policy is mode-based and enforced in the orchestrator, not delegated to surfaces.
+- Destructive workflows always require `dry_run_then_approve`: the dry run preview is shown first, and live execution must be explicitly approved against the same workflow inputs.
+- Bulk external writes require the same dry-run approval path when either:
+  - a capability is explicitly marked bulk, or
+  - the orchestrator infers a bulk write from the planned target count (default threshold: 50).
+- Standard non-bulk external writes may auto-start, but only with:
+  - a code-bound reject/cancel path,
+  - transient run-scoped grants,
+  - audit events for start, denial, cancellation, and outcome.
 - Approval must be recorded and bound to the request context.
 
 ### Budgets and rate limits
@@ -41,8 +49,10 @@ Polar’s differentiator is that safety is enforced in code, not “because the 
 Automations must go through the exact same pipeline as interactive chat:
 - same middleware
 - same capability restrictions
-- same approvals
+- same dry-run / approval policy for destructive or bulk workflows
 - same audit
+
+Automation proposals may be auto-created when policy allows, but they must remain immediately rejectable in-thread and rejection must preserve audit history.
 
 Proactive messaging should be:
 - user-created (opt-in)

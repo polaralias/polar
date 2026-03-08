@@ -25,7 +25,7 @@ const ALLOWED_ACTIONS = new Set([
     'listHandoffRoutingTelemetry', 'listUsageTelemetry', 'listExecutionLineage', 'listTelemetryAlerts', 'routeTelemetryAlerts',
     'getThreadStateDiagnostics',
     'listSchedulerEventQueue', 'runSchedulerQueueAction',
-    'createAutomationJob', 'listAutomationJobs', 'updateAutomationJob', 'disableAutomationJob',
+    'createAutomationJob', 'listAutomationJobs', 'updateAutomationJob', 'disableAutomationJob', 'deleteAutomationJob',
     'generateOutput', 'listModels', 'streamOutput', 'embedText',
     'executeExtension', 'applyExtensionLifecycle', 'listExtensionStates',
     'installSkill', 'reviewSkillInstallProposal', 'syncMcpServer', 'installPlugin',
@@ -35,7 +35,7 @@ const ALLOWED_ACTIONS = new Set([
     'getModelRegistry', 'upsertModelRegistry', 'setModelRegistryDefault',
     'getAgentRegistry', 'listAgentProfiles', 'getAgentProfile', 'getAgentConfiguration', 'applyAgentConfiguration', 'exportAgentConfigurationYaml', 'applyAgentConfigurationYaml', 'registerAgentProfile', 'unregisterAgentProfile',
     'pinProfileForScope', 'unpinProfileForScope', 'getEffectivePinnedProfile',
-    'orchestrate', 'updateMessageChannelId', 'executeWorkflow', 'rejectWorkflow', 'cancelWorkflow', 'handleRepairSelection'
+    'orchestrate', 'updateMessageChannelId', 'executeWorkflow', 'rejectWorkflow', 'cancelWorkflow', 'getWorkflowProposal', 'consumeAutomationProposal', 'rejectAutomationProposal', 'handleRepairSelection'
 ]);
 
 /**

@@ -1,0 +1,21 @@
+version: 1
+agentId: "@coder"
+profileId: profile.coder
+description: Handles code implementation, debugging, refactoring, and code review tasks.
+tags:
+  - coding
+forwarding:
+  defaultForwardSkills:
+    - web
+  allowedForwardSkills:
+    - web
+  defaultMcpServers: []
+  allowedMcpServers: []
+profile:
+  systemPrompt: You are the coding sub-agent. Solve implementation and debugging
+    tasks methodically, and return concrete technical outcomes.
+  modelPolicy:
+    providerId: openai
+    modelId: gpt-4.1-mini
+  allowedSkills:
+    - web

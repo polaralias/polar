@@ -3209,3 +3209,120 @@ Commands run and outcomes:
 ### Next
 - **Next prompt:** Continue with other performance optimizations or feature work.
 - **Suggested starting point:** `packages/polar-runtime-core/src/artifact-exporter.mjs`
+
+## 2026-03-08 (UTC) - Prompt Architecture: Rejectable workflow proposals, dry-run approval, and cancellable auto-start
+
+**Branch:** `main`  
+**Commit:** `not committed`  
+**Prompt reference:** `Implement rejectable proposals / dry-run approval / cancellable workflow execution`
+**Specs referenced:**
+- `docs/SECURITY.md`
+- `docs/specs/CONTROL_PLANE_API.md`
+- `docs/specs/TELEGRAM_SURFACE.md`
+- `docs/specs/WEB_UI_SURFACE.md`
+
+### Summary
+- Moved proposal-mode ownership into the orchestrator instead of leaving it as a Telegram/Web UI convention.
+- Added two workflow proposal modes:
+  - `auto_start` for standard non-bulk writes, which start immediately but remain rejectable/cancellable.
+  - `dry_run_approval` for destructive or bulk workflows, which expose a human preview plus optional detailed payload before live execution.
+- Added bulk inference in the orchestrator with a default threshold of `50`, while still honoring explicit capability-level bulk metadata.
+- Changed workflow execution grants to transient run-scoped grants so auto-start and dry-run-approved runs do not leave reusable approval state behind.
+- Added best-effort hard cancellation semantics: stop future workflow steps, request interruption of the current run, and report `succeeded` / `failed` / `not attempted` counts.
+- Added workflow proposal inspection via `getWorkflowProposal(...)` for surfaces that need preview details on demand.
+- Changed interactive Telegram/Web UI turns to mark `metadata.executionType = "interactive"` so surfaces receive core-owned proposal semantics.
+- Added dry-run UX in Telegram and Web UI:
+  - `Approve` executes the exact stored workflow inputs live.
+  - `Reject` closes the proposal and keeps the follow-up conversation in the same thread.
+  - `Details` exposes the stored preview payload on demand.
+- Changed automation proposals at the control-plane boundary to auto-create jobs when possible and return `automation_created`, with surfaces rendering reject/delete affordances instead of an up-front approval button.
+- Fixed a legacy rejection-state bug where `rejectWorkflow()` left the thread in `in_progress`; it now closes the proposal cleanly.
+
+### Files changed
+- `packages/polar-runtime-core/src/orchestrator.mjs`
+  - added bulk/dry-run proposal classification,
+  - added preview generation,
+  - added explicit approval gating for destructive/bulk runs,
+  - added transient run-scoped approval grants,
+  - added workflow proposal lookup,
+  - improved cancellation accounting and rejection thread-state handling.
+- `packages/polar-control-plane/src/index.mjs`
+  - extended workflow execution/cancellation/proposal APIs,
+  - auto-created automation jobs on `automation_proposed` success path and returned `automation_created`.
+- `packages/polar-bot-runner/src/index.mjs`
+  - added interactive execution metadata,
+  - added dry-run workflow approval/details UX,
+  - added auto-created automation rejection/delete UX.
+- `packages/polar-web-ui/src/views/chat.js`
+  - added interactive execution metadata,
+  - added dry-run workflow approval/details UX,
+  - added auto-created automation rejection/delete UX.
+- `packages/polar-web-ui/vite.config.js`
+  - allowlisted the new chat-surface control-plane actions.
+- `packages/polar-runtime-core/tests/orchestrator-plan-approvals.test.mjs`
+- `tests/runtime-core-orchestrator-workflow-cancellation.test.mjs`
+- `tests/runtime-core-orchestrator-workflow-validation.test.mjs`
+- `tests/channels-thin-client-enforcement.test.mjs`
+  - updated tests for transient grants, dry-run approval, cancellation, and thin-surface API usage.
+- `docs/SECURITY.md`
+- `docs/specs/CONTROL_PLANE_API.md`
+- `docs/specs/TELEGRAM_SURFACE.md`
+- `docs/specs/WEB_UI_SURFACE.md`
+  - updated docs/specs to match the new runtime-owned proposal contract.
+
+### Data model / migrations (if applicable)
+- **Tables created/changed:** none
+- **Migration notes:** none
+- **Non-DB persistence changes:** pending workflow state now stores `proposalMode` and optional dry-run preview payloads for proposal retrieval and restart continuity.
+
+### Security and safety checks
+- Proposal/approval policy is now enforced in the orchestrator, not synthesized by surfaces.
+- Destructive and inferred-bulk workflows are live-blocked until explicit dry-run approval.
+- Standard auto-start writes still execute through middleware and use transient run-scoped grants only.
+- Cancellation remains best-effort for the current in-flight step; future steps are prevented deterministically and the user receives outcome counts.
+- Automation rejection deletes the created job while preserving audit history in the existing run/event stores.
+
+### Tests and validation
+- `node --test tests/channels-thin-client-enforcement.test.mjs tests/runtime-core-orchestrator-workflow-cancellation.test.mjs tests/runtime-core-orchestrator-workflow-validation.test.mjs packages/polar-runtime-core/tests/orchestrator-plan-approvals.test.mjs` - ✅
+- `npm run check:boundaries` - ✅
+- `npm test` - ✅ (488 passed, 0 failed)
+
+### Blockers
+- None.
+
+### Next
+- Add adapter-level interruption hooks for tools/connectors that can honor in-flight cancellation more aggressively than the current best-effort stop model.
+- Consider surfacing bulk target estimates and cancellation outcome summaries more prominently in operator diagnostics and the Web UI.
+
+## 2026-03-08 (UTC) - Prompt Dev UX: Add live lineage tail startup command
+
+**Branch:** `main`  
+**Commit:** `not committed`  
+**Prompt reference:** `Add a startup command to observe delegation and tool-call log events`
+
+### Summary
+- Added a dedicated root `dev:trace` startup command that runs the Web UI, Telegram bot, and a live lineage tail side by side.
+- Added a small Node-based lineage tailer script so event observation no longer depends on a PowerShell-specific one-liner.
+- Defaulted the lineage tail to high-signal delegation/workflow events only; low-level `extension.execute` checkpoints are now opt-in to avoid unreadable console spam from UI telemetry polling.
+- Documented both `dev:trace` and `dev:trace:tail` in the development guide.
+
+### Files changed
+- `scripts/tail-lineage.mjs`
+  - tails `.polar-data/lineage/events.ndjson` (or `POLAR_LINEAGE_STORE_PATH`) and prints delegation, workflow execution, and tool middleware events in a concise live format.
+- `package.json`
+  - added `dev:trace:tail`
+  - added `dev:trace:tail:verbose`
+  - added `dev:trace`
+- `docs/DEVELOPMENT.md`
+  - documented the new startup commands.
+
+### Tests and validation
+- `node scripts/tail-lineage.mjs` (smoke via short-lived job) - ✅
+- `npm run check:boundaries` - ✅
+- `npm test` - not rerun (developer-script/docs change only)
+
+### Blockers
+- None.
+
+### Next
+- If needed, add richer filters or a `--json` mode so the lineage tail can be piped into external dashboards or local debugging tools.

@@ -134,7 +134,7 @@ describe('Orchestrator: Plan Approvals', () => {
         assert.strictEqual(result.risk.requirements[0].capabilityId, 'send_email');
     });
 
-    it('Approving a plan should issue grants and execute', async () => {
+    it('Executing a proposed standard write uses transient run-scoped grants', async () => {
         setupOrchestrator({ template: 'send_email', args: { to: 'bob', subject: 'hi', body: 'hello' } });
 
         const proposal = await orchestrator.orchestrate({
@@ -145,10 +145,9 @@ describe('Orchestrator: Plan Approvals', () => {
 
         assert.strictEqual(executeResult.status, 'completed');
 
-        // Verify grant was issued
+        // Standard write proposals should not leave reusable grants behind.
         const grants = approvalStore._listGrants();
-        assert.strictEqual(grants.length, 1);
-        assert.strictEqual(grants[0].scope.capabilities[0].capabilityId, 'send_email');
+        assert.strictEqual(grants.length, 0);
     });
 
     it('Second run with existing grant should auto-run', async () => {
@@ -178,15 +177,23 @@ describe('Orchestrator: Plan Approvals', () => {
         });
         assert.strictEqual(firstProposal.status, 'workflow_proposed');
         assert.strictEqual(firstProposal.risk.level, 'destructive');
+        assert.strictEqual(firstProposal.proposalMode, 'dry_run_approval');
 
-        const firstExecute = await orchestrator.executeWorkflow(firstProposal.workflowId);
+        const blockedExecute = await orchestrator.executeWorkflow(firstProposal.workflowId);
+        assert.strictEqual(blockedExecute.status, 'approval_required');
+
+        const firstExecute = await orchestrator.executeWorkflow(firstProposal.workflowId, { approved: true });
         assert.strictEqual(firstExecute.status, 'completed');
 
-        // Destructive approvals should not produce reusable grants by default.
+        // Dry-run approvals should not produce reusable grants by default.
         assert.strictEqual(approvalStore._listGrants().length, 0);
 
+        setupOrchestrator(
+            { template: 'send_email', args: { to: 'bob', subject: 'hi', body: 'hello' } },
+            { sendEmailRiskLevel: 'destructive', sendEmailSideEffects: 'external' }
+        );
         const secondProposal = await orchestrator.orchestrate({
-            sessionId: 's1', userId: 'u1', text: 'Do it again'
+            sessionId: 's1', userId: 'u1', text: 'Delete and send immediately'
         });
         assert.strictEqual(secondProposal.status, 'workflow_proposed');
         assert.strictEqual(secondProposal.risk.level, 'destructive');
