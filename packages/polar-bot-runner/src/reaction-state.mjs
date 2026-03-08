@@ -65,7 +65,7 @@ function parseAvailableReactionEmojis(value) {
 /**
  * @param {unknown} value
  */
-function parseFinitePositiveInteger(value) {
+export function parseFinitePositiveInteger(value) {
   const parsed = typeof value === "number" ? value : Number(value);
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
 }
