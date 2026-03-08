@@ -391,6 +391,165 @@ test("hybrid router integrates focus resolver ranking into routing telemetry", a
   assert.equal(routingEvent.focus_resolver_candidate_ranking.length >= 1, true);
 });
 
+test("hybrid router repairs malformed focus resolver output before ranking candidates", async () => {
+  const lineageEvents = [];
+  const providerCalls = [];
+  let focusCallCount = 0;
+
+  const orchestrator = createOrchestrator({
+    profileResolutionGateway: {
+      async resolve() {
+        return {
+          status: "resolved",
+          profileConfig: {
+            systemPrompt: "You are a parent profile.",
+            modelPolicy: { providerId: "openai", modelId: "gpt-4.1-mini" },
+          },
+        };
+      },
+    },
+    chatManagementGateway: {
+      async appendMessage() {
+        return { status: "appended" };
+      },
+      async getSessionHistory() {
+        return { items: [] };
+      },
+    },
+    providerGateway: {
+      async generate(input) {
+        providerCalls.push(input);
+        if (
+          typeof input?.system === "string"
+          && (
+            input.system.includes("focus/thread resolver")
+            || /focus resolver JSON repairer/i.test(input.system)
+          )
+        ) {
+          focusCallCount += 1;
+          const payload = JSON.parse(input.prompt.slice(input.prompt.indexOf("{")));
+          const resolverPayload = /focus resolver JSON repairer/i.test(input.system)
+            ? payload.resolverRequest
+            : payload;
+          if (focusCallCount === 1) {
+            return {
+              text: JSON.stringify({
+                confidence: 0.91,
+                refersTo: "temporal_attention",
+                candidates: {
+                  anchorId: resolverPayload.candidates[1].anchorId,
+                },
+                needsClarification: false,
+              }),
+            };
+          }
+          return {
+            text: JSON.stringify({
+              confidence: 0.91,
+              refersTo: "temporal_attention",
+              candidates: [
+                {
+                  anchorId: resolverPayload.candidates[1].anchorId,
+                  threadKey: resolverPayload.candidates[1].threadKey,
+                  score: 0.89,
+                  reason: "most recent relevant task",
+                },
+                {
+                  anchorId: resolverPayload.candidates[0].anchorId,
+                  threadKey: resolverPayload.candidates[0].threadKey,
+                  score: 0.35,
+                  reason: "older thread",
+                },
+              ],
+              needsClarification: false,
+            }),
+          };
+        }
+        if (typeof input?.system === "string" && input.system.includes("routing model")) {
+          return {
+            text: JSON.stringify({
+              decision: "delegate",
+              target: { agentId: "@writer" },
+              confidence: 0.86,
+              rationale: "delegate requested",
+              references: { refersTo: "focus_anchor", refersToReason: "ambiguous follow-up" },
+              scores: { respond: 0.1, delegate: 0.86, tool: 0.05, workflow: 0.08, clarify: 0.1 },
+            }),
+          };
+        }
+        return { text: "ok" };
+      },
+    },
+    extensionGateway: {
+      getState() { return undefined; },
+      listStates() { return []; },
+      async execute() { return { status: "completed", output: "ok" }; },
+    },
+    gateway: {
+      readConfigRecord(resourceType, resourceId) {
+        if (resourceType === "policy" && resourceId === "agent-registry:default") {
+          return {
+            resourceType,
+            resourceId,
+            version: 1,
+            config: {
+              version: 1,
+              agents: [{ agentId: "@writer", profileId: "profile.writer", description: "Writer" }],
+            },
+          };
+        }
+        return undefined;
+      },
+    },
+    approvalStore: createApprovalStore(),
+    lineageStore: {
+      async append(event) {
+        lineageEvents.push(event);
+      },
+    },
+    now: Date.now,
+  });
+
+  await orchestrator.orchestrate({
+    sessionId: "session-focus-repair",
+    userId: "user-focus-repair",
+    text: "draft project update",
+    messageId: "m-focus-repair-1",
+    metadata: { threadKey: "root:focus-repair" },
+  });
+
+  await orchestrator.orchestrate({
+    sessionId: "session-focus-repair",
+    userId: "user-focus-repair",
+    text: "collect notes",
+    messageId: "m-focus-repair-2",
+    metadata: { threadKey: "root:focus-repair" },
+  });
+
+  const result = await orchestrator.orchestrate({
+    sessionId: "session-focus-repair",
+    userId: "user-focus-repair",
+    text: "do that again",
+    messageId: "m-focus-repair-3",
+    metadata: { threadKey: "root:focus-repair" },
+  });
+
+  assert.equal(result.status, "workflow_proposed");
+  assert.equal(focusCallCount, 2);
+  const focusRequests = providerCalls.filter(
+    (call) => typeof call?.system === "string" && call.system.includes("focus/thread resolver"),
+  );
+  const focusRepairRequest = providerCalls.find(
+    (call) => typeof call?.system === "string" && /focus resolver JSON repairer/i.test(call.system),
+  );
+  assert.equal(focusRequests[0]?.responseFormat?.type, "json_schema");
+  assert.ok(focusRepairRequest);
+  const routingEvent = lineageEvents.filter((event) => event?.eventType === "routing.arbitration").at(-1);
+  assert.ok(routingEvent);
+  assert.equal(routingEvent.focus_resolver_repair_attempted, true);
+  assert.equal(routingEvent.focus_resolver_repair_succeeded, true);
+});
+
 test("hybrid router clarifies when focus candidates are too close under low confidence", async () => {
   const lineageEvents = [];
 

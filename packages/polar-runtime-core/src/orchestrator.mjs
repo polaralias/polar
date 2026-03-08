@@ -20,11 +20,16 @@ import {
     parseJsonProposalText,
     routerProposalSchema,
     automationPlannerSchema,
+    automationPlannerResponseFormat,
     validateWorkflowPlannerProposal,
+    workflowPlannerResponseFormat,
     failureExplainerSchema,
+    failureExplainerResponseFormat,
     focusThreadResolverSchema,
+    focusThreadResolverResponseFormat,
     normalizeConfidence,
 } from './proposal-contracts.mjs';
+import { requestStructuredJsonResponse } from './structured-output.mjs';
 
 const repairPhrasingSchema = createStrictObjectSchema({
     schemaId: 'orchestrator.repair.phrasing',
@@ -339,26 +344,59 @@ function detectInboxAutomationProposal(text) {
  * }} input
  */
 async function requestAutomationPlannerProposal(input) {
-    const response = await input.providerGateway.generate({
-        executionType: "tool",
-        providerId: input.providerId,
-        model: input.model,
-        system: "You are an automation planning model. Output strict JSON only.",
-        prompt:
-            `Produce an automation planner proposal JSON object only. ${JSON.stringify({
-                userText: input.text,
-                runScope: {
-                    sessionId: input.sessionId,
-                    userId: input.userId,
-                },
-                constraints: {
-                    maxNotificationsPerDayCap: 3,
-                    quietHoursDefault: { startHour: 22, endHour: 7, timezone: "UTC" },
-                    allowedScheduleKinds: ["interval", "daily", "weekly", "event"],
-                },
-            })}`,
+    const plannerPayload = {
+        userText: input.text,
+        runScope: {
+            sessionId: input.sessionId,
+            userId: input.userId,
+        },
+        constraints: {
+            maxNotificationsPerDayCap: 3,
+            quietHoursDefault: { startHour: 22, endHour: 7, timezone: "UTC" },
+            allowedScheduleKinds: ["interval", "daily", "weekly", "event"],
+        },
+    };
+
+    return requestStructuredJsonResponse({
+        providerGateway: input.providerGateway,
+        responseFormat: automationPlannerResponseFormat,
+        initialRequest: {
+            executionType: "tool",
+            providerId: input.providerId,
+            model: input.model,
+            system:
+                `You are an automation planning model. Return exactly one JSON object matching ${automationPlannerSchema.schemaId}. `
+                + "No markdown, no code fences, no prose outside the JSON object. "
+                + 'Rules: "propose" requires schedule, runScope, limits, and riskHints. '
+                + '"clarify" requires clarificationQuestion. confidence must be numeric.',
+            prompt: `Produce an automation planner proposal JSON object only. ${JSON.stringify(plannerPayload)}`,
+            temperature: 0,
+            maxOutputTokens: 320,
+        },
+        validateResponseText(rawText) {
+            return parseJsonProposalText(rawText, automationPlannerSchema);
+        },
+        buildRepairRequest({ invalidOutput, validationErrors }) {
+            return {
+                executionType: "tool",
+                providerId: input.providerId,
+                model: input.model,
+                system:
+                    `You are an automation planner JSON repairer. Return exactly one corrected JSON object matching ${automationPlannerSchema.schemaId}. `
+                    + "Do not explain the changes. Do not wrap the JSON in markdown or quotes.",
+                prompt:
+                    `The prior automation planner output was invalid. Fix it and return corrected JSON only. ${JSON.stringify({
+                        validationErrors,
+                        plannerRequest: plannerPayload,
+                        invalidOutput,
+                    })}`,
+                temperature: 0,
+                maxOutputTokens: 320,
+            };
+        },
+        unavailableFallbackReason: "planner_unavailable",
+        invalidFallbackReason: "schema_invalid",
     });
-    return parseJsonProposalText(response?.text || "{}", automationPlannerSchema);
 }
 
 function normalizeAutomationScheduleFromProposal(schedule) {
@@ -452,25 +490,60 @@ function parseJsonWithSchema(rawText, schema) {
  * }} input
  */
 async function requestWorkflowPlannerProposal(input) {
-    const response = await input.providerGateway.generate({
-        executionType: "tool",
-        providerId: input.providerId,
-        model: input.model,
-        system: "You are a workflow planning model. Output strict JSON only.",
-        prompt:
-            `Propose an executable workflow JSON object only. ${JSON.stringify({
-                userText: input.text,
-                assistantContext: input.cleanText || null,
-                availableTools: input.availableTools,
-            })}`,
+    const plannerPayload = {
+        userText: input.text,
+        assistantContext: input.cleanText || null,
+        availableTools: input.availableTools,
+    };
+
+    return requestStructuredJsonResponse({
+        providerGateway: input.providerGateway,
+        responseFormat: workflowPlannerResponseFormat,
+        initialRequest: {
+            executionType: "tool",
+            providerId: input.providerId,
+            model: input.model,
+            system:
+                "You are a workflow planning model. Return exactly one JSON object matching prompt.workflow_planner.proposal.v1. "
+                + "No markdown, no code fences, no prose outside the JSON object. "
+                + "confidence must be numeric, riskHints must be an object, and steps must be executable capability calls.",
+            prompt: `Propose an executable workflow JSON object only. ${JSON.stringify(plannerPayload)}`,
+            temperature: 0,
+            maxOutputTokens: 480,
+        },
+        validateResponseText(rawText) {
+            try {
+                return validateWorkflowPlannerProposal(JSON.parse(normalizeJsonText(rawText || "{}")));
+            } catch {
+                return {
+                    valid: false,
+                    schemaId: "prompt.workflow_planner.proposal.v1",
+                    errors: Object.freeze(["Invalid JSON payload"]),
+                    clampReasons: Object.freeze(["schema_invalid"]),
+                };
+            }
+        },
+        buildRepairRequest({ invalidOutput, validationErrors }) {
+            return {
+                executionType: "tool",
+                providerId: input.providerId,
+                model: input.model,
+                system:
+                    "You are a workflow planner JSON repairer. Return exactly one corrected JSON object matching prompt.workflow_planner.proposal.v1. "
+                    + "Do not explain the changes. Do not wrap the JSON in markdown or quotes.",
+                prompt:
+                    `The prior workflow planner output was invalid. Fix it and return corrected JSON only. ${JSON.stringify({
+                        validationErrors,
+                        plannerRequest: plannerPayload,
+                        invalidOutput,
+                    })}`,
+                temperature: 0,
+                maxOutputTokens: 480,
+            };
+        },
+        unavailableFallbackReason: "planner_unavailable",
+        invalidFallbackReason: "schema_invalid",
     });
-    let parsed = {};
-    try {
-        parsed = JSON.parse(normalizeJsonText(response?.text || "{}"));
-    } catch {
-        return { valid: false, clampReasons: ["schema_invalid"] };
-    }
-    return validateWorkflowPlannerProposal(parsed);
 }
 
 /**
@@ -507,21 +580,113 @@ function buildFocusCandidateFromThread(thread) {
  * }} input
  */
 async function requestFocusResolverProposal(input) {
-    const response = await input.providerGateway.generate({
-        executionType: "handoff",
-        providerId: input.providerId,
-        model: input.model,
-        system: "You are a focus/thread resolver model. Output strict JSON only.",
-        prompt:
-            `Rank focus candidates for this ambiguous follow-up JSON only. ${JSON.stringify({
-                userText: input.text,
-                laneThreadKey: input.laneThreadKey,
-                focusContext: input.focusContext || null,
-                candidates: input.candidates,
-                temporalAttention: input.temporalAttention,
-            })}`,
+    const resolverPayload = {
+        userText: input.text,
+        laneThreadKey: input.laneThreadKey,
+        focusContext: input.focusContext || null,
+        candidates: input.candidates,
+        temporalAttention: input.temporalAttention,
+    };
+
+    return requestStructuredJsonResponse({
+        providerGateway: input.providerGateway,
+        responseFormat: focusThreadResolverResponseFormat,
+        initialRequest: {
+            executionType: "handoff",
+            providerId: input.providerId,
+            model: input.model,
+            system:
+                `You are a focus/thread resolver model. Return exactly one JSON object matching ${focusThreadResolverSchema.schemaId}. `
+                + "No markdown, no code fences, no prose outside the JSON object. "
+                + "needsClarification must be boolean, and candidates must be ranked typed thread matches.",
+            prompt: `Rank focus candidates for this ambiguous follow-up JSON only. ${JSON.stringify(resolverPayload)}`,
+            temperature: 0,
+            maxOutputTokens: 360,
+        },
+        validateResponseText(rawText) {
+            return parseJsonProposalText(rawText, focusThreadResolverSchema);
+        },
+        buildRepairRequest({ invalidOutput, validationErrors }) {
+            return {
+                executionType: "handoff",
+                providerId: input.providerId,
+                model: input.model,
+                system:
+                    `You are a focus resolver JSON repairer. Return exactly one corrected JSON object matching ${focusThreadResolverSchema.schemaId}. `
+                    + "Do not explain the changes. Do not wrap the JSON in markdown or quotes.",
+                prompt:
+                    `The prior focus resolver output was invalid. Fix it and return corrected JSON only. ${JSON.stringify({
+                        validationErrors,
+                        resolverRequest: resolverPayload,
+                        invalidOutput,
+                    })}`,
+                temperature: 0,
+                maxOutputTokens: 360,
+            };
+        },
+        unavailableFallbackReason: "resolver_unavailable",
+        invalidFallbackReason: "schema_invalid",
     });
-    return parseJsonProposalText(response?.text || "{}", focusThreadResolverSchema);
+}
+
+/**
+ * @param {{
+ *  providerGateway: { generate: (input: Record<string, unknown>) => Promise<{ text?: string }|Record<string, unknown>> },
+ *  providerId: string,
+ *  model: string,
+ *  system: string,
+ *  messages: Array<{ role: string, content: string }>,
+ *  normalizedEnvelope: Record<string, unknown>,
+ *  deterministicHeader: string
+ * }} input
+ */
+async function requestFailureExplainerProposal(input) {
+    const promptPayload = {
+        normalizedEnvelope: input.normalizedEnvelope,
+        deterministicHeader: input.deterministicHeader,
+    };
+
+    return requestStructuredJsonResponse({
+        providerGateway: input.providerGateway,
+        responseFormat: failureExplainerResponseFormat,
+        initialRequest: {
+            executionType: "tool",
+            providerId: input.providerId,
+            model: input.model,
+            system: input.system,
+            messages: input.messages,
+            prompt:
+                `Return exactly one JSON object matching ${failureExplainerSchema.schemaId}. `
+                + "Default to safe detail level. Use only these normalized error envelopes. "
+                + `Do not include stack traces or secret values.\n\n${JSON.stringify(promptPayload)}`,
+            temperature: 0,
+            maxOutputTokens: 320,
+        },
+        validateResponseText(rawText) {
+            return parseJsonProposalText(rawText, failureExplainerSchema);
+        },
+        buildRepairRequest({ invalidOutput, validationErrors }) {
+            return {
+                executionType: "tool",
+                providerId: input.providerId,
+                model: input.model,
+                system:
+                    `You are a failure explainer JSON repairer. Return exactly one corrected JSON object matching ${failureExplainerSchema.schemaId}. `
+                    + "Do not explain the changes. Do not wrap the JSON in markdown or quotes.",
+                messages: input.messages,
+                prompt:
+                    `The prior failure explainer output was invalid. Fix it and return corrected JSON only. ${JSON.stringify({
+                        validationErrors,
+                        failureExplainerRequest: promptPayload,
+                        invalidOutput,
+                    })}`,
+                temperature: 0,
+                maxOutputTokens: 320,
+            };
+        },
+        unavailableFallbackReason: "failure_explainer_unavailable",
+        invalidFallbackReason: "schema_invalid",
+    });
 }
 
 /**
@@ -2571,16 +2736,19 @@ export function createOrchestrator({
 
             const lowerText = String(text || "").toLowerCase();
             const specialistDelegationCue = hasSpecialistDelegationCue(lowerText);
+            const explicitDelegationCue = /\b(do that via sub-agent|via sub-agent|delegate this|delegate to|sub-agent|sub agent|delegate)\b/.test(lowerText);
             const stageADelegationSignal = /\b(do that via sub-agent|via sub-agent|delegate this|delegate to)\b/.test(lowerText)
                 || /\bwrite\s+10\b/.test(lowerText)
                 || /\b10\s+(versions|version|variants|variant)\b/.test(lowerText)
                 || specialistDelegationCue;
             const riskClass = classifyRoutingRisk(text);
-            const hasDelegateCue = stageADelegationSignal || /\b(sub-agent|sub agent|delegate)\b/.test(lowerText);
+            const hasDelegateCue = stageADelegationSignal || explicitDelegationCue;
             const hasWorkflowCue = /\b(workflow|plan|step by step|multi-step|research and compare|deep dive|proposal)\b/.test(lowerText);
             const hasToolCue = /\b(tool|search|look up|weather|email|inbox|calendar|web)\b/.test(lowerText) && installedToolPairs.length > 0;
             const hasAmbiguousReferenceText = /\b(that|it|again)\b/.test(lowerText);
             const lowRiskUnambiguousInline = riskClass === "low" && !hasRoutingCue(lowerText);
+            const hasAutomationIntentCue = !suppressAutomationWrites && isAutomationIntentCandidate(text);
+            const genericWorkflowIdentityCue = /^(?:please\s+)?(?:run|start|use|do|make)\s+(?:a|the)\s+workflow[.?!]*$/.test(lowerText.trim());
 
             const shouldRunRouter =
                 classification?.type === "new_request" &&
@@ -2607,6 +2775,10 @@ export function createOrchestrator({
             let focusResolverCandidateRanking = [];
             let focusResolverConfidence = null;
             let focusResolverScoreGap = null;
+            let focusResolverRepairAttempted = false;
+            let focusResolverRepairSucceeded = false;
+            let focusResolverStructuredOutputFallbackUsed = false;
+            let focusResolverValidationErrors = [];
             const shouldRunFocusResolver =
                 classification?.type === "new_request" &&
                 hasAmbiguousReferenceText;
@@ -2649,6 +2821,13 @@ export function createOrchestrator({
                                 focusCandidates: temporalAttentionHint.focusCandidates,
                             },
                         });
+                        focusResolverRepairAttempted = resolverValidation.repairAttempted === true;
+                        focusResolverRepairSucceeded = resolverValidation.repairSucceeded === true;
+                        focusResolverStructuredOutputFallbackUsed =
+                            resolverValidation.structuredOutputFallbackUsed === true;
+                        focusResolverValidationErrors = Array.isArray(resolverValidation.validationErrors)
+                            ? resolverValidation.validationErrors
+                            : [];
                         const enforcement = enforceFocusResolverProposal(
                             resolverValidation.valid ? resolverValidation.value : null,
                             uniqueCandidates.map((entry) => entry.anchorId),
@@ -2798,6 +2977,7 @@ export function createOrchestrator({
             const fusedTop = extractTopDecision(fusedScores);
             let finalRoutingDecision = forcedRoutingDecision || fusedTop.topDecision;
             const hasValidRouterDecision = Boolean(routerDecision && llmRouting.decision);
+            let directClarificationQuestion = null;
             const shouldClarifyByConflict =
                 hasValidRouterDecision &&
                 (
@@ -2836,6 +3016,20 @@ export function createOrchestrator({
                     fallbackReason = "ambiguous_reference";
                 }
             }
+            if (
+                !forcedRoutingDecision &&
+                !hasValidRouterDecision &&
+                classification?.type === "new_request" &&
+                genericWorkflowIdentityCue &&
+                !explicitDelegationCue &&
+                !hasAutomationIntentCue
+            ) {
+                finalRoutingDecision = "clarify";
+                directClarificationQuestion = "Which workflow should I run?";
+                if (!fallbackReason) {
+                    fallbackReason = "structured_action_schema_invalid";
+                }
+            }
             if (internalDelegation && finalRoutingDecision === "delegate") {
                 finalRoutingDecision = "respond";
                 if (!fallbackReason) {
@@ -2866,6 +3060,10 @@ export function createOrchestrator({
                 focus_resolver_invoked: focusResolverInvoked,
                 focus_resolver_proposal_valid: focusProposalValid,
                 focus_resolver_clamp_reasons: focusResolverClampReasons,
+                focus_resolver_repair_attempted: focusResolverRepairAttempted,
+                focus_resolver_repair_succeeded: focusResolverRepairSucceeded,
+                focus_resolver_structured_output_fallback_used: focusResolverStructuredOutputFallbackUsed,
+                focus_resolver_validation_errors: focusResolverValidationErrors,
                 focus_resolver_top_candidate: focusResolverTopCandidate,
                 focus_resolver_candidate_ranking: focusResolverCandidateRanking,
                 focus_resolver_confidence: focusResolverConfidence,
@@ -2880,6 +3078,28 @@ export function createOrchestrator({
 
             let forcedClarificationQuestion = null;
             if (finalRoutingDecision === "clarify") {
+                if (directClarificationQuestion) {
+                    const assistantMessageId = `msg_a_${crypto.randomUUID()}`;
+                    if (!suppressResponsePersist) {
+                        await chatManagementGateway.appendMessage({
+                            sessionId: polarSessionId,
+                            userId: "assistant",
+                            messageId: assistantMessageId,
+                            role: "assistant",
+                            text: directClarificationQuestion,
+                            timestampMs: now(),
+                            ...(inboundThreadId !== undefined ? { threadId: inboundThreadId } : {}),
+                            ...(inboundMetadata !== undefined ? { metadata: inboundMetadata } : {}),
+                        });
+                    }
+                    return {
+                        status: "ok",
+                        type: "clarification_needed",
+                        text: directClarificationQuestion,
+                        assistantMessageId,
+                        useInlineReply: false,
+                    };
+                }
                 const focusSnippet = classification.focusContext?.focusAnchorTextSnippet;
                 const optionA = focusSnippet ? `Continue with "${focusSnippet.slice(0, 36)}"` : "Continue inline here";
                 const optionB = "Delegate to a sub-agent";
@@ -3143,88 +3363,100 @@ ${routingRecommendation || ""}`;
 
                 let automationProposal = null;
                 let automationPlannerDecision = null;
-            let automationPlannerInvoked = false;
-            let automationPlannerProposalValid = false;
-            let automationPlannerClampReasons = [];
-            let automationPlannerConfidence = null;
-            let automationPlannerFinalDecision = "skip";
-            let automationPlannerOutcomeStatus = "automation_not_applicable";
-            if (!suppressAutomationWrites && isAutomationIntentCandidate(text)) {
-                automationPlannerOutcomeStatus = "automation_intent_detected";
-                automationPlannerInvoked = true;
-                const plannerValidation = await requestAutomationPlannerProposal({
-                    providerGateway,
-                    providerId,
-                    model,
-                    text,
-                    sessionId: polarSessionId,
-                    userId: userId.toString(),
-                }).catch(() => ({ valid: false, value: null }));
-                automationPlannerProposalValid = plannerValidation?.valid === true;
-                if (!automationPlannerProposalValid) {
-                    automationPlannerClampReasons = ["schema_invalid_or_unavailable"];
-                }
-
-                const plannerConfidence = normalizeConfidence(plannerValidation?.value?.confidence);
-                automationPlannerConfidence = plannerConfidence;
-                const plannerDecision = plannerValidation?.valid ? plannerValidation.value.decision : null;
-                const lowConfidence = plannerConfidence === null || plannerConfidence < 0.55;
-                const normalizedSchedule = plannerValidation?.valid
-                    ? normalizeAutomationScheduleFromProposal(plannerValidation.value.schedule)
-                    : null;
-                const normalizedLimits = normalizeAutomationLimits(
-                    plannerValidation?.valid ? plannerValidation.value.limits : {},
-                );
-
-                if (plannerValidation?.valid && plannerDecision === "propose" && normalizedSchedule && !lowConfidence) {
-                    automationPlannerFinalDecision = "propose";
-                    const promptTemplateCandidate =
-                        typeof plannerValidation.value.summary === "string" && plannerValidation.value.summary.trim().length > 0
-                            ? `Reminder: ${plannerValidation.value.summary.trim()}`
-                            : inferAutomationPromptTemplate(text);
-                    const inboxFallback = detectInboxAutomationProposal(text);
-                    automationProposal = {
-                        schedule: normalizedSchedule,
-                        promptTemplate: promptTemplateCandidate,
-                        limits: inboxFallback
-                            ? {
-                                ...normalizedLimits.limits,
-                                inbox: inboxFallback.limits.inbox,
-                            }
-                            : normalizedLimits.limits,
-                        quietHours: normalizedLimits.quietHours,
-                        templateType: inboxFallback?.templateType ?? "generic",
-                        approvalRequired:
-                            plannerValidation.value?.riskHints?.requiresApproval === true ||
-                            plannerValidation.value?.riskHints?.mayWrite === true,
-                    };
-                } else if (plannerValidation?.valid && (plannerDecision === "clarify" || lowConfidence)) {
-                    automationPlannerFinalDecision = "clarify";
-                    if (lowConfidence) {
-                        automationPlannerClampReasons = [...automationPlannerClampReasons, "low_confidence"];
+                let automationPlannerInvoked = false;
+                let automationPlannerProposalValid = false;
+                let automationPlannerClampReasons = [];
+                let automationPlannerConfidence = null;
+                let automationPlannerFinalDecision = "skip";
+                let automationPlannerOutcomeStatus = "automation_not_applicable";
+                let automationPlannerRepairAttempted = false;
+                let automationPlannerRepairSucceeded = false;
+                let automationPlannerStructuredOutputFallbackUsed = false;
+                let automationPlannerValidationErrors = [];
+                if (!suppressAutomationWrites && isAutomationIntentCandidate(text)) {
+                    automationPlannerOutcomeStatus = "automation_intent_detected";
+                    automationPlannerInvoked = true;
+                    const plannerValidation = await requestAutomationPlannerProposal({
+                        providerGateway,
+                        providerId,
+                        model,
+                        text,
+                        sessionId: polarSessionId,
+                        userId: userId.toString(),
+                    }).catch(() => ({ valid: false, value: null, clampReasons: ["planner_unavailable"] }));
+                    automationPlannerRepairAttempted = plannerValidation.repairAttempted === true;
+                    automationPlannerRepairSucceeded = plannerValidation.repairSucceeded === true;
+                    automationPlannerStructuredOutputFallbackUsed =
+                        plannerValidation.structuredOutputFallbackUsed === true;
+                    automationPlannerValidationErrors = Array.isArray(plannerValidation.validationErrors)
+                        ? plannerValidation.validationErrors
+                        : [];
+                    automationPlannerProposalValid = plannerValidation?.valid === true;
+                    if (!automationPlannerProposalValid) {
+                        automationPlannerClampReasons = plannerValidation.clampReasons || ["schema_invalid_or_unavailable"];
                     }
-                    automationPlannerDecision = {
-                        status: "clarify",
-                        question:
-                            plannerValidation.value.clarificationQuestion ||
-                            "Quick check: should I create this automation with conservative daily limits?",
-                        confidence: plannerConfidence,
-                    };
-                } else if (plannerValidation?.valid && plannerDecision === "skip") {
-                    automationPlannerFinalDecision = "skip";
-                    automationPlannerDecision = {
-                        status: "skip",
-                    };
-                }
 
-                if (!automationProposal && !automationPlannerDecision) {
-                    automationPlannerFinalDecision = "propose_fallback";
-                    automationPlannerClampReasons = [...automationPlannerClampReasons, "fallback_deterministic"];
-                    automationProposal =
-                        detectInboxAutomationProposal(text) ??
-                        detectAutomationProposal(text);
+                    const plannerConfidence = normalizeConfidence(plannerValidation?.value?.confidence);
+                    automationPlannerConfidence = plannerConfidence;
+                    const plannerDecision = plannerValidation?.valid ? plannerValidation.value.decision : null;
+                    const lowConfidence = plannerConfidence === null || plannerConfidence < 0.55;
+                    const normalizedSchedule = plannerValidation?.valid
+                        ? normalizeAutomationScheduleFromProposal(plannerValidation.value.schedule)
+                        : null;
+                    const normalizedLimits = normalizeAutomationLimits(
+                        plannerValidation?.valid ? plannerValidation.value.limits : {},
+                    );
+
+                    if (plannerValidation?.valid && plannerDecision === "propose" && normalizedSchedule && !lowConfidence) {
+                        automationPlannerFinalDecision = "propose";
+                        const promptTemplateCandidate =
+                            typeof plannerValidation.value.summary === "string" && plannerValidation.value.summary.trim().length > 0
+                                ? `Reminder: ${plannerValidation.value.summary.trim()}`
+                                : inferAutomationPromptTemplate(text);
+                        const inboxFallback = detectInboxAutomationProposal(text);
+                        automationProposal = {
+                            schedule: normalizedSchedule,
+                            promptTemplate: promptTemplateCandidate,
+                            limits: inboxFallback
+                                ? {
+                                    ...normalizedLimits.limits,
+                                    inbox: inboxFallback.limits.inbox,
+                                }
+                                : normalizedLimits.limits,
+                            quietHours: normalizedLimits.quietHours,
+                            templateType: inboxFallback?.templateType ?? "generic",
+                            approvalRequired:
+                                plannerValidation.value?.riskHints?.requiresApproval === true ||
+                                plannerValidation.value?.riskHints?.mayWrite === true,
+                        };
+                    } else if (plannerValidation?.valid && (plannerDecision === "clarify" || lowConfidence)) {
+                        automationPlannerFinalDecision = "clarify";
+                        if (lowConfidence) {
+                            automationPlannerClampReasons = [...automationPlannerClampReasons, "low_confidence"];
+                        }
+                        automationPlannerDecision = {
+                            status: "clarify",
+                            question:
+                                plannerValidation.value.clarificationQuestion ||
+                                "Quick check: should I create this automation with conservative daily limits?",
+                            confidence: plannerConfidence,
+                        };
+                    } else if (plannerValidation?.valid && plannerDecision === "skip") {
+                        automationPlannerFinalDecision = "skip";
+                        automationPlannerDecision = {
+                            status: "skip",
+                        };
+                    }
+
+                    if (!automationProposal && !automationPlannerDecision) {
+                        automationPlannerFinalDecision = "propose_fallback";
+                        automationPlannerClampReasons = [...automationPlannerClampReasons, "fallback_deterministic"];
+                        automationProposal =
+                            detectInboxAutomationProposal(text) ??
+                            detectAutomationProposal(text);
+                    }
                 }
-            }
+            
             if (automationProposal) {
                 automationPlannerOutcomeStatus = "automation_proposed";
                 const proposalId = `auto_prop_${crypto.randomUUID()}`;
@@ -3280,6 +3512,10 @@ ${routingRecommendation || ""}`;
                     outcomeStatus: automationPlannerOutcomeStatus,
                     outcome_status: automationPlannerOutcomeStatus,
                     planner_invoked: automationPlannerInvoked,
+                    planner_repair_attempted: automationPlannerRepairAttempted,
+                    planner_repair_succeeded: automationPlannerRepairSucceeded,
+                    planner_structured_output_fallback_used: automationPlannerStructuredOutputFallbackUsed,
+                    planner_validation_errors: automationPlannerValidationErrors,
                     timestampMs: now(),
                 });
 
@@ -3335,6 +3571,10 @@ ${routingRecommendation || ""}`;
                     outcomeStatus: automationPlannerOutcomeStatus,
                     outcome_status: automationPlannerOutcomeStatus,
                     planner_invoked: automationPlannerInvoked,
+                    planner_repair_attempted: automationPlannerRepairAttempted,
+                    planner_repair_succeeded: automationPlannerRepairSucceeded,
+                    planner_structured_output_fallback_used: automationPlannerStructuredOutputFallbackUsed,
+                    planner_validation_errors: automationPlannerValidationErrors,
                     timestampMs: now(),
                 });
                 return {
@@ -3365,6 +3605,10 @@ ${routingRecommendation || ""}`;
                     outcomeStatus: automationPlannerOutcomeStatus,
                     outcome_status: automationPlannerOutcomeStatus,
                     planner_invoked: automationPlannerInvoked,
+                    planner_repair_attempted: automationPlannerRepairAttempted,
+                    planner_repair_succeeded: automationPlannerRepairSucceeded,
+                    planner_structured_output_fallback_used: automationPlannerStructuredOutputFallbackUsed,
+                    planner_validation_errors: automationPlannerValidationErrors,
                     timestampMs: now(),
                 });
             }
@@ -3803,7 +4047,15 @@ ${routingRecommendation || ""}`;
 
                 if (actionMatch) {
                     let workflowSteps = null;
-                    let proposalValidation = { proposalType: "workflow", proposalValid: true, clampReasons: [] };
+                    let proposalValidation = {
+                        proposalType: "workflow",
+                        proposalValid: true,
+                        clampReasons: [],
+                        plannerRepairAttempted: false,
+                        plannerRepairSucceeded: false,
+                        plannerStructuredOutputFallbackUsed: false,
+                        plannerValidationErrors: [],
+                    };
                     const actionJson = actionMatch[1]?.trim();
                     const extensionStates = extensionGateway.listStates() || [];
                     const plannerAvailableTools = extensionStates.flatMap((state) =>
@@ -3825,6 +4077,13 @@ ${routingRecommendation || ""}`;
                             cleanText,
                             availableTools: plannerAvailableTools,
                         });
+                        proposalValidation.plannerRepairAttempted = plannerProposal.repairAttempted === true;
+                        proposalValidation.plannerRepairSucceeded = plannerProposal.repairSucceeded === true;
+                        proposalValidation.plannerStructuredOutputFallbackUsed =
+                            plannerProposal.structuredOutputFallbackUsed === true;
+                        proposalValidation.plannerValidationErrors = Array.isArray(plannerProposal.validationErrors)
+                            ? plannerProposal.validationErrors
+                            : [];
                         if (plannerProposal.valid) {
                             const plannerSteps = plannerProposal.value.steps.map((step) => ({
                                 extensionId: step.extensionId,
@@ -3843,6 +4102,13 @@ ${routingRecommendation || ""}`;
                                 proposalType: "workflow",
                                 proposalValid: dynamicClampReasons.length === 0,
                                 clampReasons: dynamicClampReasons,
+                                plannerRepairAttempted: plannerProposal.repairAttempted === true,
+                                plannerRepairSucceeded: plannerProposal.repairSucceeded === true,
+                                plannerStructuredOutputFallbackUsed:
+                                    plannerProposal.structuredOutputFallbackUsed === true,
+                                plannerValidationErrors: Array.isArray(plannerProposal.validationErrors)
+                                    ? plannerProposal.validationErrors
+                                    : [],
                             };
                             plannerValidation = { valid: true, clampReasons: dynamicClampReasons };
                         } else {
@@ -3877,6 +4143,13 @@ ${routingRecommendation || ""}`;
                             proposalType: "workflow",
                             proposalValid: false,
                             clampReasons: plannerValidation.clampReasons || ["fallback_template"],
+                            plannerRepairAttempted: plannerValidation.repairAttempted === true,
+                            plannerRepairSucceeded: plannerValidation.repairSucceeded === true,
+                            plannerStructuredOutputFallbackUsed:
+                                plannerValidation.structuredOutputFallbackUsed === true,
+                            plannerValidationErrors: Array.isArray(plannerValidation.validationErrors)
+                                ? plannerValidation.validationErrors
+                                : [],
                         };
                         workflowSteps = expandTemplate(legacyProposal.templateId, legacyProposal.args);
                     }
@@ -4850,6 +5123,10 @@ ${routingRecommendation || ""}`;
                     : delegatedOutcomeText
                         ? "workflow_completed_delegated"
                         : "workflow_completed";
+                let failureRepairAttempted = false;
+                let failureRepairSucceeded = false;
+                let failureStructuredOutputFallbackUsed = false;
+                let failureValidationErrors = [];
                 if (hasAnyFailure) {
                     failureFinalDecision = "clarify";
                     const deterministicFailureFallback = normalizedFailures.length > 0
@@ -4867,26 +5144,29 @@ ${routingRecommendation || ""}`;
                         capabilityId: failure.safeDiagnostic?.capabilityId,
                     }));
                     try {
-                        const failureResponse = await providerGateway.generate({
-                            executionType: "handoff",
+                        const failureValidation = await requestFailureExplainerProposal({
+                            providerGateway,
                             providerId: activeDelegation?.pinnedProvider || profile.profileConfig?.modelPolicy?.providerId || "openai",
                             model: activeDelegation?.model_override || profile.profileConfig?.modelPolicy?.modelId || "gpt-4.1-mini",
                             system: finalSystemPrompt,
                             messages: historyData?.items ? historyData.items.map(m => ({ role: m.role, content: m.text })) : [],
-                            prompt:
-                                `You are the failure explainer. Return strict JSON only with keys summary,suggestedNextStep,canRetry,detailLevel,detailedDiagnostic. ` +
-                                `Default to safe detail level. Use only these normalized error envelopes: ${JSON.stringify(normalizedEnvelope)}. ` +
-                                `Do not include stack traces or secret values.\n\n${deterministicHeader}`
+                            normalizedEnvelope,
+                            deterministicHeader,
                         });
-                        shapedFailureSummary = typeof failureResponse?.text === 'string' ? failureResponse.text : deterministicFailureFallback;
-                        const validation = parseJsonProposalText(shapedFailureSummary, failureExplainerSchema);
-                        failureProposalValid = validation.valid;
-                        failureClampReasons = validation.clampReasons;
-                        shapedFailureSummary = validation.valid
-                            ? validation.value.summary
+                        failureRepairAttempted = failureValidation.repairAttempted === true;
+                        failureRepairSucceeded = failureValidation.repairSucceeded === true;
+                        failureStructuredOutputFallbackUsed =
+                            failureValidation.structuredOutputFallbackUsed === true;
+                        failureValidationErrors = Array.isArray(failureValidation.validationErrors)
+                            ? failureValidation.validationErrors
+                            : [];
+                        failureProposalValid = failureValidation.valid;
+                        failureClampReasons = failureValidation.clampReasons;
+                        shapedFailureSummary = failureValidation.valid
+                            ? failureValidation.value.summary
                             : deterministicFailureFallback;
-                        failureFinalDecision = validation.valid ? "respond" : "fallback_safe_summary";
-                        failureOutcomeStatus = validation.valid
+                        failureFinalDecision = failureValidation.valid ? "respond" : "fallback_safe_summary";
+                        failureOutcomeStatus = failureValidation.valid
                             ? "workflow_failed_summary"
                             : "workflow_failed_fallback_summary";
                     } catch {
@@ -4908,6 +5188,10 @@ ${routingRecommendation || ""}`;
                     final_decision: failureFinalDecision,
                     outcomeStatus: failureOutcomeStatus,
                     outcome_status: failureOutcomeStatus,
+                    repair_attempted: failureRepairAttempted,
+                    repair_succeeded: failureRepairSucceeded,
+                    structured_output_fallback_used: failureStructuredOutputFallbackUsed,
+                    validation_errors: failureValidationErrors,
                     timestampMs: now(),
                 });
                 const cleanText = shapedFailureSummary.replace(/<polar_action>[\s\S]*?<\/polar_action>/, '').replace(/<thread_state>[\s\S]*?<\/thread_state>/, '').trim();

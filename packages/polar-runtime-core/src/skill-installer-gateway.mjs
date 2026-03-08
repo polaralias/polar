@@ -14,6 +14,10 @@ import {
   stringArrayField,
   stringField,
 } from "@polar/domain";
+import {
+  createJsonSchemaResponseFormat,
+  requestStructuredJsonResponse,
+} from "./structured-output.mjs";
 
 const installerRequestSchema = createStrictObjectSchema({
   schemaId: "skill.installer.gateway.request",
@@ -65,6 +69,50 @@ const analyzerManifestSchema = createStrictObjectSchema({
     capabilities: jsonField(),
   },
 });
+
+const analyzerManifestResponseFormat = createJsonSchemaResponseFormat(
+  "skill_installer_gateway_analyzer_manifest_v1",
+  Object.freeze({
+    type: "object",
+    additionalProperties: false,
+    required: ["extensionId", "capabilities"],
+    properties: {
+      extensionId: { type: "string", minLength: 1 },
+      version: { type: "string", minLength: 1 },
+      description: { type: "string", minLength: 1 },
+      permissions: {
+        type: "array",
+        items: { type: "string" },
+      },
+      capabilities: {
+        type: "array",
+        minItems: 1,
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["capabilityId"],
+          properties: {
+            capabilityId: { type: "string", minLength: 1 },
+            riskLevel: {
+              type: "string",
+              enum: ["read", "write", "destructive", "unknown"],
+            },
+            sideEffects: {
+              type: "string",
+              enum: ["none", "internal", "external", "unknown"],
+            },
+            description: { type: "string", minLength: 1 },
+            reason: { type: "string", minLength: 1 },
+          },
+        },
+      },
+    },
+  }),
+);
+
+function normalizeJsonText(rawText) {
+  return String(rawText || "").replace(/```json?\s*/g, "").replace(/```/g, "").trim();
+}
 
 /**
  * @param {unknown} value
@@ -236,6 +284,31 @@ function normalizeAnalyzerManifest(proposedManifestCandidate, inventoryToolNames
     extensionType: "skill",
     manifestHash: createManifestHash(JSON.stringify(manifestForHash)),
   });
+}
+
+function validateAnalyzerManifestResponse(rawText, inventoryToolNames) {
+  try {
+    return {
+      valid: true,
+      schemaId: analyzerManifestSchema.schemaId,
+      value: normalizeAnalyzerManifest(
+        JSON.parse(normalizeJsonText(rawText)),
+        inventoryToolNames,
+      ),
+      errors: Object.freeze([]),
+      clampReasons: Object.freeze([]),
+    };
+  } catch (error) {
+    return {
+      valid: false,
+      schemaId: analyzerManifestSchema.schemaId,
+      value: null,
+      errors: Object.freeze([
+        error instanceof Error ? error.message : "Invalid analyzer manifest payload",
+      ]),
+      clampReasons: Object.freeze(["schema_invalid"]),
+    };
+  }
 }
 
 /**
@@ -545,29 +618,53 @@ Output ONLY the JSON manifest.`;
         );
       }
 
-      const response = await providerGateway.generate({
-        executionType: "tool",
-        providerId: analyzerProviderId,
-        model: analyzerModel,
-        system: "You are a specialized Polar Skill Installer. You output only valid JSON.",
-        prompt,
+      const manifestValidation = await requestStructuredJsonResponse({
+        providerGateway,
+        responseFormat: analyzerManifestResponseFormat,
+        initialRequest: {
+          executionType: "tool",
+          providerId: analyzerProviderId,
+          model: analyzerModel,
+          system:
+            `You are a specialized Polar Skill Installer. Return exactly one JSON object matching ${analyzerManifestSchema.schemaId}. `
+            + "No markdown, no code fences, no prose outside the JSON object.",
+          prompt,
+          temperature: 0,
+          maxOutputTokens: 480,
+        },
+        validateResponseText(rawText) {
+          return validateAnalyzerManifestResponse(rawText, inventoryToolNames);
+        },
+        buildRepairRequest({ invalidOutput, validationErrors }) {
+          return {
+            executionType: "tool",
+            providerId: analyzerProviderId,
+            model: analyzerModel,
+            system:
+              `You are a skill manifest JSON repairer. Return exactly one corrected JSON object matching ${analyzerManifestSchema.schemaId}. `
+              + "Do not explain the changes. Do not wrap the JSON in markdown or quotes.",
+            prompt:
+              `The prior analyzer output was invalid. Fix it and return corrected JSON only. ${JSON.stringify({
+                validationErrors,
+                inventoryToolNames,
+                invalidOutput,
+              })}`,
+            temperature: 0,
+            maxOutputTokens: 480,
+          };
+        },
+        unavailableFallbackReason: "skill_manifest_analyzer_unavailable",
+        invalidFallbackReason: "schema_invalid",
       });
-
-      let proposedManifestCandidate;
-      try {
-        const responseText =
-          typeof response?.text === "string" ? response.text : "";
-        proposedManifestCandidate = JSON.parse(
-          responseText.replace(/```json|```/g, "").trim(),
-        );
-      } catch {
-        throw new RuntimeExecutionError("Failed to parse proposed manifest from LLM");
+      if (!manifestValidation.valid) {
+        throw new RuntimeExecutionError("Failed to produce a valid manifest from analyzer", {
+          schemaId: analyzerManifestSchema.schemaId,
+          errors: manifestValidation.validationErrors ?? manifestValidation.errors ?? [],
+          clampReasons: manifestValidation.clampReasons ?? ["schema_invalid"],
+        });
       }
 
-      const proposedManifest = normalizeAnalyzerManifest(
-        proposedManifestCandidate,
-        inventoryToolNames,
-      );
+      const proposedManifest = manifestValidation.value;
       const extensionId = /** @type {string} */ (proposedManifest.extensionId);
 
       // Force-set status to pending_install in lifecycle

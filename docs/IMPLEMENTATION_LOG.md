@@ -3326,3 +3326,63 @@ Commands run and outcomes:
 
 ### Next
 - If needed, add richer filters or a `--json` mode so the lineage tail can be piped into external dashboards or local debugging tools.
+
+## 2026-03-08 (UTC) - Prompt Runtime Hardening: Structured outputs for planners, resolvers, analyzer, failure explainers, and memory extraction
+
+**Branch:** `main`  
+**Commit:** `not committed`  
+**Prompt reference:** `Harden structured LLM decisions for automation planner, workflow planner, focus resolver, skill install analyzer, failure explainer, and memory extractor`
+
+### Summary
+- Added a shared structured-output helper that applies provider-native JSON schema hints when available, retries without native enforcement when necessary, validates outputs centrally, and performs one repair pass with validation errors.
+- Tightened proposal contracts for router-adjacent runtime decisions so automation planning, workflow planning, focus resolution, and failure explanation now validate typed fields rather than permissive JSON blobs.
+- Hardened the skill installer analyzer and memory extraction middleware to use the same structured-output + repair path.
+- Narrowed the workflow identity fail-close behavior so only generic asks like `run a workflow` trigger the deterministic `Which workflow should I run?` clarification, while concrete workflow/delegation requests can still proceed through validated `<polar_action>` proposals.
+- Preserved operator-facing diagnostics by surfacing original provider failure messages through the structured-output helper for memory extraction warnings.
+
+### Files changed
+- `packages/polar-runtime-core/src/structured-output.mjs`
+  - new shared helper for JSON-schema response formats, validation, and one-shot repair.
+- `packages/polar-runtime-core/src/proposal-contracts.mjs`
+  - tightened schemas and added native response format descriptors for planner/resolver/failure proposal contracts.
+- `packages/polar-runtime-core/src/orchestrator.mjs`
+  - switched automation planner, workflow planner, focus resolver, and failure explainer requests to shared structured handling;
+  - emitted repair/fallback telemetry for those components;
+  - narrowed generic workflow fail-close gating to avoid blocking valid concrete proposals.
+- `packages/polar-runtime-core/src/skill-installer-gateway.mjs`
+  - hardened analyzer manifest generation with schema validation and repair.
+- `packages/polar-runtime-core/src/memory-extraction-middleware.mjs`
+  - hardened fact extraction with schema validation and repair while preserving underlying provider failure messages.
+- `tests/runtime-core-proposal-contracts.test.mjs`
+- `tests/runtime-core-orchestrator-automation-proposal.test.mjs`
+- `tests/runtime-core-orchestrator-context-management.test.mjs`
+- `tests/runtime-core-orchestrator-hybrid-routing.test.mjs`
+- `tests/runtime-core-orchestrator-workflow-validation.test.mjs`
+- `tests/runtime-core-phase-8-advanced-features.test.mjs`
+- `tests/runtime-core-skill-installer-gateway.test.mjs`
+  - expanded and corrected regression coverage for repair passes, response-format usage, telemetry, and lane/context behavior under the hardened paths.
+
+### Data model / migrations (if applicable)
+- **Tables created/changed:** none
+- **Migration notes:** none
+- **Non-DB persistence changes:** none
+
+### Security and safety checks
+- Structured decision surfaces now validate typed contracts before execution-facing logic consumes them.
+- Invalid planner/resolver/analyzer outputs get one constrained repair pass, then fail closed to existing deterministic fallbacks.
+- Memory extraction remains best-effort and non-blocking, but logs now preserve the underlying provider error when extraction infrastructure is unavailable.
+
+### Tests and validation
+- `node --test tests/runtime-core-proposal-contracts.test.mjs tests/runtime-core-orchestrator-automation-proposal.test.mjs tests/runtime-core-orchestrator-workflow-validation.test.mjs tests/runtime-core-orchestrator-hybrid-routing.test.mjs tests/runtime-core-skill-installer-gateway.test.mjs tests/runtime-core-phase-8-advanced-features.test.mjs` - ✅
+- `node --test tests/bug-fixes-comprehensive.test.mjs` - ✅
+- `node --test tests/runtime-core-orchestrator-context-management.test.mjs` - ✅
+- `node --test tests/runtime-core-orchestrator-workflow-cancellation.test.mjs` - ✅
+- `npm run check:boundaries` - ✅
+- `npm test` - ✅ (499 passed, 0 failed)
+
+### Blockers
+- None.
+
+### Next
+- Apply the same shared structured-output helper to router decisions themselves so routing no longer relies on a single plain-text JSON parse before fallback.
+- Consider tightening memory extraction failure telemetry further so repeated invalid non-JSON responses can be summarized rather than logged per-turn in large integration runs.
