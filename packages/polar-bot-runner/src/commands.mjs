@@ -247,6 +247,25 @@ function parseAgentRegistrationTriple(raw) {
 }
 
 /**
+ * @param {string} raw
+ * @param {number} minParts
+ * @param {number} [maxParts]
+ */
+function parsePipeParts(raw, minParts, maxParts = minParts) {
+  const parts = raw.split("|").map((item) => item.trim()).filter((item) => item.length > 0);
+  if (parts.length < minParts || parts.length > maxParts) {
+    return {
+      ok: false,
+      error: `Expected ${minParts === maxParts ? minParts : `${minParts}-${maxParts}`} pipe-delimited fields.`,
+    };
+  }
+  return {
+    ok: true,
+    parts,
+  };
+}
+
+/**
  * @param {{ usage: string, example: string, message: string }} request
  */
 function createUsageError(request) {
@@ -591,6 +610,7 @@ function hasAccess(requiredAccess, auth) {
 /**
  * @param {{
  *   controlPlane: Record<string, (...args: unknown[]) => Promise<unknown>|unknown>,
+ *   agentConfigStore?: Record<string, (...args: unknown[]) => Promise<unknown>|unknown>,
  *   dbPath: string,
  *   now?: () => number,
  *   resolveSessionContext: (ctx: unknown) => Promise<{ sessionId: string }>,
@@ -608,6 +628,7 @@ function hasAccess(requiredAccess, auth) {
  */
 export function createTelegramCommandRouter({
   controlPlane,
+  agentConfigStore,
   dbPath,
   now = () => Date.now(),
   resolveSessionContext,
@@ -623,6 +644,27 @@ export function createTelegramCommandRouter({
   logger = console,
 }) {
   const authResolver = createAuthResolver({ controlPlane });
+
+  async function applyAgentConfiguration(configuration) {
+    if (agentConfigStore && typeof agentConfigStore.applyConfiguration === "function") {
+      return agentConfigStore.applyConfiguration(configuration);
+    }
+    return controlPlane.applyAgentConfiguration({ configuration });
+  }
+
+  async function applyAgentYamlText(yamlText) {
+    if (agentConfigStore && typeof agentConfigStore.applyYamlText === "function") {
+      return agentConfigStore.applyYamlText(yamlText);
+    }
+    return controlPlane.applyAgentConfigurationYaml({ yamlText });
+  }
+
+  async function writeAgentConfigFile(agentId) {
+    if (agentConfigStore && typeof agentConfigStore.writeAgentFile === "function") {
+      return agentConfigStore.writeAgentFile(agentId);
+    }
+    return null;
+  }
 
   /**
    * @param {{
@@ -1742,6 +1784,12 @@ export function createTelegramCommandRouter({
     const subcommand = (subcommandRaw || "list").toLowerCase();
     const restRaw = rest.join(" ").trim();
 
+    const requireOperator = (message) => {
+      if (!(identity.auth.isOperator || identity.auth.isAdmin)) {
+        throw new Error(message);
+      }
+    };
+
     if (subcommand === "list") {
       const listed = await controlPlane.listAgentProfiles();
       const items = Array.isArray(listed.items) ? listed.items : [];
@@ -1749,7 +1797,13 @@ export function createTelegramCommandRouter({
         await replyWithOptions(ctx, "No agent profiles registered.");
         return;
       }
-      const lines = items.map((item) => `- ${item.agentId} -> ${item.profileId}: ${item.description}`);
+      const lines = items.map((item) => {
+        const modelSuffix =
+          item?.modelPolicy?.providerId && item?.modelPolicy?.modelId
+            ? ` [${item.modelPolicy.providerId}/${item.modelPolicy.modelId}]`
+            : "";
+        return `- ${item.agentId} -> ${item.profileId}: ${item.description}${modelSuffix}`;
+      });
       await replyWithOptions(ctx, `Agent profiles:\n${lines.join("\n")}`);
       return;
     }
@@ -1763,12 +1817,27 @@ export function createTelegramCommandRouter({
           example: "/agents show @writer",
         });
       }
-      const result = await controlPlane.getAgentProfile({ agentId });
+      const result = await controlPlane.getAgentConfiguration({ agentId });
       if (result.status !== "found") {
         await replyWithOptions(ctx, `Agent not found: ${agentId}`);
         return;
       }
       const agent = result.agent;
+      const profileConfig =
+        result.profileConfig && typeof result.profileConfig === "object"
+          ? result.profileConfig
+          : {};
+      const modelPolicy =
+        profileConfig.modelPolicy && typeof profileConfig.modelPolicy === "object"
+          ? profileConfig.modelPolicy
+          : {};
+      const configDir =
+        agentConfigStore && typeof agentConfigStore.agentConfigDir === "string"
+          ? agentConfigStore.agentConfigDir
+          : null;
+      const configFile = configDir
+        ? path.join(configDir, `${String(agent.agentId || "").replace(/^@/, "")}.yaml`)
+        : null;
       await replyWithOptions(
         ctx,
         [
@@ -1776,15 +1845,60 @@ export function createTelegramCommandRouter({
           `profileId: ${agent.profileId}`,
           `description: ${agent.description}`,
           ...(Array.isArray(agent.tags) && agent.tags.length > 0 ? [`tags: ${agent.tags.join(", ")}`] : []),
+          ...(modelPolicy.providerId ? [`modelProvider: ${modelPolicy.providerId}`] : []),
+          ...(modelPolicy.modelId ? [`modelId: ${modelPolicy.modelId}`] : []),
+          ...(Array.isArray(profileConfig.allowedSkills) ? [`allowedSkills: ${profileConfig.allowedSkills.join(", ") || "(none)"}`] : []),
+          ...(Array.isArray(agent.allowedForwardSkills) ? [`allowedForwardSkills: ${agent.allowedForwardSkills.join(", ") || "(none)"}`] : []),
+          ...(configFile ? [`configFile: ${configFile}`] : []),
         ].join("\n"),
       );
       return;
     }
 
-    if (subcommand === "register") {
-      if (!(identity.auth.isOperator || identity.auth.isAdmin)) {
-        throw new Error("Registering agent profiles requires operator access.");
+    if (subcommand === "export-yaml") {
+      const agentId = asTrimmed(restRaw);
+      if (!agentId) {
+        throw createUsageError({
+          message: "Missing agentId.",
+          usage: "/agents export-yaml <agentId>",
+          example: "/agents export-yaml @writer",
+        });
       }
+      const result = await controlPlane.exportAgentConfigurationYaml({ agentId });
+      if (result.status !== "found") {
+        await replyWithOptions(ctx, `Agent not found: ${agentId}`);
+        return;
+      }
+      await replyWithOptions(ctx, `Agent YAML for ${result.agent.agentId}:\n\n${result.yamlText}`);
+      return;
+    }
+
+    if (subcommand === "apply-yaml") {
+      requireOperator("Updating agent YAML requires operator access.");
+      if (!restRaw) {
+        throw createUsageError({
+          message: "Missing YAML payload.",
+          usage: "/agents apply-yaml <yaml>",
+          example: "/agents apply-yaml version: 1",
+        });
+      }
+      const result = await applyAgentYamlText(restRaw);
+      await replyOrchestratedConfirmation(ctx, identity, {
+        commandName: "agents",
+        instruction:
+          "Confirm that the YAML agent configuration was applied.",
+        facts: {
+          action: "apply_yaml",
+          agentId: result.agent.agentId,
+          profileId: result.agent.profileId,
+        },
+        fallbackText: `Applied YAML configuration for ${result.agent.agentId}.`,
+      });
+      return;
+    }
+
+    if (subcommand === "register") {
+      requireOperator("Registering agent profiles requires operator access.");
       const parsed = parseAgentRegistrationTriple(restRaw);
       if (!parsed.ok) {
         throw createUsageError({
@@ -1798,6 +1912,7 @@ export function createTelegramCommandRouter({
         profileId: parsed.profileId,
         description: parsed.description,
       });
+      await writeAgentConfigFile(result.agent.agentId);
       await replyOrchestratedConfirmation(ctx, identity, {
         commandName: "agents",
         instruction:
@@ -1812,10 +1927,138 @@ export function createTelegramCommandRouter({
       return;
     }
 
-    if (subcommand === "unregister") {
-      if (!(identity.auth.isOperator || identity.auth.isAdmin)) {
-        throw new Error("Unregistering agent profiles requires operator access.");
+    if (subcommand === "set-model") {
+      requireOperator("Updating agent model policy requires operator access.");
+      const parsed = parsePipeParts(restRaw, 3);
+      if (!parsed.ok) {
+        throw createUsageError({
+          message: parsed.error,
+          usage: "/agents set-model <agentId> | <providerId> | <modelId>",
+          example: "/agents set-model @writer | anthropic | claude-sonnet-4-6",
+        });
       }
+      const [agentId, providerId, modelId] = parsed.parts;
+      const found = await controlPlane.getAgentConfiguration({ agentId });
+      if (found.status !== "found") {
+        await replyWithOptions(ctx, `Agent not found: ${agentId}`);
+        return;
+      }
+      const configuration = {
+        ...found.configuration,
+        profile: {
+          ...(found.configuration.profile || {}),
+          modelPolicy: {
+            ...(found.configuration.profile?.modelPolicy || {}),
+            providerId,
+            modelId,
+          },
+        },
+      };
+      const result = await applyAgentConfiguration(configuration);
+      await replyOrchestratedConfirmation(ctx, identity, {
+        commandName: "agents",
+        instruction:
+          "Confirm that the agent model policy was updated.",
+        facts: {
+          action: "set_model",
+          agentId: result.agent.agentId,
+          providerId,
+          modelId,
+        },
+        fallbackText: `Updated ${result.agent.agentId} to ${providerId}/${modelId}.`,
+      });
+      return;
+    }
+
+    if (subcommand === "set-tools") {
+      requireOperator("Updating agent tool access requires operator access.");
+      const parsed = parsePipeParts(restRaw, 2);
+      if (!parsed.ok) {
+        throw createUsageError({
+          message: parsed.error,
+          usage: "/agents set-tools <agentId> | <skillA,skillB|none>",
+          example: "/agents set-tools @researcher | web",
+        });
+      }
+      const [agentId, skillsRaw] = parsed.parts;
+      const allowedSkills =
+        skillsRaw.toLowerCase() === "none"
+          ? []
+          : skillsRaw.split(",").map((item) => item.trim()).filter((item) => item.length > 0);
+      const found = await controlPlane.getAgentConfiguration({ agentId });
+      if (found.status !== "found") {
+        await replyWithOptions(ctx, `Agent not found: ${agentId}`);
+        return;
+      }
+      const previousDefaultForwardSkills = Array.isArray(found.configuration.forwarding?.defaultForwardSkills)
+        ? found.configuration.forwarding.defaultForwardSkills
+        : [];
+      const configuration = {
+        ...found.configuration,
+        forwarding: {
+          ...(found.configuration.forwarding || {}),
+          allowedForwardSkills: allowedSkills,
+          defaultForwardSkills: previousDefaultForwardSkills.filter((skill) => allowedSkills.includes(skill)),
+        },
+        profile: {
+          ...(found.configuration.profile || {}),
+          allowedSkills,
+        },
+      };
+      const result = await applyAgentConfiguration(configuration);
+      await replyOrchestratedConfirmation(ctx, identity, {
+        commandName: "agents",
+        instruction:
+          "Confirm that the agent tool access was updated.",
+        facts: {
+          action: "set_tools",
+          agentId: result.agent.agentId,
+          allowedSkills,
+        },
+        fallbackText: `Updated ${result.agent.agentId} allowed skills to ${allowedSkills.join(", ") || "(none)"}.`,
+      });
+      return;
+    }
+
+    if (subcommand === "set-prompt") {
+      requireOperator("Updating agent prompts requires operator access.");
+      const parsed = parsePipeParts(restRaw, 2);
+      if (!parsed.ok) {
+        throw createUsageError({
+          message: parsed.error,
+          usage: "/agents set-prompt <agentId> | <systemPrompt>",
+          example: "/agents set-prompt @writer | You are a concise writer.",
+        });
+      }
+      const [agentId, systemPrompt] = parsed.parts;
+      const found = await controlPlane.getAgentConfiguration({ agentId });
+      if (found.status !== "found") {
+        await replyWithOptions(ctx, `Agent not found: ${agentId}`);
+        return;
+      }
+      const configuration = {
+        ...found.configuration,
+        profile: {
+          ...(found.configuration.profile || {}),
+          systemPrompt,
+        },
+      };
+      const result = await applyAgentConfiguration(configuration);
+      await replyOrchestratedConfirmation(ctx, identity, {
+        commandName: "agents",
+        instruction:
+          "Confirm that the agent prompt was updated.",
+        facts: {
+          action: "set_prompt",
+          agentId: result.agent.agentId,
+        },
+        fallbackText: `Updated prompt for ${result.agent.agentId}.`,
+      });
+      return;
+    }
+
+    if (subcommand === "unregister") {
+      requireOperator("Unregistering agent profiles requires operator access.");
       const agentId = asTrimmed(restRaw);
       if (!agentId) {
         throw createUsageError({
@@ -1935,7 +2178,7 @@ export function createTelegramCommandRouter({
 
     throw createUsageError({
       message: "Unknown agents subcommand.",
-      usage: "/agents [list|show|register|unregister|pin|unpin|pins] ...",
+      usage: "/agents [list|show|export-yaml|apply-yaml|register|set-model|set-tools|set-prompt|unregister|pin|unpin|pins] ...",
       example: "/agents show @writer",
     });
   }
@@ -2020,11 +2263,18 @@ export function createTelegramCommandRouter({
     {
       name: "agents",
       aliases: [],
-      help: "List/register agent profiles and profile pins.",
-      usage: "/agents [list|show|register|unregister|pin|unpin|pins]",
-      example: "/agents pin @writer --session",
+      help: "List, configure, and pin agent profiles.",
+      usage: "/agents [list|show|export-yaml|apply-yaml|register|set-model|set-tools|set-prompt|unregister|pin|unpin|pins]",
+      example: "/agents set-model @writer | anthropic | claude-sonnet-4-6",
       access: "public",
-      containsFreeText: (argsRaw) => asTrimmed(argsRaw).startsWith("register "),
+      containsFreeText: (argsRaw) => {
+        const trimmed = asTrimmed(argsRaw);
+        return (
+          trimmed.startsWith("register ") ||
+          trimmed.startsWith("apply-yaml ") ||
+          trimmed.startsWith("set-prompt ")
+        );
+      },
       handler: (ctx, identity, argsRaw) => handleAgents(ctx, identity, argsRaw),
     },
     {

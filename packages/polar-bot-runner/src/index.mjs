@@ -26,6 +26,7 @@ const bot = new Telegraf(BOT_TOKEN);
 const platform = createPolarPlatform({
     dbPath: path.resolve(process.cwd(), '../../polar-system.db')
 });
+await platform.bootstrapPromise;
 const controlPlane = platform.controlPlane;
 
 function automationProposalTaskId(proposalId) {
@@ -414,6 +415,7 @@ async function sendOrchestratedSystemReply({
 
 const commandRouter = createTelegramCommandRouter({
     controlPlane,
+    agentConfigStore: platform.agentConfigStore,
     dbPath: platform.dbPath,
     explicitOperatorUserIds,
     explicitAdminUserIds,

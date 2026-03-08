@@ -1,5 +1,5 @@
 import Database from "better-sqlite3";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { createControlPlaneService } from "@polar/control-plane";
 import {
   createSqliteAutomationJobStore,
@@ -9,10 +9,12 @@ import {
   createSqlitePersonalityStore,
   createSqliteSchedulerStateStore,
 } from "@polar/runtime-core";
+import { createAgentConfigStore } from "./agent-config-store.mjs";
 
 /**
  * @param {{
  *   dbPath: string,
+ *   agentConfigDir?: string,
  *   now?: () => number,
  *   auditSink?: (event: unknown) => Promise<void>|void,
  *   devMode?: boolean
@@ -39,6 +41,10 @@ export function createPolarPlatform(config = {}) {
   const feedbackEventStore = createSqliteFeedbackEventStore({ db, now });
   const automationJobStore = createSqliteAutomationJobStore({ db, now });
   const personalityStore = createSqlitePersonalityStore({ db, now });
+  const agentConfigDir = resolve(
+    config.agentConfigDir ?? dirname(resolvedDbPath),
+    config.agentConfigDir ? "" : "config/agents",
+  );
   const controlPlane = createControlPlaneService({
     schedulerStateStore,
     budgetStateStore,
@@ -51,6 +57,15 @@ export function createPolarPlatform(config = {}) {
     now,
     devMode: config.devMode,
   });
+  const agentConfigStore = createAgentConfigStore({
+    controlPlane,
+    agentConfigDir,
+  });
+  const bootstrapAgentConfigs = async () => {
+    await agentConfigStore.seedDefaultsIfEmpty();
+    await agentConfigStore.syncFromDisk();
+  };
+  const bootstrapPromise = bootstrapAgentConfigs();
 
   let isClosed = false;
   const shutdown = () => {
@@ -62,7 +77,10 @@ export function createPolarPlatform(config = {}) {
   return Object.freeze({
     db,
     controlPlane,
+    agentConfigStore,
+    bootstrapPromise,
     dbPath: resolvedDbPath,
+    agentConfigDir,
     shutdown,
   });
 }
@@ -78,4 +96,8 @@ export function closePolarPlatform(platform) {
 
 export function defaultDbPath() {
   return resolve(process.cwd(), "../../polar-system.db");
+}
+
+export function defaultAgentConfigDir() {
+  return resolve(process.cwd(), "../../config/agents");
 }

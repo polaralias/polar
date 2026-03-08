@@ -23,6 +23,7 @@ if (!Number.isFinite(maxJobsPerTick) || maxJobsPerTick < 1 || maxJobsPerTick > 5
 }
 
 const platform = createPolarPlatform({ dbPath });
+await platform.bootstrapPromise;
 const automationJobStore = createSqliteAutomationJobStore({ db: platform.db });
 const runEventLinker = createSqliteRunEventLinker({ db: platform.db });
 

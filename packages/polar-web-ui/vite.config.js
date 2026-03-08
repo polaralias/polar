@@ -9,6 +9,7 @@ const repoRoot = resolve(moduleDir, '../..');
 const platform = createPolarPlatform({
     dbPath: resolve(repoRoot, 'polar-system.db')
 });
+await platform.bootstrapPromise;
 const controlPlane = platform.controlPlane;
 
 // BUG-002 fix: API authorization via a simple bearer token from env
@@ -32,7 +33,7 @@ const ALLOWED_ACTIONS = new Set([
     'searchMemory', 'getMemory', 'upsertMemory', 'compactMemory',
     'getPersonalityProfile', 'getEffectivePersonality', 'upsertPersonalityProfile', 'resetPersonalityProfile', 'listPersonalityProfiles',
     'getModelRegistry', 'upsertModelRegistry', 'setModelRegistryDefault',
-    'getAgentRegistry', 'listAgentProfiles', 'getAgentProfile', 'registerAgentProfile', 'unregisterAgentProfile',
+    'getAgentRegistry', 'listAgentProfiles', 'getAgentProfile', 'getAgentConfiguration', 'applyAgentConfiguration', 'exportAgentConfigurationYaml', 'applyAgentConfigurationYaml', 'registerAgentProfile', 'unregisterAgentProfile',
     'pinProfileForScope', 'unpinProfileForScope', 'getEffectivePinnedProfile',
     'orchestrate', 'updateMessageChannelId', 'executeWorkflow', 'rejectWorkflow', 'cancelWorkflow', 'handleRepairSelection'
 ]);

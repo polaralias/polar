@@ -59,8 +59,30 @@ function createRouterHarness(overrides = {}) {
       profileId: "profile.writer",
       description: "Writes documentation",
       tags: ["writing"],
+      modelPolicy: { providerId: "openai", modelId: "gpt-4.1-mini" },
+      allowedSkills: [],
     },
   ];
+  let agentConfigurations = {
+    "@writer": {
+      version: 1,
+      agentId: "@writer",
+      profileId: "profile.writer",
+      description: "Writes documentation",
+      tags: ["writing"],
+      forwarding: {
+        defaultForwardSkills: [],
+        allowedForwardSkills: [],
+        defaultMcpServers: [],
+        allowedMcpServers: [],
+      },
+      profile: {
+        systemPrompt: "Write clearly.",
+        modelPolicy: { providerId: "openai", modelId: "gpt-4.1-mini" },
+        allowedSkills: [],
+      },
+    },
+  };
 
   let commandAccessConfig =
     initialCommandAccessConfig ??
@@ -176,20 +198,138 @@ function createRouterHarness(overrides = {}) {
       if (!found) {
         return { status: "not_found", agentId: request.agentId };
       }
-      return { status: "found", agent: found };
+      return {
+        status: "found",
+        agent: found,
+        profileConfig: agentConfigurations[request.agentId]?.profile || {},
+        configuration: agentConfigurations[request.agentId],
+      };
+    },
+    async getAgentConfiguration(request) {
+      const configuration = agentConfigurations[request.agentId];
+      if (!configuration) {
+        return { status: "not_found", agentId: request.agentId };
+      }
+      const agent = agentProfiles.find((item) => item.agentId === request.agentId) || {
+        agentId: configuration.agentId,
+        profileId: configuration.profileId,
+        description: configuration.description,
+      };
+      return {
+        status: "found",
+        agent,
+        profileConfig: configuration.profile,
+        configuration,
+      };
+    },
+    async applyAgentConfiguration(request) {
+      const configuration = request.configuration;
+      agentConfigurations = {
+        ...agentConfigurations,
+        [configuration.agentId]: configuration,
+      };
+      const next = {
+        agentId: configuration.agentId,
+        profileId: configuration.profileId,
+        description: configuration.description,
+        tags: configuration.tags || [],
+        modelPolicy: configuration.profile?.modelPolicy,
+        allowedSkills: configuration.profile?.allowedSkills || [],
+      };
+      agentProfiles = [
+        ...agentProfiles.filter((item) => item.agentId !== configuration.agentId),
+        next,
+      ];
+      return { status: "applied", agent: next, profileConfig: configuration.profile, configuration };
+    },
+    async exportAgentConfigurationYaml(request) {
+      const configuration = agentConfigurations[request.agentId];
+      if (!configuration) {
+        return { status: "not_found", agentId: request.agentId };
+      }
+      return {
+        status: "found",
+        agent: { agentId: configuration.agentId, profileId: configuration.profileId },
+        configuration,
+        yamlText: [
+          "version: 1",
+          `agentId: "${configuration.agentId}"`,
+          `profileId: "${configuration.profileId}"`,
+          `description: "${configuration.description}"`,
+          "profile:",
+          `  modelPolicy:`,
+          `    providerId: ${configuration.profile?.modelPolicy?.providerId || "openai"}`,
+          `    modelId: ${configuration.profile?.modelPolicy?.modelId || "gpt-4.1-mini"}`,
+        ].join("\n"),
+      };
+    },
+    async applyAgentConfigurationYaml(request) {
+      const agentIdMatch = request.yamlText.match(/agentId:\s*"?(@[a-z0-9_-]+)"?/i);
+      const profileIdMatch = request.yamlText.match(/profileId:\s*"?([A-Za-z0-9._:-]+)"?/i);
+      const descriptionMatch = request.yamlText.match(/description:\s*"?([^\n"]+)"?/i);
+      const providerMatch = request.yamlText.match(/providerId:\s*([^\n]+)/i);
+      const modelMatch = request.yamlText.match(/modelId:\s*([^\n]+)/i);
+      const configuration = {
+        version: 1,
+        agentId: agentIdMatch?.[1] || "@writer",
+        profileId: profileIdMatch?.[1] || "profile.writer",
+        description: descriptionMatch?.[1] || "Updated via YAML",
+        tags: [],
+        forwarding: {
+          defaultForwardSkills: [],
+          allowedForwardSkills: [],
+          defaultMcpServers: [],
+          allowedMcpServers: [],
+        },
+        profile: {
+          modelPolicy: {
+            providerId: (providerMatch?.[1] || "openai").trim(),
+            modelId: (modelMatch?.[1] || "gpt-4.1-mini").trim(),
+          },
+          allowedSkills: [],
+        },
+      };
+      return this.applyAgentConfiguration({ configuration });
     },
     async registerAgentProfile(request) {
       const next = {
         agentId: request.agentId,
         profileId: request.profileId,
         description: request.description,
+        tags: [],
+        modelPolicy: agentConfigurations[request.agentId]?.profile?.modelPolicy,
+        allowedSkills: agentConfigurations[request.agentId]?.profile?.allowedSkills || [],
       };
+      if (!agentConfigurations[request.agentId]) {
+        agentConfigurations = {
+          ...agentConfigurations,
+          [request.agentId]: {
+            version: 1,
+            agentId: request.agentId,
+            profileId: request.profileId,
+            description: request.description,
+            tags: [],
+            forwarding: {
+              defaultForwardSkills: [],
+              allowedForwardSkills: [],
+              defaultMcpServers: [],
+              allowedMcpServers: [],
+            },
+            profile: {
+              allowedSkills: [],
+            },
+          },
+        };
+      }
       agentProfiles = [...agentProfiles.filter((item) => item.agentId !== request.agentId), next];
       return { status: "applied", agent: next };
     },
     async unregisterAgentProfile(request) {
       const countBefore = agentProfiles.length;
       agentProfiles = agentProfiles.filter((item) => item.agentId !== request.agentId);
+      const nextConfigurations = { ...agentConfigurations };
+      delete nextConfigurations[request.agentId];
+      agentConfigurations = nextConfigurations;
       return countBefore === agentProfiles.length
         ? { status: "not_found", agentId: request.agentId }
         : { status: "deleted", agentId: request.agentId };
@@ -301,8 +441,22 @@ function createRouterHarness(overrides = {}) {
     ...controlPlaneOverrides,
   };
 
+  const agentConfigStore = {
+    agentConfigDir: "C:/repo/config/agents",
+    async applyConfiguration(configuration) {
+      return controlPlane.applyAgentConfiguration({ configuration });
+    },
+    async applyYamlText(yamlText) {
+      return controlPlane.applyAgentConfigurationYaml({ yamlText });
+    },
+    async writeAgentFile(agentId) {
+      return { status: "written", agentId, filePath: `C:/repo/config/agents/${agentId.replace(/^@/, "")}.yaml` };
+    },
+  };
+
   const router = createTelegramCommandRouter({
     controlPlane,
+    agentConfigStore,
     dbPath: "C:/repo/polar-system.db",
     resolveSessionContext: async () => ({ sessionId: "telegram:chat:42" }),
     deriveThreadKey: () => "root:42",
@@ -436,6 +590,26 @@ test("agents pin resolves agentId to profile and returns orchestrated confirmati
   assert.equal(calls.pinProfileRequests[0].profileId, "profile.writer");
   assert.equal(replies.length, 1);
   assert.equal(replies[0], "Preview in new style.");
+});
+
+test("agents set-model updates combined agent configuration via deterministic command", async () => {
+  const { router, calls } = createRouterHarness();
+  const { ctx, replies } = createCtx(
+    "/agents set-model @writer | anthropic | claude-sonnet-4-6",
+  );
+  await router.handle(ctx);
+  assert.equal(replies.length, 1);
+  assert.equal(calls.orchestrate, 1);
+  assert.equal(calls.feedbackPayloads.at(-1).command, "agents");
+});
+
+test("agents export-yaml returns editable YAML", async () => {
+  const { router } = createRouterHarness();
+  const { ctx, replies } = createCtx("/agents export-yaml @writer");
+  await router.handle(ctx);
+  assert.equal(replies.length, 1);
+  assert.match(replies[0], /agentId: "@writer"/);
+  assert.match(replies[0], /modelId: gpt-4.1-mini/);
 });
 
 test("state-changing command confirmations go through orchestrate in side-effect-free mode", async () => {

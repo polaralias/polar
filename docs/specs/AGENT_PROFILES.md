@@ -29,6 +29,15 @@ This spec makes the sub-agent approach durable and configurable.
 - **Agent Registry**: an allowlisted config record that lists available agent profiles.
 - **Pin**: selecting a profile as default for a scope (session/user/global) via `profile-pin:*` policy records.
 
+## Default shipped profiles
+The runtime should ship with these pinned-safe defaults:
+- `@general` -> `profile.general` (general fallback worker)
+- `@researcher` -> `profile.researcher`
+- `@writer` -> `profile.writer`
+- `@coder` -> `profile.coder`
+
+`@general` is the mandatory fallback when routing/delegation names an unknown or missing sub-agent.
+
 ## Storage strategy (no new resourceType)
 Do not add a new config resource type for `multi_agent`.
 
@@ -43,6 +52,49 @@ Rationale:
 - `policy` is already a supported resource type.
 - It avoids expanding `CONTROL_PLANE_RESOURCE_TYPES` just for registry metadata.
 - It can still be allowlisted in Web UI and chat commands.
+
+## Combined agent configuration document
+For operator editing and surface-specific configuration, each agent is also exposed as a combined document that merges:
+- registry metadata (`agentId`, description, tags)
+- forwarding policy (`defaultForwardSkills`, `allowedForwardSkills`)
+- delegated profile config (`systemPrompt`, `modelPolicy`, `allowedSkills`)
+
+This document is the basis for:
+- on-disk YAML files
+- deterministic chat configuration commands
+- CLI configuration commands
+
+Default on-disk location:
+- platform-managed agent config directory under the active data/config root, typically `config/agents/<agent-name>.yaml`
+
+Example YAML:
+```yaml
+version: 1
+agent:
+  agentId: "@writer"
+  profileId: "profile.writer"
+  description: "Writes clear docs and polished messages."
+  tags:
+    - writing
+    - docs
+forwarding:
+  defaultForwardSkills:
+    - web
+  allowedForwardSkills:
+    - web
+profile:
+  systemPrompt: "You are a concise writing specialist."
+  modelPolicy:
+    providerId: "anthropic"
+    modelId: "claude-sonnet-4-6"
+  allowedSkills:
+    - web
+```
+
+Rules:
+- YAML is an operator-facing serialization of the same validated control-plane configuration.
+- Applying YAML must update registry metadata and the referenced profile config coherently.
+- Surfaces must not bypass control-plane validation when applying YAML text.
 
 ## Agent registry JSON schema (versioned)
 ```json
@@ -96,6 +148,11 @@ When the model (or a routing policy) chooses to delegate:
   - model policy enforced from delegated profile (providerId + modelId)
 - Any `model_override` proposed by the model must be clamped to:
   - the delegated profile allowlist, and/or the global allowlist
+- Active delegated state must be persisted structurally per lane/thread so follow-up prompts resume the delegated child until it completes or is cleared.
+- Delegated child turns must not silently downgrade into “reported delegation only”; the parent must return either:
+  - the delegated outcome,
+  - a delegated clarification request,
+  - or a delegated approval-needed status.
 
 ## Pinning (session/user/global)
 Pinning selects the default profile used for normal orchestration turns.
@@ -122,10 +179,17 @@ Agent registry must be manageable via deterministic chat commands (operator/admi
 - `/agents register <agentId> | <profileId> | <description>`
 - `/agents unregister <agentId>`
 - `/agents` and `/agents show <agentId>` (public read)
+- `/agents export-yaml <agentId>`
+- `/agents apply-yaml <yaml>`
+- `/agents set-model <agentId> | <providerId> | <modelId>`
+- `/agents set-tools <agentId> | <skillA,skillB|none>`
+- `/agents set-prompt <agentId> | <systemPrompt>`
 
 Pinning commands can be public for own scope:
 - `/agents pin <agentId> [--session|--user]`
 Global pin is operator/admin only.
+
+Telegram is the first implemented chat surface. Other chat surfaces (for example Discord/Slack) should reuse the same deterministic `/agents ...` grammar when surfaced.
 
 See `docs/specs/CHAT_COMMANDS.md`.
 
@@ -139,13 +203,16 @@ Web UI must not allow arbitrary policy edits beyond allowlisted ids.
 
 ## Acceptance criteria
 - Agent registry is stored in `policy:agent-registry:default`.
+- Combined agent configuration can be exported/applied as validated YAML.
 - Orchestrator always has agent list in context.
-- Delegation enforces pinned delegated profile model policy and allowed skills.
-- Chat commands can register/unregister agents and pin/unpin for session/user/global (with gating).
+- Delegation enforces pinned delegated profile model policy and allowed skills, and executes a real delegated child turn.
+- Follow-up prompts on a delegated lane resume the delegated child from durable state.
+- Chat/CLI commands can register/unregister agents, edit delegated profile model/tool access, export/apply YAML, and pin/unpin for session/user/global (with gating).
 - Tests cover:
   - registry schema validation
   - pin resolve agentId → profileId
   - delegation clamps model override
+  - delegated outcome/clarification continuity across follow-up turns
 
 ## Agent checklist
 - Check `AGENTS.md` first.

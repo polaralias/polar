@@ -55,6 +55,7 @@ const delegationStateSchema = createStrictObjectSchema({
     schemaId: 'orchestrator.delegation.state',
     fields: {
         agentId: stringField({ minLength: 1 }),
+        profileId: stringField({ minLength: 1, required: false }),
         task_instructions: stringField({ minLength: 1 }),
         forward_skills: stringArrayField({ minItems: 0, required: false }),
         model_override: stringField({ minLength: 1, required: false }),
@@ -68,6 +69,53 @@ const delegationStateSchema = createStrictObjectSchema({
  */
 function normalizeJsonText(rawText) {
     return rawText.replace(/```json?\s*/g, '').replace(/```/g, '').trim();
+}
+
+function normalizeDelegationState(value) {
+    if (typeof value !== "object" || value === null || Object.getPrototypeOf(value) !== Object.prototype) {
+        return null;
+    }
+    const agentId = typeof value.agentId === "string" ? value.agentId.trim() : "";
+    const taskInstructions =
+        typeof value.task_instructions === "string" ? value.task_instructions.trim() : "";
+    if (!agentId || !taskInstructions) {
+        return null;
+    }
+    const normalized = {
+        agentId,
+        task_instructions: taskInstructions,
+    };
+    if (typeof value.profileId === "string" && value.profileId.trim().length > 0) {
+        normalized.profileId = value.profileId.trim();
+    }
+    const forwardSkills = normalizeStringArray(value.forward_skills);
+    if (forwardSkills.length > 0) {
+        normalized.forward_skills = forwardSkills;
+    }
+    if (typeof value.model_override === "string" && value.model_override.trim().length > 0) {
+        normalized.model_override = value.model_override.trim();
+    }
+    if (typeof value.pinnedProvider === "string" && value.pinnedProvider.trim().length > 0) {
+        normalized.pinnedProvider = value.pinnedProvider.trim();
+    }
+    return normalized;
+}
+
+function normalizeDelegationStateMap(value) {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+        return {};
+    }
+    const normalized = {};
+    for (const [laneKey, delegationState] of Object.entries(value)) {
+        if (typeof laneKey !== "string" || laneKey.length === 0) {
+            continue;
+        }
+        const parsed = normalizeDelegationState(delegationState);
+        if (parsed) {
+            normalized[laneKey] = parsed;
+        }
+    }
+    return normalized;
 }
 
 /**
@@ -515,8 +563,8 @@ function toJsonSafeValue(value) {
 const AGENT_REGISTRY_RESOURCE_TYPE = "policy";
 const AGENT_REGISTRY_RESOURCE_ID = "agent-registry:default";
 const AGENT_ID_PATTERN = /^@[a-z0-9_-]{2,32}$/;
-const DEFAULT_GENERIC_AGENT_ID = "@generic_sub_agent";
-const DEFAULT_GENERIC_PROFILE_ID = "profile.generic_sub_agent";
+const DEFAULT_GENERIC_AGENT_ID = "@general";
+const DEFAULT_GENERIC_PROFILE_ID = "profile.general";
 const ROUTER_CONFIDENCE_THRESHOLD = 0.65;
 const ROUTER_DECISION_MARGIN_THRESHOLD = 0.12;
 const FOCUS_RESOLVER_AMBIGUITY_SCORE_GAP_THRESHOLD = 0.2;
@@ -980,29 +1028,33 @@ function buildTemporalAttentionRecord(input) {
         .slice(0, 3)
         .map((thread) => thread?.summary || thread?.pendingQuestion?.text || thread?.openOffer?.target || thread?.id)
         .filter((entry) => typeof entry === "string" && entry.length > 0);
-    let activeDelegation = null;
-    for (const entry of [...recentLaneMessages].reverse()) {
-        const messageText = typeof entry?.text === "string" ? entry.text : "";
-        if (!messageText) {
-            continue;
-        }
-        if (messageText.startsWith("[DELEGATION CLEARED]")) {
-            break;
-        }
-        if (messageText.startsWith("[DELEGATION ACTIVE]")) {
-            try {
-                const parsed = parseJsonWithSchema(
-                    messageText.replace("[DELEGATION ACTIVE]", "").trim(),
-                    delegationStateSchema,
-                );
-                activeDelegation = {
-                    agentId: parsed.agentId,
-                    task_instructions: parsed.task_instructions,
-                };
-            } catch {
-                activeDelegation = null;
+    let activeDelegation =
+        typeof sessionState?.activeDelegations === "object" &&
+            sessionState?.activeDelegations !== null &&
+            typeof laneThreadKey === "string"
+            ? normalizeDelegationState(sessionState.activeDelegations[laneThreadKey])
+            : null;
+    if (!activeDelegation) {
+        for (const entry of [...recentLaneMessages].reverse()) {
+            const messageText = typeof entry?.text === "string" ? entry.text : "";
+            if (!messageText) {
+                continue;
             }
-            break;
+            if (messageText.startsWith("[DELEGATION CLEARED]")) {
+                break;
+            }
+            if (messageText.startsWith("[DELEGATION ACTIVE]")) {
+                try {
+                    const parsed = parseJsonWithSchema(
+                        messageText.replace("[DELEGATION ACTIVE]", "").trim(),
+                        delegationStateSchema,
+                    );
+                    activeDelegation = normalizeDelegationState(parsed);
+                } catch {
+                    activeDelegation = null;
+                }
+                break;
+            }
         }
     }
     const riskHints = Object.freeze({
@@ -1464,7 +1516,7 @@ export function createOrchestrator({
     }
 
     function normalizeSessionStateValue(value) {
-        const fallback = { threads: [], activeThreadId: null };
+        const fallback = { threads: [], activeThreadId: null, activeDelegations: {} };
         if (typeof value !== "object" || value === null) {
             return fallback;
         }
@@ -1473,10 +1525,51 @@ export function createOrchestrator({
             typeof value.activeThreadId === "string" && value.activeThreadId.length > 0
                 ? value.activeThreadId
                 : null;
+        const activeDelegations = normalizeDelegationStateMap(value.activeDelegations);
         return {
             threads,
             activeThreadId,
+            activeDelegations,
         };
+    }
+
+    function getActiveDelegationForLane(sessionState, laneThreadKey) {
+        if (typeof laneThreadKey !== "string" || laneThreadKey.length === 0) {
+            return null;
+        }
+        const state = normalizeSessionStateValue(sessionState);
+        return normalizeDelegationState(state.activeDelegations?.[laneThreadKey]);
+    }
+
+    function setActiveDelegationForLane(sessionState, laneThreadKey, delegationState) {
+        const state = normalizeSessionStateValue(sessionState);
+        if (typeof laneThreadKey !== "string" || laneThreadKey.length === 0) {
+            return state;
+        }
+        if (!state.activeDelegations || typeof state.activeDelegations !== "object") {
+            state.activeDelegations = {};
+        }
+        const normalized = normalizeDelegationState(delegationState);
+        if (normalized) {
+            state.activeDelegations[laneThreadKey] = normalized;
+        } else {
+            delete state.activeDelegations[laneThreadKey];
+        }
+        return state;
+    }
+
+    function resolveLaneThreadKeyForThread(sessionState, threadId, fallbackLaneThreadKey) {
+        if (typeof fallbackLaneThreadKey === "string" && fallbackLaneThreadKey.length > 0) {
+            return fallbackLaneThreadKey;
+        }
+        if (typeof threadId !== "string" || threadId.length === 0) {
+            return null;
+        }
+        const state = normalizeSessionStateValue(sessionState);
+        const matchedThread = state.threads.find((thread) => thread?.id === threadId);
+        return typeof matchedThread?.laneThreadKey === "string" && matchedThread.laneThreadKey.length > 0
+            ? matchedThread.laneThreadKey
+            : null;
     }
 
     async function readThreadStateRecord(memoryId) {
@@ -1869,6 +1962,168 @@ export function createOrchestrator({
         return normalizeAgentRegistry(record?.config);
     }
 
+    async function resolveExecutionProfile({ sessionId, userId, profileIdOverride }) {
+        if (typeof profileIdOverride === "string" && profileIdOverride.trim().length > 0) {
+            const record = await readConfigRecord("profile", profileIdOverride.trim());
+            if (!record || typeof record.config !== "object" || record.config === null) {
+                throw new RuntimeExecutionError(`Profile not found: ${profileIdOverride}`);
+            }
+            return {
+                status: "resolved",
+                resolvedScope: "direct_override",
+                profileId: profileIdOverride.trim(),
+                profileConfig: record.config,
+            };
+        }
+        return profileResolutionGateway.resolve({
+            sessionId,
+            userId: String(userId),
+        });
+    }
+
+    function buildWorkflowExecutionOverrides(metadata = {}, laneThreadKey) {
+        if (typeof metadata !== "object" || metadata === null) {
+            return null;
+        }
+        const overrides = {};
+        if (typeof metadata.profileIdOverride === "string" && metadata.profileIdOverride.trim().length > 0) {
+            overrides.profileIdOverride = metadata.profileIdOverride.trim();
+        }
+        const delegationState = normalizeDelegationState(metadata.delegationState);
+        if (delegationState) {
+            overrides.delegationState = delegationState;
+        }
+        if (metadata.internalDelegation === true) {
+            overrides.internalDelegation = true;
+        }
+        if (metadata.suppressThreadStateMutation === true) {
+            overrides.suppressThreadStateMutation = true;
+        }
+        if (
+            metadata.suppressUserMessagePersist === true ||
+            metadata.suppressMemoryWrite === true ||
+            metadata.suppressTaskWrites === true
+        ) {
+            overrides.suppressResponsePersist = true;
+        }
+        if (typeof laneThreadKey === "string" && laneThreadKey.length > 0) {
+            overrides.laneThreadKey = laneThreadKey;
+        }
+        return Object.keys(overrides).length > 0 ? Object.freeze(overrides) : null;
+    }
+
+    async function executeDelegatedTask({
+        sessionId,
+        userId,
+        laneThreadKey,
+        threadId,
+        agentId,
+        profileId,
+        taskInstructions,
+        forwardSkills,
+        providerId,
+        modelId,
+        parentWorkflowId,
+        parentRunId,
+        allowEscalatedExecution = false,
+    }) {
+        const delegatedState = normalizeDelegationState({
+            agentId,
+            profileId,
+            task_instructions: taskInstructions,
+            forward_skills: forwardSkills,
+            model_override: modelId,
+            pinnedProvider: providerId,
+        });
+        if (!delegatedState) {
+            return {
+                status: "error",
+                text: `Delegated execution could not start for ${agentId}.`,
+            };
+        }
+
+        try {
+            const delegatedResult = await methods.orchestrate({
+                sessionId,
+                userId,
+                text: taskInstructions,
+                metadata: {
+                    ...(typeof threadId === "string" && threadId.length > 0 ? { threadId } : {}),
+                    ...(typeof laneThreadKey === "string" && laneThreadKey.length > 0 ? { threadKey: laneThreadKey } : {}),
+                    profileIdOverride: profileId,
+                    delegationState: delegatedState,
+                    internalDelegation: true,
+                    suppressUserMessagePersist: true,
+                    suppressMemoryWrite: true,
+                    suppressTaskWrites: true,
+                    suppressAutomationWrites: true,
+                    suppressThreadStateMutation: true,
+                    ...(typeof parentWorkflowId === "string" ? { parentWorkflowId } : {}),
+                    ...(typeof parentRunId === "string" ? { parentRunId } : {}),
+                    ...(allowEscalatedExecution ? { allowEscalatedExecution: true } : {}),
+                },
+            });
+
+            if (delegatedResult?.status === "completed") {
+                const delegatedText =
+                    typeof delegatedResult.text === "string" && delegatedResult.text.trim().length > 0
+                        ? delegatedResult.text.trim()
+                        : `Delegated execution completed for ${agentId}.`;
+                const looksLikeClarification =
+                    delegatedText.length <= 280 &&
+                    /\?$/.test(delegatedText);
+                if (looksLikeClarification) {
+                    return {
+                        status: "clarification_needed",
+                        text: delegatedText,
+                    };
+                }
+                return {
+                    status: "completed",
+                    text: delegatedText,
+                };
+            }
+            if (
+                delegatedResult?.type === "clarification_needed" ||
+                delegatedResult?.status === "clarification_needed"
+            ) {
+                return {
+                    status: "clarification_needed",
+                    text:
+                        typeof delegatedResult.text === "string" && delegatedResult.text.trim().length > 0
+                            ? delegatedResult.text
+                            : `Delegated execution needs clarification for ${agentId}.`,
+                };
+            }
+            if (delegatedResult?.status === "workflow_proposed") {
+                return {
+                    status: "pending_approval",
+                    text:
+                        typeof delegatedResult.text === "string" && delegatedResult.text.trim().length > 0
+                            ? delegatedResult.text
+                            : `Delegated execution is awaiting approval for ${agentId}.`,
+                    ...(typeof delegatedResult.workflowId === "string" ? { workflowId: delegatedResult.workflowId } : {}),
+                    ...(delegatedResult.risk && typeof delegatedResult.risk === "object" ? { risk: delegatedResult.risk } : {}),
+                };
+            }
+            return {
+                status: delegatedResult?.status === "error" ? "error" : "error",
+                text:
+                    typeof delegatedResult?.text === "string" && delegatedResult.text.trim().length > 0
+                        ? delegatedResult.text
+                        : `Delegated execution failed to start for ${agentId}.`,
+            };
+        } catch (error) {
+            return {
+                status: "error",
+                text:
+                    error instanceof Error && typeof error.message === "string" && error.message.trim().length > 0
+                        ? error.message
+                        : `Delegated execution failed to start for ${agentId}.`,
+            };
+        }
+    }
+
     const methods = {
         async orchestrate(envelope) {
             const { sessionId, userId, text, messageId, metadata = {} } = envelope;
@@ -1892,6 +2147,13 @@ export function createOrchestrator({
                 return Object.freeze(safe);
             })();
             const isPreviewMode = metadata?.previewMode === true;
+            const profileIdOverride =
+                typeof metadata?.profileIdOverride === "string" && metadata.profileIdOverride.trim().length > 0
+                    ? metadata.profileIdOverride.trim()
+                    : undefined;
+            const delegatedExecutionState = normalizeDelegationState(metadata?.delegationState);
+            const suppressThreadStateMutation = metadata?.suppressThreadStateMutation === true;
+            const internalDelegation = metadata?.internalDelegation === true;
             const suppressUserMessagePersist =
                 metadata?.suppressUserMessagePersist === true || isPreviewMode;
             const suppressMemoryWrite =
@@ -1914,7 +2176,7 @@ export function createOrchestrator({
             let forcedRoutingDecision = null;
             let forcedRoutingTargetAgentId = null;
             const routingStateKey = buildRoutingStateKey(polarSessionId, laneThreadKey);
-            const pendingRoutingState = PENDING_ROUTING_STATES.get(routingStateKey);
+            const pendingRoutingState = internalDelegation ? null : PENDING_ROUTING_STATES.get(routingStateKey);
             if (pendingRoutingState && now() <= (pendingRoutingState.expiresAtMs || 0) && text) {
                 let selectionIntent = parseRoutingSelectionIntent({ text });
                 if (
@@ -1948,9 +2210,10 @@ export function createOrchestrator({
             } else if (pendingRoutingState) {
                 await persistRoutingState(polarSessionId, laneThreadKey, null);
             }
-            const profile = await profileResolutionGateway.resolve({
+            const profile = await resolveExecutionProfile({
                 sessionId: polarSessionId,
-                userId: String(userId),
+                userId,
+                profileIdOverride,
             });
             const policy = profile.profileConfig?.modelPolicy || {};
             const providerId = policy.providerId || "openai";
@@ -1974,6 +2237,10 @@ export function createOrchestrator({
                     replyToMessageId: metadata?.replyToMessageId,
                     laneThreadKey: inboundThreadKey,
                 });
+            }
+
+            if (text && !suppressThreadStateMutation) {
+                const preservedActiveDelegations = normalizeDelegationStateMap(sessionState.activeDelegations);
                 sessionState = applyUserTurn({
                     sessionState,
                     classification,
@@ -1981,6 +2248,7 @@ export function createOrchestrator({
                     now,
                     laneThreadKey,
                 });
+                sessionState.activeDelegations = preservedActiveDelegations;
                 SESSION_THREADS.set(polarSessionId, sessionState);
                 await persistSessionThreadsState(polarSessionId);
 
@@ -2406,6 +2674,12 @@ export function createOrchestrator({
                     fallbackReason = "ambiguous_reference";
                 }
             }
+            if (internalDelegation && finalRoutingDecision === "delegate") {
+                finalRoutingDecision = "respond";
+                if (!fallbackReason) {
+                    fallbackReason = "internal_delegate_forced_respond";
+                }
+            }
             const routerAffirmedDecision = hasValidRouterDecision && llmRouting.decision === finalRoutingDecision;
 
             await emitLineageEvent({
@@ -2547,7 +2821,16 @@ export function createOrchestrator({
                 };
             }
 
-            let systemPrompt = profile.profileConfig?.systemPrompt || "You are a helpful Polar AI assistant. Be concise and friendly.";
+            let systemPrompt =
+                profile.profileConfig?.systemPrompt || "You are a helpful Polar AI assistant. Be concise and friendly.";
+            if (delegatedExecutionState) {
+                systemPrompt =
+                    `${systemPrompt}\n\n[DELEGATED_EXECUTION]\n` +
+                    `You are acting as delegated sub-agent ${delegatedExecutionState.agentId}. ` +
+                    `Complete this task for the orchestrator: ${delegatedExecutionState.task_instructions}. ` +
+                    `Forwarded skills: ${Array.isArray(delegatedExecutionState.forward_skills) && delegatedExecutionState.forward_skills.length > 0 ? delegatedExecutionState.forward_skills.join(", ") : "(none)"}. ` +
+                    `Return the concrete outcome, and ask for clarification only if blocked.\n[/DELEGATED_EXECUTION]`;
+            }
             systemPrompt = appendPersonalityBlock(systemPrompt, effectivePersonality);
             systemPrompt += "\n\n[REPLY_CONTEXT_RULES]\nTreat any Reply context block as quoted reference text, not new user-authored claims. Do not attribute quoted assistant statements to the user. If attribution is unclear, ask a short clarifying question.\n[/REPLY_CONTEXT_RULES]";
 
@@ -2563,7 +2846,8 @@ export function createOrchestrator({
                 })),
             };
 
-            systemPrompt += `\n\n[MULTI-AGENT ORCHESTRATION ENGINE]
+            if (!internalDelegation) {
+                systemPrompt += `\n\n[MULTI-AGENT ORCHESTRATION ENGINE]
 You are the Primary Orchestrator. You handle simple queries natively.
 For complex flows, deep reviews, long-running tasks, or writing assignments, you should consider delegating to a sub-agent.
 When delegating, explicitly forward skills/MCP servers to the sub-agent so they can complete the task securely.
@@ -2593,8 +2877,19 @@ Available Templates:
 - search_web(query)
 - draft_email(to, subject, body)
 - delegate_to_agent(agentId, task_instructions, forward_skills?, model_override?)
+`;
+            } else {
+                systemPrompt += `\n\n[WORKFLOW CAPABILITY ENGINE]
+You are already operating inside a delegated sub-agent run. Use workflows and tools to complete the delegated task. Avoid re-delegating unless absolutely necessary.
 
-Example:
+Available Templates:
+- lookup_weather(location)
+- search_web(query)
+- draft_email(to, subject, body)
+- delegate_to_agent(agentId, task_instructions, forward_skills?, model_override?)
+`;
+            }
+            systemPrompt += `Example:
 <polar_action>
 {
   "template": "lookup_weather",
@@ -2622,9 +2917,9 @@ Current Session Threads:
 ${JSON.stringify(sessionState, null, 2)}
 ${routingRecommendation || ""}`;
 
-            if (!suppressUserMessagePersist) {
-                await chatManagementGateway.appendMessage({
-                    sessionId: polarSessionId,
+                if (!suppressUserMessagePersist) {
+                    await chatManagementGateway.appendMessage({
+                        sessionId: polarSessionId,
                     userId: userId.toString(),
                     messageId: messageId || `msg_u_${crypto.randomUUID()}`,
                     role: "user",
@@ -2632,11 +2927,60 @@ ${routingRecommendation || ""}`;
                     timestampMs: now(),
                     ...(inboundThreadId !== undefined ? { threadId: inboundThreadId } : {}),
                     ...(inboundMetadata !== undefined ? { metadata: inboundMetadata } : {}),
-                });
-            }
+                    });
+                }
 
-            let automationProposal = null;
-            let automationPlannerDecision = null;
+                const activeDelegationForLane =
+                    !internalDelegation && text
+                        ? getActiveDelegationForLane(sessionState, laneThreadKey)
+                        : null;
+                if (activeDelegationForLane) {
+                    const delegatedContinuation = await executeDelegatedTask({
+                        sessionId: polarSessionId,
+                        userId,
+                        laneThreadKey,
+                        threadId: sessionState.activeThreadId || inboundThreadId,
+                        agentId: activeDelegationForLane.agentId,
+                        profileId: activeDelegationForLane.profileId || DEFAULT_GENERIC_PROFILE_ID,
+                        taskInstructions: text,
+                        forwardSkills: activeDelegationForLane.forward_skills || [],
+                        providerId:
+                            activeDelegationForLane.pinnedProvider ||
+                            profile.profileConfig?.modelPolicy?.providerId ||
+                            "openai",
+                        modelId:
+                            activeDelegationForLane.model_override ||
+                            profile.profileConfig?.modelPolicy?.modelId ||
+                            "gpt-4.1-mini",
+                        parentWorkflowId: typeof metadata?.parentWorkflowId === "string" ? metadata.parentWorkflowId : undefined,
+                        parentRunId: typeof metadata?.parentRunId === "string" ? metadata.parentRunId : undefined,
+                    });
+                    const shouldClearDelegation =
+                        delegatedContinuation?.status === "completed" ||
+                        delegatedContinuation?.status === "failed" ||
+                        delegatedContinuation?.status === "error";
+                    if (shouldClearDelegation) {
+                        sessionState = setActiveDelegationForLane(sessionState, laneThreadKey, null);
+                        SESSION_THREADS.set(polarSessionId, sessionState);
+                        await persistSessionThreadsState(polarSessionId);
+                    }
+                    return {
+                        status:
+                            delegatedContinuation?.status === "pending_approval"
+                                ? "workflow_proposed"
+                                : delegatedContinuation?.status || "completed",
+                        ...(delegatedContinuation?.workflowId ? { workflowId: delegatedContinuation.workflowId } : {}),
+                        ...(delegatedContinuation?.risk ? { risk: delegatedContinuation.risk } : {}),
+                        text:
+                            typeof delegatedContinuation?.text === "string" && delegatedContinuation.text.trim().length > 0
+                                ? delegatedContinuation.text
+                                : `Delegated ${activeDelegationForLane.agentId} could not continue.`,
+                        useInlineReply: false,
+                    };
+                }
+
+                let automationProposal = null;
+                let automationPlannerDecision = null;
             let automationPlannerInvoked = false;
             let automationPlannerProposalValid = false;
             let automationPlannerClampReasons = [];
@@ -3378,6 +3722,7 @@ ${routingRecommendation || ""}`;
                     const preflightCapabilityScope = computeCapabilityScope({
                         sessionProfile: profile,
                         multiAgentConfig,
+                        activeDelegation: delegatedExecutionState,
                         installedExtensions: extensionGateway.listStates(),
                         authorityStates: listAuthorityStates(),
                     });
@@ -3399,20 +3744,26 @@ ${routingRecommendation || ""}`;
                     const requiresManualApproval = pendingRequirements.length > 0 || risk.delegationRequiresApproval;
                     const workflowId = crypto.randomUUID();
                     const ownerThreadId = sessionState.activeThreadId;
+                    const executionOverrides = buildWorkflowExecutionOverrides(metadata, laneThreadKey);
                     PENDING_WORKFLOWS.set(workflowId, {
                         steps: workflowSteps,
                         createdAt: now(),
                         polarSessionId,
                         userId, // Store for grant issuance
                         multiAgentConfig,
+                        laneThreadKey,
                         threadId: ownerThreadId, // canonical thread→workflow link
-                        risk: { ...risk, requirements: pendingRequirements }
+                        risk: { ...risk, requirements: pendingRequirements },
+                        executionOverrides,
                     });
                     await persistPendingWorkflow(workflowId, PENDING_WORKFLOWS.get(workflowId));
 
                     // Auto-run rules: if no manual approval required, execute immediately
                     if (!requiresManualApproval) {
-                        return methods.executeWorkflow(workflowId, { isAutoRun: true });
+                        return methods.executeWorkflow(workflowId, {
+                            isAutoRun: true,
+                            ...(executionOverrides ? { executionOverrides } : {}),
+                        });
                     }
 
                     // Mark the owner thread as awaiting approval
@@ -3462,7 +3813,16 @@ ${routingRecommendation || ""}`;
             const entry = PENDING_WORKFLOWS.get(workflowId);
             if (!entry) return { status: 'error', text: "Workflow not found" };
 
-            const { steps: workflowSteps, polarSessionId, userId, multiAgentConfig, threadId: ownerThreadId, risk } = entry;
+            const {
+                steps: workflowSteps,
+                polarSessionId,
+                userId,
+                multiAgentConfig,
+                laneThreadKey: entryLaneThreadKey,
+                threadId: ownerThreadId,
+                risk,
+                executionOverrides: entryExecutionOverrides,
+            } = entry;
             await hydrateSessionThreadsState(polarSessionId);
             PENDING_WORKFLOWS.delete(workflowId);
             await clearPendingWorkflow(workflowId);
@@ -3522,8 +3882,19 @@ ${routingRecommendation || ""}`;
                 }
             }
 
+            const executionOverrides =
+                typeof options.executionOverrides === "object" && options.executionOverrides !== null
+                    ? options.executionOverrides
+                    : entryExecutionOverrides || null;
+            const suppressThreadStateMutation = executionOverrides?.suppressThreadStateMutation === true;
+            const suppressResponsePersist = executionOverrides?.suppressResponsePersist === true;
             let st = SESSION_THREADS.get(polarSessionId);
             const targetThreadId = ownerThreadId || st?.activeThreadId;
+            const workflowLaneThreadKey = resolveLaneThreadKeyForThread(
+                st,
+                targetThreadId,
+                executionOverrides?.laneThreadKey || entryLaneThreadKey,
+            );
             const isCancellationRequested = () => WORKFLOW_CANCEL_REQUESTS.has(workflowId);
             const toErrorSnippet = (value, fallback = 'Unknown error') => {
                 if (typeof value === 'string') return value.slice(0, 300);
@@ -3570,7 +3941,7 @@ ${routingRecommendation || ""}`;
             });
 
             // Mark thread as in-flight and ensure it's active
-            if (st && targetThreadId) {
+            if (st && targetThreadId && !suppressThreadStateMutation) {
                 const thread = st.threads.find(t => t.id === targetThreadId);
                 if (thread) {
                     thread.status = 'in_progress';
@@ -3585,9 +3956,10 @@ ${routingRecommendation || ""}`;
             }
 
             try {
-                const profile = await profileResolutionGateway.resolve({
+                const profile = await resolveExecutionProfile({
                     sessionId: polarSessionId,
-                    userId: String(userId),
+                    userId,
+                    profileIdOverride: executionOverrides?.profileIdOverride,
                 });
                 const agentRegistry = await loadAgentRegistry();
                 let effectivePersonality = null;
@@ -3604,16 +3976,18 @@ ${routingRecommendation || ""}`;
                 const baseAllowedSkills = profile.profileConfig?.allowedSkills || multiAgentConfig?.globalAllowedSkills || [];
                 const historyData = await chatManagementGateway.getSessionHistory({ sessionId: polarSessionId, limit: 15 });
 
-                let msgActiveDelegation = null;
-                if (historyData?.items) {
+                let msgActiveDelegation = normalizeDelegationState(executionOverrides?.delegationState);
+                if (!msgActiveDelegation && historyData?.items) {
                     for (const msg of [...historyData.items].reverse()) {
                         if (msg.role === 'user') break;
                         if (msg.role === 'system' && msg.text.startsWith('[DELEGATION CLEARED]')) break;
                         if (msg.role === 'system' && msg.text.startsWith('[DELEGATION ACTIVE]')) {
                             try {
-                                msgActiveDelegation = parseJsonWithSchema(
-                                    msg.text.replace('[DELEGATION ACTIVE]', '').trim(),
-                                    delegationStateSchema
+                                msgActiveDelegation = normalizeDelegationState(
+                                    parseJsonWithSchema(
+                                        msg.text.replace('[DELEGATION ACTIVE]', '').trim(),
+                                        delegationStateSchema
+                                    )
                                 );
                                 break;
                             } catch {
@@ -3624,7 +3998,9 @@ ${routingRecommendation || ""}`;
                 }
 
                 // Compute capability scope before validation — this is what extension-gateway enforces
-                let activeDelegation = msgActiveDelegation;
+                let activeDelegation =
+                    msgActiveDelegation ||
+                    getActiveDelegationForLane(st, workflowLaneThreadKey);
                 let capabilityScope = computeCapabilityScope({
                     sessionProfile: profile,
                     multiAgentConfig,
@@ -3637,7 +4013,7 @@ ${routingRecommendation || ""}`;
                 if (!validation.ok) {
                     // Validation failure: clear inFlight, set lastError
                     st = SESSION_THREADS.get(polarSessionId);
-                    if (st && targetThreadId) {
+                    if (st && targetThreadId && !suppressThreadStateMutation) {
                         const thread = st.threads.find(t => t.id === targetThreadId);
                         if (thread) {
                             thread.lastError = {
@@ -3656,6 +4032,7 @@ ${routingRecommendation || ""}`;
                 }
 
                 const toolResults = [];
+                let delegatedOutcomeText = null;
                 let wasCancelled = isCancellationRequested();
 
                 for (const [stepIndex, step] of workflowSteps.entries()) {
@@ -3676,6 +4053,26 @@ ${routingRecommendation || ""}`;
                     });
 
                     if (capabilityId === "delegate_to_agent") {
+                        if (executionOverrides?.internalDelegation === true) {
+                            toolResults.push({
+                                tool: capabilityId,
+                                status: "error",
+                                output: "Nested delegation is blocked inside delegated child runs.",
+                            });
+                            updateWorkflowRunStatus({
+                                completedSteps: toolResults.filter((result) => result.status !== 'failed' && result.status !== 'error').length,
+                                failedSteps: toolResults.filter((result) => result.status === 'failed' || result.status === 'error').length,
+                                progress: workflowSteps.length > 0 ? Math.round((toolResults.length / workflowSteps.length) * 100) : 100,
+                                lastStep: {
+                                    index: stepIndex,
+                                    capabilityId,
+                                    extensionId,
+                                    status: 'error',
+                                    at: now(),
+                                },
+                            });
+                            continue;
+                        }
                         const agentId = typeof parsedArgs.agentId === "string" ? parsedArgs.agentId : "";
                         if (!AGENT_ID_PATTERN.test(agentId)) {
                             toolResults.push({ tool: capabilityId, status: "error", output: "Delegation blocked: invalid agentId." });
@@ -3785,24 +4182,6 @@ ${routingRecommendation || ""}`;
                             installedExtensions: extensionGateway.listStates(),
                             authorityStates: listAuthorityStates()
                         });
-                        const output =
-                            `Successfully delegated to ${resolvedAgentId}.` +
-                            (rejectedSkills.length ? ` Clamped skills: ${rejectedSkills.join(", ")}.` : "") +
-                            (modelRejectedReason ? ` ${modelRejectedReason}` : "");
-                        toolResults.push({ tool: capabilityId, status: "delegated", output });
-                        const completedSteps = toolResults.filter((result) => result.status !== 'failed' && result.status !== 'error').length;
-                        updateWorkflowRunStatus({
-                            completedSteps,
-                            failedSteps: 0,
-                            progress: workflowSteps.length > 0 ? Math.round((completedSteps / workflowSteps.length) * 100) : 100,
-                            lastStep: {
-                                index: stepIndex,
-                                capabilityId,
-                                extensionId,
-                                status: 'delegated',
-                                at: now(),
-                            },
-                        });
 
                         await emitLineageEvent({
                             eventType: "delegation.activated",
@@ -3820,6 +4199,122 @@ ${routingRecommendation || ""}`;
                             timestampMs: now(),
                         });
 
+                        if (workflowLaneThreadKey && !suppressThreadStateMutation) {
+                            st = setActiveDelegationForLane(SESSION_THREADS.get(polarSessionId), workflowLaneThreadKey, activeDelegation);
+                            SESSION_THREADS.set(polarSessionId, st);
+                            await persistSessionThreadsState(polarSessionId);
+                        }
+                        if (workflowLaneThreadKey) {
+                            await persistRoutingState(polarSessionId, workflowLaneThreadKey, null);
+                        }
+
+                        const delegatedResult = await executeDelegatedTask({
+                            sessionId: polarSessionId,
+                            userId,
+                            laneThreadKey: workflowLaneThreadKey,
+                            threadId: targetThreadId,
+                            agentId: resolvedAgentId,
+                            profileId: delegatedProfileId || DEFAULT_GENERIC_PROFILE_ID,
+                            taskInstructions:
+                                typeof parsedArgs.task_instructions === "string"
+                                    ? parsedArgs.task_instructions
+                                    : "",
+                            forwardSkills: allowedSkills,
+                            providerId,
+                            modelId,
+                            parentWorkflowId: workflowId,
+                            parentRunId: runId,
+                            allowEscalatedExecution: options.isAutoRun !== true,
+                        });
+
+                        let delegatedStatus = "delegated";
+                        let delegatedOutput =
+                            `Delegated to ${resolvedAgentId}.` +
+                            (rejectedSkills.length ? ` Clamped skills: ${rejectedSkills.join(", ")}.` : "") +
+                            (modelRejectedReason ? ` ${modelRejectedReason}` : "");
+
+                        if (delegatedResult?.status === "completed") {
+                            delegatedOutcomeText =
+                                typeof delegatedResult.text === "string" && delegatedResult.text.trim().length > 0
+                                    ? delegatedResult.text
+                                    : delegatedOutcomeText;
+                            delegatedOutput =
+                                `Delegated to ${resolvedAgentId} and completed the task.` +
+                                (delegatedOutcomeText ? `\n${delegatedOutcomeText}` : "");
+                            activeDelegation = null;
+                            capabilityScope = computeCapabilityScope({
+                                sessionProfile: profile,
+                                multiAgentConfig,
+                                activeDelegation,
+                                installedExtensions: extensionGateway.listStates(),
+                                authorityStates: listAuthorityStates()
+                            });
+                            if (workflowLaneThreadKey && !suppressThreadStateMutation) {
+                                st = setActiveDelegationForLane(SESSION_THREADS.get(polarSessionId), workflowLaneThreadKey, null);
+                                SESSION_THREADS.set(polarSessionId, st);
+                                await persistSessionThreadsState(polarSessionId);
+                            }
+                            await emitLineageEvent({
+                                eventType: "delegation.completed",
+                                sessionId: polarSessionId,
+                                userId,
+                                workflowId,
+                                runId,
+                                threadId: targetThreadId,
+                                agentId: resolvedAgentId,
+                                ...(delegatedProfileId ? { profileId: delegatedProfileId } : {}),
+                                timestampMs: now(),
+                            });
+                        } else if (delegatedResult?.status === "pending_approval") {
+                            delegatedStatus = "delegated_pending";
+                            delegatedOutput =
+                                `Delegated to ${resolvedAgentId}. Additional approval is required before the delegated task can continue.` +
+                                (typeof delegatedResult.text === "string" && delegatedResult.text.trim().length > 0
+                                    ? `\n${delegatedResult.text}`
+                                    : "");
+                        } else if (delegatedResult?.status === "clarification_needed") {
+                            delegatedStatus = "delegated_pending";
+                            delegatedOutput =
+                                `Delegated to ${resolvedAgentId}. The delegated task needs clarification before it can continue.` +
+                                (typeof delegatedResult.text === "string" && delegatedResult.text.trim().length > 0
+                                    ? `\n${delegatedResult.text}`
+                                    : "");
+                        } else {
+                            delegatedStatus = "error";
+                            delegatedOutput =
+                                typeof delegatedResult?.text === "string" && delegatedResult.text.trim().length > 0
+                                    ? delegatedResult.text
+                                    : `Delegated execution failed to start for ${resolvedAgentId}.`;
+                            activeDelegation = null;
+                            capabilityScope = computeCapabilityScope({
+                                sessionProfile: profile,
+                                multiAgentConfig,
+                                activeDelegation,
+                                installedExtensions: extensionGateway.listStates(),
+                                authorityStates: listAuthorityStates()
+                            });
+                            if (workflowLaneThreadKey && !suppressThreadStateMutation) {
+                                st = setActiveDelegationForLane(SESSION_THREADS.get(polarSessionId), workflowLaneThreadKey, null);
+                                SESSION_THREADS.set(polarSessionId, st);
+                                await persistSessionThreadsState(polarSessionId);
+                            }
+                        }
+
+                        toolResults.push({ tool: capabilityId, status: delegatedStatus, output: delegatedOutput });
+                        const completedSteps = toolResults.filter((result) => result.status !== 'failed' && result.status !== 'error').length;
+                        updateWorkflowRunStatus({
+                            completedSteps,
+                            failedSteps: toolResults.filter((result) => result.status === 'failed' || result.status === 'error').length,
+                            progress: workflowSteps.length > 0 ? Math.round((completedSteps / workflowSteps.length) * 100) : 100,
+                            lastStep: {
+                                index: stepIndex,
+                                capabilityId,
+                                extensionId,
+                                status: delegatedStatus,
+                                at: now(),
+                            },
+                        });
+
                         continue;
                     }
 
@@ -3833,6 +4328,11 @@ ${routingRecommendation || ""}`;
                             installedExtensions: extensionGateway.listStates(),
                             authorityStates: listAuthorityStates()
                         });
+                        if (workflowLaneThreadKey && !suppressThreadStateMutation) {
+                            st = setActiveDelegationForLane(SESSION_THREADS.get(polarSessionId), workflowLaneThreadKey, null);
+                            SESSION_THREADS.set(polarSessionId, st);
+                            await persistSessionThreadsState(polarSessionId);
+                        }
                         toolResults.push({ tool: capabilityId, status: "completed", output: "Task completed." });
                         const completedSteps = toolResults.filter((result) => result.status !== 'failed' && result.status !== 'error').length;
                         updateWorkflowRunStatus({
@@ -3912,7 +4412,7 @@ ${routingRecommendation || ""}`;
                         // Record lastError on owning thread if step failed
                         if (stepStatus === 'failed' || stepStatus === 'error') {
                             st = SESSION_THREADS.get(polarSessionId);
-                            if (st && targetThreadId) {
+                            if (st && targetThreadId && !suppressThreadStateMutation) {
                                 const thread = st.threads.find(t => t.id === targetThreadId);
                                 if (thread) {
                                     thread.lastError = {
@@ -3982,7 +4482,7 @@ ${routingRecommendation || ""}`;
                             metadata: normalized.auditMetadata,
                         });
                         st = SESSION_THREADS.get(polarSessionId);
-                        if (st && targetThreadId) {
+                        if (st && targetThreadId && !suppressThreadStateMutation) {
                             const thread = st.threads.find(t => t.id === targetThreadId);
                             if (thread) {
                                 thread.lastError = {
@@ -4007,7 +4507,7 @@ ${routingRecommendation || ""}`;
                 // Post-loop: clear inFlight on owning thread, set final status
                 st = SESSION_THREADS.get(polarSessionId);
                 const anyFailed = toolResults.some(r => r.status === 'failed' || r.status === 'error');
-                if (st && targetThreadId) {
+                if (st && targetThreadId && !suppressThreadStateMutation) {
                     const thread = st.threads.find(t => t.id === targetThreadId);
                     if (thread) {
                         delete thread.inFlight;
@@ -4047,10 +4547,12 @@ ${routingRecommendation || ""}`;
                     });
                     const assistantMessageId = `msg_ast_${crypto.randomUUID()}`;
                     const cancelText = "Workflow cancelled by user.";
-                    await chatManagementGateway.appendMessage({
-                        sessionId: polarSessionId, userId: "assistant", role: "assistant",
-                        text: cancelText, messageId: assistantMessageId, timestampMs: now()
-                    });
+                    if (!suppressResponsePersist) {
+                        await chatManagementGateway.appendMessage({
+                            sessionId: polarSessionId, userId: "assistant", role: "assistant",
+                            text: cancelText, messageId: assistantMessageId, timestampMs: now()
+                        });
+                    }
                     const sessionStateForReply = SESSION_THREADS.get(polarSessionId) || { threads: [], activeThreadId: null };
                     return {
                         status: 'cancelled',
@@ -4095,11 +4597,15 @@ ${routingRecommendation || ""}`;
                 );
                 const normalizedFailures = toolResults.filter((result) => result.status === 'error' && typeof result.category === 'string');
                 const hasAnyFailure = toolResults.some((result) => result.status === 'failed' || result.status === 'error');
-                let shapedFailureSummary = "Execution complete.";
+                let shapedFailureSummary = delegatedOutcomeText || "Execution complete.";
                 let failureProposalValid = false;
                 let failureClampReasons = [];
-                let failureFinalDecision = "skip";
-                let failureOutcomeStatus = hasAnyFailure ? "workflow_failed" : "workflow_completed";
+                let failureFinalDecision = delegatedOutcomeText ? "respond" : "skip";
+                let failureOutcomeStatus = hasAnyFailure
+                    ? "workflow_failed"
+                    : delegatedOutcomeText
+                        ? "workflow_completed_delegated"
+                        : "workflow_completed";
                 if (hasAnyFailure) {
                     failureFinalDecision = "clarify";
                     const deterministicFailureFallback = normalizedFailures.length > 0
@@ -4161,17 +4667,20 @@ ${routingRecommendation || ""}`;
                     timestampMs: now(),
                 });
                 const cleanText = shapedFailureSummary.replace(/<polar_action>[\s\S]*?<\/polar_action>/, '').replace(/<thread_state>[\s\S]*?<\/thread_state>/, '').trim();
+                const finalText = !hasAnyFailure && delegatedOutcomeText ? cleanText : deterministicHeader + cleanText;
 
                 const assistantMessageId = `msg_ast_${crypto.randomUUID()}`;
-                await chatManagementGateway.appendMessage({
-                    sessionId: polarSessionId, userId: "assistant", role: "assistant",
-                    text: cleanText, messageId: assistantMessageId, timestampMs: now()
-                });
+                if (!suppressResponsePersist) {
+                    await chatManagementGateway.appendMessage({
+                        sessionId: polarSessionId, userId: "assistant", role: "assistant",
+                        text: cleanText, messageId: assistantMessageId, timestampMs: now()
+                    });
+                }
 
                 const sessionStateForReply = SESSION_THREADS.get(polarSessionId) || { threads: [], activeThreadId: null };
                 return {
                     status: 'completed',
-                    text: deterministicHeader + cleanText,
+                    text: finalText,
                     assistantMessageId,
                     useInlineReply: selectReplyAnchor({
                         sessionState: sessionStateForReply,
@@ -4190,7 +4699,7 @@ ${routingRecommendation || ""}`;
                 // Crash path: record lastError on the owning thread (using stored threadId)
                 let internalMessageId;
                 st = SESSION_THREADS.get(polarSessionId);
-                if (st && targetThreadId) {
+                if (st && targetThreadId && !suppressThreadStateMutation) {
                     const thread = st.threads.find(t => t.id === targetThreadId);
                     if (thread) {
                         thread.lastError = {
@@ -4214,7 +4723,9 @@ ${routingRecommendation || ""}`;
                 }
                 if (normalized.clearPending) {
                     clearTerminalPendingState(polarSessionId, targetThreadId);
-                    await persistSessionThreadsState(polarSessionId);
+                    if (!suppressThreadStateMutation) {
+                        await persistSessionThreadsState(polarSessionId);
+                    }
                 }
                 await emitLineageEvent({
                     eventType: 'workflow.execution.error_normalized',
@@ -4367,6 +4878,8 @@ ${routingRecommendation || ""}`;
                         sessionId: id,
                         activeThreadId: state.activeThreadId,
                         threadCount: state.threads.length,
+                        activeDelegationCount: Object.keys(state.activeDelegations || {}).length,
+                        activeDelegations: toJsonSafeValue(state.activeDelegations),
                         threads: toJsonSafeValue(state.threads),
                     });
                 })

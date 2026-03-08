@@ -3031,6 +3031,92 @@ Full-suite run at end:
 - Consider adding an explicit memory-provider contract field for vector search controls (rather than generic `filters`) to make query intent/audit semantics stricter.
 - Optionally add telemetry dashboard aggregation for `context.retrieval` lineage events (`retrievedMemoryIds`, `sourceBreakdown`, vector usage rate).
 
+## 2026-03-08 (UTC) - Prompt Finalization: Ship delegated sub-agents + YAML-backed agent configuration
+
+**Branch:** `main`  
+**Commit:** `not committed`  
+**Prompt reference:** `Finalize sub-agent delegation, default profiles, and YAML/chat/CLI configuration`
+
+### Summary
+- Replaced the no-op `delegate_to_agent` path with a real delegated child execution flow:
+  - parent workflows now activate durable lane-scoped delegation state,
+  - execute a nested delegated orchestration turn under the delegated profile,
+  - and return either the delegated outcome, delegated clarification, or delegated approval-needed status.
+- Fixed delegated follow-up continuity by persisting `activeDelegations` structurally in session thread state instead of relying on removed chat-marker reconstruction.
+- Added a shipped fallback/default agent set centered on `@general` (`profile.general`) plus `@researcher`, `@writer`, and `@coder`, and normalized the legacy `@generic_sub_agent` alias onto `@general`.
+- Added combined agent configuration APIs with validated YAML import/export so agent metadata, forwarding rules, system prompt, model policy, and allowed tools can be edited coherently.
+- Added platform-managed on-disk YAML sync for agent configs under `config/agents/`, including bootstrap seeding of default agent files.
+- Added deterministic Telegram and CLI commands for agent configuration (`export-yaml`, `apply-yaml`, `set-model`, `set-tools`, `set-prompt`) and wired the Web UI allowlist to the new control-plane methods.
+- Fixed the weather workflow template to target the `weather` extension and kept direct low-risk weather lookup available for non-delegated orchestration runs.
+
+### Files changed
+- `packages/polar-runtime-core/src/orchestrator.mjs`
+  - implemented nested delegated execution,
+  - added durable lane-scoped active delegation storage/recovery,
+  - cleared stale routing pending state when delegation activates,
+  - preserved delegated clarification continuity across follow-up prompts,
+  - updated workflow preflight/execution handling for delegated scope enforcement.
+- `packages/polar-runtime-core/src/capability-scope.mjs`
+  - kept delegated runs strict while allowing direct low-risk weather lookup outside delegated scope.
+- `packages/polar-runtime-core/src/workflow-templates.mjs`
+  - corrected `lookup_weather` to `extensionId: "weather"` / `extensionType: "mcp"`.
+- `packages/polar-runtime-core/src/routing-policy-engine.mjs`
+  - normalized unknown delegated targets to `@general`.
+- `packages/polar-control-plane/src/index.mjs`
+  - added combined agent configuration and YAML round-trip methods.
+- `packages/polar-platform/src/agent-config-store.mjs` (new)
+  - added default-agent YAML seeding/sync helpers.
+- `packages/polar-platform/src/index.mjs`
+  - added platform bootstrap for agent config sync and default config directory resolution.
+- `packages/polar-bot-runner/src/commands.mjs`
+  - added deterministic `/agents` YAML/model/tool/prompt commands.
+- `packages/polar-bot-runner/src/index.mjs`
+  - awaited platform bootstrap and passed agent config store into the command router.
+- `packages/polar-bot-runner/src/automation-runner.mjs`
+  - awaited platform bootstrap.
+- `packages/polar-cli/bin/polar.mjs`
+  - added local platform-backed `agents` configuration commands.
+- `packages/polar-web-ui/vite.config.js`
+  - allowlisted the new agent configuration control-plane methods.
+- `tests/runtime-core-orchestrator-agent-registry.test.mjs`
+  - now asserts delegated child execution returns the delegated outcome and completion telemetry.
+- `tests/runtime-core-orchestrator-durable-state.test.mjs`
+  - added delegated-lane follow-up continuity coverage.
+- `tests/control-plane-service.test.mjs`
+  - added combined agent configuration + YAML round-trip coverage.
+- `tests/telegram-command-router.test.mjs`
+  - added agent YAML/model command coverage.
+- `tests/platform-agent-config-store.test.mjs` (new)
+  - added bootstrap seeding/sync coverage.
+- `docs/specs/AGENT_PROFILES.md`
+- `docs/specs/AGENT_REGISTRY_AND_PINNING_APIS.md`
+- `docs/specs/CHAT_COMMANDS.md`
+  - updated specs to match shipped delegated-execution and YAML configuration behavior.
+
+### Data model / migrations (if applicable)
+- **Tables created/changed:** none
+- **Migration notes:** none
+- **Non-DB persistence changes:** platform now seeds/syncs agent YAML files under `config/agents/`
+
+### Security and safety checks
+- Delegated children still execute through the existing middleware/gateway path; no surface now calls a provider or tool directly.
+- Delegated model/tool access remains code-enforced by delegated profile model policy plus forwarded-skill intersection/clamping.
+- Nested delegation inside delegated child runs is still blocked.
+- Agent YAML apply/export uses explicit validated control-plane methods rather than generic config mutation.
+
+### Tests and validation
+- `node --test tests/runtime-core-orchestrator-hybrid-routing.test.mjs tests/runtime-core-orchestrator-workflow-validation.test.mjs tests/runtime-core-orchestrator-agent-registry.test.mjs tests/runtime-core-orchestrator-durable-state.test.mjs` - ✅
+- `node --test tests/runtime-core-capability-scope-enforcement.test.mjs tests/control-plane-service.test.mjs tests/telegram-command-router.test.mjs tests/platform-agent-config-store.test.mjs tests/integration-vertical-slice.test.mjs tests/runtime-core-orchestrator-agent-registry.test.mjs tests/runtime-core-orchestrator-durable-state.test.mjs` - ✅
+- `npm run check:boundaries` - ✅
+- `npm test` - ✅ (488 passed, 0 failed)
+
+### Blockers
+- None.
+
+### Next
+- Consider exposing the combined agent YAML document in the Web UI as an operator editor rather than allowlist-only API access.
+- When a Discord/Slack chat command surface is added, mirror the same deterministic `/agents ...` grammar and control-plane methods instead of introducing a surface-specific config path.
+
 ## 2026-03-06 (UTC) - Prompt Ad-hoc: Fix delegation completion/progress observability + improve workflow/tool error diagnostics
 
 **Branch:** `main`  

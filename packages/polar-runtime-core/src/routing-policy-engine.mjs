@@ -102,7 +102,7 @@ export function enforceRoutingProposalPolicy(input) {
       fallbackReason = "unknown_target";
       proposal = {
         ...proposal,
-        target: { agentId: "@generic_sub_agent" },
+        target: { agentId: "@general" },
       };
     }
   }

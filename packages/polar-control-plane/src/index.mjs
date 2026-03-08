@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
+import YAML from "yaml";
 
 import {
   booleanField,
@@ -354,6 +355,27 @@ const agentProfileUnregisterRequestSchema = createStrictObjectSchema({
   },
 });
 
+const agentConfigurationGetRequestSchema = createStrictObjectSchema({
+  schemaId: "controlPlane.agentConfiguration.get.request",
+  fields: {
+    agentId: stringField({ minLength: 3 }),
+  },
+});
+
+const agentConfigurationApplyRequestSchema = createStrictObjectSchema({
+  schemaId: "controlPlane.agentConfiguration.apply.request",
+  fields: {
+    configuration: jsonField(),
+  },
+});
+
+const agentConfigurationYamlApplyRequestSchema = createStrictObjectSchema({
+  schemaId: "controlPlane.agentConfigurationYaml.apply.request",
+  fields: {
+    yamlText: stringField({ minLength: 1 }),
+  },
+});
+
 const pinProfileForScopeRequestSchema = createStrictObjectSchema({
   schemaId: "controlPlane.profilePin.pin.request",
   fields: {
@@ -387,6 +409,9 @@ const AGENT_REGISTRY_RESOURCE_TYPE = "policy";
 const AGENT_REGISTRY_RESOURCE_ID = "agent-registry:default";
 const GLOBAL_PROFILE_PIN_POLICY_ID = "profile-pin:global";
 const AGENT_ID_PATTERN = /^@[a-z0-9_-]{2,32}$/;
+const DEFAULT_GENERIC_AGENT_ID = "@general";
+const DEFAULT_GENERIC_PROFILE_ID = "profile.general";
+const LEGACY_GENERIC_AGENT_ID = "@generic_sub_agent";
 
 /**
  * @param {Record<string, unknown>} request
@@ -576,7 +601,7 @@ function normalizeAgentRegistry(value) {
     if (!isPlainObject(agent)) {
       continue;
     }
-    const agentId = typeof agent.agentId === "string" ? agent.agentId.trim() : "";
+    const agentId = normalizeAgentId(agent.agentId);
     const profileId = typeof agent.profileId === "string" ? agent.profileId.trim() : "";
     const description =
       typeof agent.description === "string" ? agent.description.trim() : "";
@@ -624,6 +649,119 @@ function normalizeAgentRegistry(value) {
 
 /**
  * @param {unknown} value
+ * @returns {string}
+ */
+function normalizeAgentId(value) {
+  const trimmed = typeof value === "string" ? value.trim() : "";
+  if (trimmed === LEGACY_GENERIC_AGENT_ID) {
+    return DEFAULT_GENERIC_AGENT_ID;
+  }
+  return trimmed;
+}
+
+/**
+ * @param {unknown} value
+ * @returns {{ version: 1, agentId: string, profileId: string, description: string, tags: string[], forwarding: Record<string, unknown>, profile: Record<string, unknown> }}
+ */
+function normalizeAgentConfigurationDocument(value) {
+  if (!isPlainObject(value)) {
+    throw new ContractValidationError("Invalid agent configuration", {
+      schemaId: "controlPlane.agentConfiguration.document",
+      errors: ["configuration must be an object"],
+    });
+  }
+  const agentId = normalizeAgentId(value.agentId);
+  const profileId =
+    typeof value.profileId === "string" ? value.profileId.trim() : "";
+  const description =
+    typeof value.description === "string" ? value.description.trim() : "";
+  if (!agentId || !AGENT_ID_PATTERN.test(agentId)) {
+    throw new ContractValidationError("Invalid agent configuration", {
+      schemaId: "controlPlane.agentConfiguration.document",
+      errors: ["agentId must match ^@[a-z0-9_-]{2,32}$"],
+    });
+  }
+  if (!profileId) {
+    throw new ContractValidationError("Invalid agent configuration", {
+      schemaId: "controlPlane.agentConfiguration.document",
+      errors: ["profileId is required"],
+    });
+  }
+  if (!description || description.length > 300) {
+    throw new ContractValidationError("Invalid agent configuration", {
+      schemaId: "controlPlane.agentConfiguration.document",
+      errors: ["description is required and must be <= 300 chars"],
+    });
+  }
+
+  const forwarding = isPlainObject(value.forwarding) ? value.forwarding : {};
+  const profile = isPlainObject(value.profile) ? value.profile : {};
+  return {
+    version: 1,
+    agentId,
+    profileId,
+    description,
+    tags: normalizeStringArray(value.tags),
+    forwarding: {
+      defaultForwardSkills: normalizeStringArray(forwarding.defaultForwardSkills),
+      allowedForwardSkills: normalizeStringArray(forwarding.allowedForwardSkills),
+      defaultMcpServers: normalizeStringArray(forwarding.defaultMcpServers),
+      allowedMcpServers: normalizeStringArray(forwarding.allowedMcpServers),
+    },
+    profile: profile,
+  };
+}
+
+/**
+ * @param {{ agent: Record<string, unknown>, profileConfig: Record<string, unknown> }} input
+ * @returns {{ version: 1, agentId: string, profileId: string, description: string, tags: string[], forwarding: Record<string, unknown>, profile: Record<string, unknown> }}
+ */
+function buildAgentConfigurationDocument(input) {
+  const agent = isPlainObject(input?.agent) ? input.agent : {};
+  const profileConfig = isPlainObject(input?.profileConfig) ? input.profileConfig : {};
+  return normalizeAgentConfigurationDocument({
+    version: 1,
+    agentId: normalizeAgentId(agent.agentId),
+    profileId: typeof agent.profileId === "string" ? agent.profileId : DEFAULT_GENERIC_PROFILE_ID,
+    description:
+      typeof agent.description === "string"
+        ? agent.description
+        : "General-purpose delegated worker.",
+    tags: normalizeStringArray(agent.tags),
+    forwarding: {
+      defaultForwardSkills: normalizeStringArray(agent.defaultForwardSkills),
+      allowedForwardSkills: normalizeStringArray(agent.allowedForwardSkills),
+      defaultMcpServers: normalizeStringArray(agent.defaultMcpServers),
+      allowedMcpServers: normalizeStringArray(agent.allowedMcpServers),
+    },
+    profile: profileConfig,
+  });
+}
+
+/**
+ * @param {string} yamlText
+ */
+function parseAgentConfigurationYaml(yamlText) {
+  try {
+    const parsed = YAML.parse(yamlText);
+    return normalizeAgentConfigurationDocument(parsed);
+  } catch (error) {
+    throw new ContractValidationError("Invalid agent configuration YAML", {
+      schemaId: "controlPlane.agentConfiguration.yaml",
+      errors: [error instanceof Error ? error.message : String(error)],
+    });
+  }
+}
+
+/**
+ * @param {Record<string, unknown>} configuration
+ */
+function formatAgentConfigurationYaml(configuration) {
+  return YAML.stringify(normalizeAgentConfigurationDocument(configuration));
+}
+
+/**
+ * @param {unknown} value
  */
 function validateAgentRegistryConfig(value) {
   if (!isPlainObject(value)) {
@@ -651,7 +789,7 @@ function validateAgentRegistryConfig(value) {
         errors: ["registry.agents entries must be objects"],
       });
     }
-    const agentId = typeof agent.agentId === "string" ? agent.agentId.trim() : "";
+    const agentId = normalizeAgentId(agent.agentId);
     const profileId = typeof agent.profileId === "string" ? agent.profileId.trim() : "";
     const description =
       typeof agent.description === "string" ? agent.description.trim() : "";
@@ -1163,6 +1301,109 @@ export function createControlPlaneService(config = {}) {
     lineageStore,
   });
 
+  async function readAgentConfiguration(agentIdInput) {
+    const agentId = normalizeAgentId(agentIdInput);
+    if (!AGENT_ID_PATTERN.test(agentId)) {
+      throw new ContractValidationError("Invalid agent configuration get request", {
+        schemaId: agentConfigurationGetRequestSchema.schemaId,
+        errors: ["agentId must match ^@[a-z0-9_-]{2,32}$"],
+      });
+    }
+    const registryRecord = await gateway.getConfig({
+      resourceType: AGENT_REGISTRY_RESOURCE_TYPE,
+      resourceId: AGENT_REGISTRY_RESOURCE_ID,
+    });
+    if (registryRecord.status === "found") {
+      validateAgentRegistryConfig(registryRecord.config);
+    }
+    const registry =
+      registryRecord.status === "found"
+        ? normalizeAgentRegistry(registryRecord.config)
+        : normalizeAgentRegistry({ version: 1, agents: [] });
+    const found = registry.agents.find((agent) => agent.agentId === agentId) || null;
+    if (!found) {
+      return null;
+    }
+    const profileRecord = await gateway.getConfig({
+      resourceType: "profile",
+      resourceId: found.profileId,
+    });
+    const profileConfig =
+      profileRecord.status === "found" && isPlainObject(profileRecord.config)
+        ? profileRecord.config
+        : {};
+    return {
+      agent: found,
+      profileConfig,
+      configuration: buildAgentConfigurationDocument({
+        agent: found,
+        profileConfig,
+      }),
+    };
+  }
+
+  async function writeAgentConfiguration(configurationInput) {
+    const configuration = normalizeAgentConfigurationDocument(configurationInput);
+    await gateway.upsertConfig({
+      resourceType: "profile",
+      resourceId: configuration.profileId,
+      config: configuration.profile,
+    });
+
+    const registryRecord = await gateway.getConfig({
+      resourceType: AGENT_REGISTRY_RESOURCE_TYPE,
+      resourceId: AGENT_REGISTRY_RESOURCE_ID,
+    });
+    if (registryRecord.status === "found") {
+      validateAgentRegistryConfig(registryRecord.config);
+    }
+    const current =
+      registryRecord.status === "found"
+        ? normalizeAgentRegistry(registryRecord.config)
+        : normalizeAgentRegistry({ version: 1, agents: [] });
+    const filtered = current.agents.filter(
+      (agent) => agent.agentId !== configuration.agentId,
+    );
+    const nextRegistry = normalizeAgentRegistry({
+      version: 1,
+      agents: [
+        ...filtered,
+        {
+          agentId: configuration.agentId,
+          profileId: configuration.profileId,
+          description: configuration.description,
+          ...(configuration.tags.length > 0 ? { tags: configuration.tags } : {}),
+          ...(configuration.forwarding.defaultForwardSkills.length > 0
+            ? { defaultForwardSkills: configuration.forwarding.defaultForwardSkills }
+            : {}),
+          ...(configuration.forwarding.allowedForwardSkills.length > 0
+            ? { allowedForwardSkills: configuration.forwarding.allowedForwardSkills }
+            : {}),
+          ...(configuration.forwarding.defaultMcpServers.length > 0
+            ? { defaultMcpServers: configuration.forwarding.defaultMcpServers }
+            : {}),
+          ...(configuration.forwarding.allowedMcpServers.length > 0
+            ? { allowedMcpServers: configuration.forwarding.allowedMcpServers }
+            : {}),
+        },
+      ],
+    });
+
+    await gateway.upsertConfig({
+      resourceType: AGENT_REGISTRY_RESOURCE_TYPE,
+      resourceId: AGENT_REGISTRY_RESOURCE_ID,
+      config: nextRegistry,
+    });
+
+    return {
+      configuration,
+      agent:
+        nextRegistry.agents.find((agent) => agent.agentId === configuration.agentId) ||
+        null,
+      profileConfig: configuration.profile,
+    };
+  }
+
   return Object.freeze({
     // BUG-037 fix: async for API surface consistency with all other methods
     async health() {
@@ -1361,12 +1602,28 @@ export function createControlPlaneService(config = {}) {
         record.status === "found"
           ? normalizeAgentRegistry(record.config)
           : normalizeAgentRegistry({ version: 1, agents: [] });
-      const items = registry.agents.map((agent) => ({
-        agentId: agent.agentId,
-        profileId: agent.profileId,
-        description: agent.description,
-        ...(Array.isArray(agent.tags) ? { tags: agent.tags } : {}),
-      }));
+      const items = await Promise.all(
+        registry.agents.map(async (agent) => {
+          const profileRecord = await gateway.getConfig({
+            resourceType: "profile",
+            resourceId: agent.profileId,
+          });
+          const profileConfig =
+            profileRecord.status === "found" && isPlainObject(profileRecord.config)
+              ? profileRecord.config
+              : null;
+          return {
+            agentId: agent.agentId,
+            profileId: agent.profileId,
+            description: agent.description,
+            ...(Array.isArray(agent.tags) ? { tags: agent.tags } : {}),
+            ...(profileConfig?.modelPolicy ? { modelPolicy: profileConfig.modelPolicy } : {}),
+            ...(Array.isArray(profileConfig?.allowedSkills)
+              ? { allowedSkills: normalizeStringArray(profileConfig.allowedSkills) }
+              : {}),
+          };
+        }),
+      );
       return {
         status: "ok",
         items,
@@ -1384,33 +1641,115 @@ export function createControlPlaneService(config = {}) {
         request,
         "Invalid agent profile get request",
       );
-      if (!AGENT_ID_PATTERN.test(parsed.agentId)) {
+      const normalizedAgentId = normalizeAgentId(parsed.agentId);
+      if (!AGENT_ID_PATTERN.test(normalizedAgentId)) {
         throw new ContractValidationError("Invalid agent profile get request", {
           schemaId: agentProfileGetRequestSchema.schemaId,
           errors: ["agentId must match ^@[a-z0-9_-]{2,32}$"],
         });
       }
-      const record = await gateway.getConfig({
-        resourceType: AGENT_REGISTRY_RESOURCE_TYPE,
-        resourceId: AGENT_REGISTRY_RESOURCE_ID,
-      });
-      if (record.status === "found") {
-        validateAgentRegistryConfig(record.config);
-      }
-      const registry =
-        record.status === "found"
-          ? normalizeAgentRegistry(record.config)
-          : normalizeAgentRegistry({ version: 1, agents: [] });
-      const found = registry.agents.find((agent) => agent.agentId === parsed.agentId) || null;
-      if (!found) {
+      const configuration = await readAgentConfiguration(normalizedAgentId);
+      if (!configuration) {
         return {
           status: "not_found",
-          agentId: parsed.agentId,
+          agentId: normalizedAgentId,
         };
       }
       return {
         status: "found",
-        agent: found,
+        agent: configuration.agent,
+        profileConfig: configuration.profileConfig,
+        configuration: configuration.configuration,
+      };
+    },
+
+    /**
+     * @param {unknown} request
+     * @returns {Promise<Record<string, unknown>>}
+     */
+    async getAgentConfiguration(request) {
+      const parsed = validateRequest(
+        agentConfigurationGetRequestSchema,
+        request,
+        "Invalid agent configuration get request",
+      );
+      const configuration = await readAgentConfiguration(parsed.agentId);
+      if (!configuration) {
+        return {
+          status: "not_found",
+          agentId: normalizeAgentId(parsed.agentId),
+        };
+      }
+      return {
+        status: "found",
+        agent: configuration.agent,
+        profileConfig: configuration.profileConfig,
+        configuration: configuration.configuration,
+      };
+    },
+
+    /**
+     * @param {unknown} request
+     * @returns {Promise<Record<string, unknown>>}
+     */
+    async applyAgentConfiguration(request) {
+      const parsed = validateRequest(
+        agentConfigurationApplyRequestSchema,
+        request,
+        "Invalid agent configuration apply request",
+      );
+      const applied = await writeAgentConfiguration(parsed.configuration);
+      return {
+        status: "applied",
+        agent: applied.agent,
+        profileConfig: applied.profileConfig,
+        configuration: applied.configuration,
+      };
+    },
+
+    /**
+     * @param {unknown} request
+     * @returns {Promise<Record<string, unknown>>}
+     */
+    async exportAgentConfigurationYaml(request) {
+      const parsed = validateRequest(
+        agentConfigurationGetRequestSchema,
+        request,
+        "Invalid agent configuration export request",
+      );
+      const configuration = await readAgentConfiguration(parsed.agentId);
+      if (!configuration) {
+        return {
+          status: "not_found",
+          agentId: normalizeAgentId(parsed.agentId),
+        };
+      }
+      return {
+        status: "found",
+        agent: configuration.agent,
+        configuration: configuration.configuration,
+        yamlText: formatAgentConfigurationYaml(configuration.configuration),
+      };
+    },
+
+    /**
+     * @param {unknown} request
+     * @returns {Promise<Record<string, unknown>>}
+     */
+    async applyAgentConfigurationYaml(request) {
+      const parsed = validateRequest(
+        agentConfigurationYamlApplyRequestSchema,
+        request,
+        "Invalid agent configuration YAML apply request",
+      );
+      const configuration = parseAgentConfigurationYaml(parsed.yamlText);
+      const applied = await writeAgentConfiguration(configuration);
+      return {
+        status: "applied",
+        agent: applied.agent,
+        profileConfig: applied.profileConfig,
+        configuration: applied.configuration,
+        yamlText: formatAgentConfigurationYaml(applied.configuration),
       };
     },
 
@@ -1424,7 +1763,8 @@ export function createControlPlaneService(config = {}) {
         request,
         "Invalid agent profile register request",
       );
-      if (!AGENT_ID_PATTERN.test(parsed.agentId)) {
+      const normalizedAgentId = normalizeAgentId(parsed.agentId);
+      if (!AGENT_ID_PATTERN.test(normalizedAgentId)) {
         throw new ContractValidationError("Invalid agent profile register request", {
           schemaId: agentProfileRegisterRequestSchema.schemaId,
           errors: ["agentId must match ^@[a-z0-9_-]{2,32}$"],
@@ -1441,55 +1781,25 @@ export function createControlPlaneService(config = {}) {
         });
       }
 
-      const currentRecord = await gateway.getConfig({
-        resourceType: AGENT_REGISTRY_RESOURCE_TYPE,
-        resourceId: AGENT_REGISTRY_RESOURCE_ID,
-      });
-      if (currentRecord.status === "found") {
-        validateAgentRegistryConfig(currentRecord.config);
-      }
-      const current =
-        currentRecord.status === "found"
-          ? normalizeAgentRegistry(currentRecord.config)
-          : normalizeAgentRegistry({ version: 1, agents: [] });
-      const filtered = current.agents.filter(
-        (agent) => agent.agentId !== parsed.agentId,
-      );
-      const nextRegistry = normalizeAgentRegistry({
+      const applied = await writeAgentConfiguration({
         version: 1,
-        agents: [
-          ...filtered,
-          {
-            agentId: parsed.agentId,
-            profileId: parsed.profileId,
-            description: parsed.description,
-            ...(parsed.defaultForwardSkills !== undefined
-              ? { defaultForwardSkills: parsed.defaultForwardSkills }
-              : {}),
-            ...(parsed.allowedForwardSkills !== undefined
-              ? { allowedForwardSkills: parsed.allowedForwardSkills }
-              : {}),
-            ...(parsed.defaultMcpServers !== undefined
-              ? { defaultMcpServers: parsed.defaultMcpServers }
-              : {}),
-            ...(parsed.allowedMcpServers !== undefined
-              ? { allowedMcpServers: parsed.allowedMcpServers }
-              : {}),
-            ...(parsed.tags !== undefined ? { tags: parsed.tags } : {}),
-          },
-        ],
-      });
-
-      await gateway.upsertConfig({
-        resourceType: AGENT_REGISTRY_RESOURCE_TYPE,
-        resourceId: AGENT_REGISTRY_RESOURCE_ID,
-        config: nextRegistry,
+        agentId: normalizedAgentId,
+        profileId: parsed.profileId,
+        description: parsed.description,
+        tags: parsed.tags,
+        forwarding: {
+          defaultForwardSkills: parsed.defaultForwardSkills,
+          allowedForwardSkills: parsed.allowedForwardSkills,
+          defaultMcpServers: parsed.defaultMcpServers,
+          allowedMcpServers: parsed.allowedMcpServers,
+        },
+        profile: profile.config,
       });
       return {
         status: "applied",
-        agent:
-          nextRegistry.agents.find((agent) => agent.agentId === parsed.agentId) ||
-          null,
+        agent: applied.agent,
+        profileConfig: applied.profileConfig,
+        configuration: applied.configuration,
       };
     },
 
@@ -1503,7 +1813,8 @@ export function createControlPlaneService(config = {}) {
         request,
         "Invalid agent profile unregister request",
       );
-      if (!AGENT_ID_PATTERN.test(parsed.agentId)) {
+      const normalizedAgentId = normalizeAgentId(parsed.agentId);
+      if (!AGENT_ID_PATTERN.test(normalizedAgentId)) {
         throw new ContractValidationError("Invalid agent profile unregister request", {
           schemaId: agentProfileUnregisterRequestSchema.schemaId,
           errors: ["agentId must match ^@[a-z0-9_-]{2,32}$"],
@@ -1522,12 +1833,12 @@ export function createControlPlaneService(config = {}) {
           ? normalizeAgentRegistry(currentRecord.config)
           : normalizeAgentRegistry({ version: 1, agents: [] });
       const nextAgents = current.agents.filter(
-        (agent) => agent.agentId !== parsed.agentId,
+        (agent) => agent.agentId !== normalizedAgentId,
       );
       if (nextAgents.length === current.agents.length) {
         return {
           status: "not_found",
-          agentId: parsed.agentId,
+          agentId: normalizedAgentId,
         };
       }
       const nextRegistry = normalizeAgentRegistry({
@@ -1541,7 +1852,7 @@ export function createControlPlaneService(config = {}) {
       });
       return {
         status: "deleted",
-        agentId: parsed.agentId,
+        agentId: normalizedAgentId,
       };
     },
 

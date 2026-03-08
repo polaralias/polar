@@ -43,6 +43,7 @@ test("integration vertical slice boots platform, orchestrates with mocked provid
     dbPath,
     now: () => nowMs,
   });
+  await platform.bootstrapPromise;
   let platformClosed = false;
 
   try {
@@ -122,6 +123,7 @@ test("integration vertical slice boots platform, orchestrates with mocked provid
       dbPath,
       now: () => nowMs,
     });
+    await rehydrated.bootstrapPromise;
     try {
       const afterReopen = await rehydrated.controlPlane.listFeedbackEvents({
         sessionId: "integration-session-1",
@@ -173,7 +175,7 @@ test("integration: lane-scoped context, focus-anchor routing, and normalized too
     const outputText = isRouter
       ? JSON.stringify({
           decision: "delegate",
-          target: { agentId: "@generic_sub_agent" },
+          target: { agentId: "@general" },
           confidence: 0.4,
           rationale: "ambiguous pronoun",
           references: {
@@ -205,6 +207,7 @@ test("integration: lane-scoped context, focus-anchor routing, and normalized too
   const nowMs = Date.UTC(2026, 2, 2, 10, 0, 0);
   let tickMs = nowMs;
   const platform = createPolarPlatform({ dbPath, now: () => ++tickMs });
+  await platform.bootstrapPromise;
 
   try {
     await platform.controlPlane.upsertConfig({
