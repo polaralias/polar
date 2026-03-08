@@ -28,7 +28,7 @@ const ALLOWED_ACTIONS = new Set([
     'createAutomationJob', 'listAutomationJobs', 'updateAutomationJob', 'disableAutomationJob', 'deleteAutomationJob',
     'generateOutput', 'listModels', 'streamOutput', 'embedText',
     'executeExtension', 'applyExtensionLifecycle', 'listExtensionStates',
-    'installSkill', 'reviewSkillInstallProposal', 'syncMcpServer', 'installPlugin',
+    'installSkill', 'listPendingSkillInstallProposals', 'reviewSkillInstallProposal', 'syncMcpServer', 'installPlugin',
     'submitSkillMetadataOverride', 'listBlockedSkills', 'listCapabilityAuthorityStates',
     'searchMemory', 'getMemory', 'upsertMemory', 'compactMemory',
     'getPersonalityProfile', 'getEffectivePersonality', 'upsertPersonalityProfile', 'resetPersonalityProfile', 'listPersonalityProfiles',

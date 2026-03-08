@@ -3386,3 +3386,64 @@ Commands run and outcomes:
 ### Next
 - Apply the same shared structured-output helper to router decisions themselves so routing no longer relies on a single plain-text JSON parse before fallback.
 - Consider tightening memory extraction failure telemetry further so repeated invalid non-JSON responses can be summarized rather than logged per-turn in large integration runs.
+
+## 2026-03-08 (UTC) - Prompt Skills HITL: Restore manifest-generation fallback and require approval before install completion
+
+**Branch:** `main`  
+**Commit:** `not committed`  
+**Prompt reference:** `Reinstate skill install fallback so missing manifests are generated, then human-approved before installation completes`
+
+### Summary
+- Changed surfaced skill installation so `installSkill()` now always stages a pending manifest review instead of completing installation immediately.
+- Restored the missing-manifest fallback by teaching the installer to generate a proposal from MCP inventory when `SKILL.md` lacks YAML frontmatter, while still preserving the explicit analyzer API.
+- Moved proposal approval onto the same provenance/policy-enforced finalization path as direct installs so review approval still honors source checks, permission-delta approval rules, and metadata enforcement before enabling the skill.
+- Added Telegram `/skills pending`, `/skills approve`, and `/skills reject` commands so the HITL path is reachable from the primary chat surface.
+- Updated Web UI allowlists and specs to reflect the new staged-install review contract.
+
+### Files changed
+- `packages/polar-domain/src/skill-installer-contracts.mjs`
+  - widened installer request/output contracts for review-required installs and pending proposal responses.
+- `packages/polar-runtime-core/src/skill-installer-gateway.mjs`
+  - added pending proposal staging for manifest-present installs;
+  - added manifest-generation fallback for manifest-missing installs;
+  - centralized final install validation so review approval reuses provenance/policy/capability checks.
+- `packages/polar-runtime-core/src/skill-registry.mjs`
+  - preserved extra proposal metadata needed to finalize approved installs later.
+- `packages/polar-control-plane/src/index.mjs`
+  - made surfaced `installSkill()` always request manifest review.
+- `packages/polar-bot-runner/src/commands.mjs`
+  - added `/skills pending`, `/skills approve`, and `/skills reject`;
+  - updated install/review summaries to show pending review state and next-step approval commands.
+- `packages/polar-web-ui/vite.config.js`
+  - allowlisted `listPendingSkillInstallProposals`.
+- `docs/SKILLS.md`
+- `docs/specs/CONTROL_PLANE_API.md`
+- `docs/specs/CHAT_COMMANDS.md`
+  - documented the staged review flow and new operator commands.
+- `tests/control-plane-direct-execution-approvals.test.mjs`
+- `tests/control-plane-skill-install-hitl.test.mjs`
+- `tests/runtime-core-skill-installer-gateway.test.mjs`
+- `tests/telegram-command-router.test.mjs`
+  - added regression coverage for manifest-present staging, missing-manifest generation, review approval, and Telegram review commands.
+
+### Data model / migrations (if applicable)
+- **Tables created/changed:** none
+- **Migration notes:** none
+- **Non-DB persistence changes:** pending skill proposals now retain install context metadata in-memory so approval can finalize through the normal install validator.
+
+### Security and safety checks
+- Human review is now mandatory on surfaced skill installs regardless of whether a manifest was supplied or generated.
+- Approval no longer bypasses provenance verification or install policy checks; those are enforced during review finalization.
+- Missing-manifest generation is constrained to explicit MCP inventory and still validates analyzer output before proposal storage.
+
+### Tests and validation
+- `node --test tests/runtime-core-skill-installer-gateway.test.mjs tests/control-plane-skill-install-hitl.test.mjs tests/control-plane-direct-execution-approvals.test.mjs tests/telegram-command-router.test.mjs` - ✅
+- `npm run check:boundaries` - ✅
+- `npm test` - ✅ (505 passed, 0 failed)
+
+### Blockers
+- None.
+
+### Next
+- Consider adding a richer proposal inspection surface that shows the staged manifest body/diff before approval, especially for generated manifests and upgrades.
+- Decide whether the explicit `proposeSkillManifest()` API should accept pinned revision/provenance fields for remote sources so manual analyzer proposals can be approved without relying on local paths.

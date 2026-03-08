@@ -2735,7 +2735,10 @@ export function createControlPlaneService(config = {}) {
      * @returns {Promise<Record<string, unknown>>}
      */
     async installSkill(request) {
-      return skillInstallerGateway.install(request);
+      return skillInstallerGateway.install({
+        ...request,
+        requireManifestReview: true,
+      });
     },
 
     /**

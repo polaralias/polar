@@ -73,12 +73,18 @@ Surfaces must obtain it via:
 - `applyExtensionLifecycle(request)`
 - `listExtensionStates(request)`
 - `installSkill(request)`
+- `listPendingSkillInstallProposals()`
 - `reviewSkillInstallProposal(request)`
 - `syncMcpServer(request)`
 - `installPlugin(request)`
 - `submitSkillMetadataOverride(request)`
 - `listBlockedSkills()`
 - `listCapabilityAuthorityStates()` (non-async)
+
+Skill install review contract:
+- `installSkill(request)` stages a skill manifest for human review. If `SKILL.md` already contains a manifest, the parsed manifest becomes the pending proposal. If the manifest is missing, the control plane generates a proposal from available MCP inventory first.
+- `listPendingSkillInstallProposals()` returns the pending proposals that still require approval or rejection.
+- `reviewSkillInstallProposal(request)` is the approval/rejection step that finalizes installation (and optional enablement) after the manifest has been reviewed.
 
 ### Memory
 - `searchMemory(request)`

@@ -262,6 +262,20 @@ Source examples:
 - `url:<...>` (only if you implement safe fetch)
 - `paste` (only if you implement safe multi-message capture)
 
+Review semantics:
+- If `SKILL.md` includes a manifest, `/skills install` stages that manifest for review instead of installing immediately.
+- If `SKILL.md` does not include a manifest, `/skills install` generates one from available MCP inventory, then stages the generated manifest for review.
+- Installation completes only after explicit human approval.
+
+#### `/skills pending`
+Lists skill install proposals awaiting review.
+
+#### `/skills approve <skillId> [reason]`
+Approves a pending skill manifest and completes installation.
+
+#### `/skills reject <skillId> [reason]`
+Rejects a pending skill manifest and removes the pending install state.
+
 #### `/skills block <skillId>`
 #### `/skills unblock <skillId>`
 

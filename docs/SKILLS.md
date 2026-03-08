@@ -11,7 +11,8 @@ A skill is a packaged capability with:
 ## Installation model
 - Skills are registered in a skill registry.
 - Installing a skill should be a controlled operation:
-  - validate manifest
+  - parse or generate the manifest
+  - require human review of the manifest before completion
   - validate contracts
   - enforce capability policy
   - record an audit event
